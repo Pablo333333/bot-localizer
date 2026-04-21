@@ -25,41 +25,104 @@ export class SheetsController {
   }
 
   @Post('retell')
-  async handleRetellWebhook(@Body() body: Record<string, unknown>): Promise<void> {
-    this.logger.log('[Retell Webhook] Body recibido:', body);
+  async handleRetellWebhook(@Body() body: Record<string, any>): Promise<void> {
+    this.logger.log('Cuerpo del webhook recibido:');
+    console.log(JSON.stringify(body, null, 2));
+
+    const eventType = body.event_type || body.event;
+    
+    // Solo procesar si el evento es 'call_analyzed'
+    if (eventType !== 'call_analyzed') {
+      this.logger.log(`Ignorando evento de tipo: ${eventType}. Solo se procesa 'call_analyzed'.`);
+      return;
+    }
+
+    const callData = (body.call || body) as any;
+    const agentId = callData.agent_id;
+    const callId = callData.call_id;
+
+    // 1. Contexto de Identidad: Solo procesar para el Agente Outbound ID específico
+    const TARGET_AGENT_ID = 'agent_b8abf941c156192b1995f36c5d';
+    if (agentId !== TARGET_AGENT_ID) {
+      this.logger.warn(`Ignorando webhook: Agent ID ${agentId} no coincide con el objetivo.`);
+      return;
+    }
+
+    const cad = callData.call_analysis?.custom_analysis_data;
+    const callSummary = callData.call_analysis?.call_summary || '';
+    
+    // Flexibilización de call_successful: Si no viene, validamos por longitud del resumen
+    let isSuccessful = callData.call_analysis?.call_successful === true;
+    if (callData.call_analysis?.call_successful === undefined || callData.call_analysis?.call_successful === null) {
+      isSuccessful = callSummary.length > 50;
+      this.logger.log(`call_successful no detectado. Validando por resumen (>50 chars): ${isSuccessful} (${callSummary.length} chars)`);
+    }
+
+    // Flexibilización de "Disponible"
+    const dispValue = String(cad?.disponibilidad || '').toUpperCase().trim();
+    const isAvailable = ['DISPONIBLE', 'SÍ', 'SI', 'TRUE', 'YES'].includes(dispValue);
+
+    this.logger.log(`Procesando webhook para Agent ID: ${agentId}. Éxito: ${isSuccessful}, Disponible: ${isAvailable} (Valor original: ${cad?.disponibilidad})`);
 
     try {
-      // 1. Guardar en Google Sheets
-      this.logger.log('Guardando datos en Google Sheets...');
-      await this.sheetsService.addRow(body as any);
-
-      // 2. Gestionar imágenes desde Google Drive
-      let featuredMediaId: number | undefined;
-      const rootFolderId = this.configService.get<string>('DRIVE_ROOT_FOLDER_ID');
+      let publicadoWordpress = 'NO';
       
-      if (rootFolderId && body.call_id) {
+      // 2. Filtro de Éxito y Disponibilidad para WordPress
+      if (isSuccessful && isAvailable) {
         try {
-          this.logger.log(`Buscando imágenes en Drive para call_id: ${body.call_id}`);
-          const images = await this.googleDriveService.getImagesFromFolder(rootFolderId);
+          this.logger.log('Iniciando flujo WordPress (Llamada Exitosa y Disponible)...');
+          let featuredMediaId: number | undefined;
+          const rootFolderId = this.configService.get<string>('DRIVE_ROOT_FOLDER_ID');
           
-          if (images.length > 0) {
-            this.logger.log(`Imagen encontrada: ${images[0].name}. Descargando...`);
-            const buffer = await this.googleDriveService.downloadImageBuffer(images[0].id!);
-            
-            this.logger.log('Subiendo imagen a WordPress...');
-            featuredMediaId = await this.wordpressService.uploadMedia(buffer, images[0].name || `call_${body.call_id}.jpg`);
+          if (rootFolderId && callId) {
+            try {
+              this.logger.log(`Buscando imágenes en Drive para call_id: ${callId}`);
+              let images = await this.googleDriveService.getImagesFromFolder(rootFolderId, callId);
+              
+              // Fallback 1: Buscar por municipio si no hay por call_id
+              if (images.length === 0 && cad?.municipio) {
+                this.logger.log(`No se encontró imagen para call_id ${callId}. Intentando fallback por municipio: ${cad.municipio}`);
+                images = await this.googleDriveService.getImagesFromFolder(rootFolderId, cad.municipio);
+              }
+
+              // Fallback 2: Buscar por tipo de inmueble si sigue sin haber imágenes
+              if (images.length === 0 && cad?.tipo_inmueble) {
+                this.logger.log(`No se encontró imagen por municipio. Intentando fallback por tipo: ${cad.tipo_inmueble}`);
+                images = await this.googleDriveService.getImagesFromFolder(rootFolderId, cad.tipo_inmueble);
+              }
+
+              // Fallback 3: Si no hay nada, traer cualquier imagen de la carpeta raíz
+              if (images.length === 0) {
+                this.logger.log('No se encontraron imágenes con criterios específicos. Trayendo imagen genérica de la raíz.');
+                images = await this.googleDriveService.getImagesFromFolder(rootFolderId);
+              }
+              
+              if (images.length > 0) {
+                this.logger.log(`Imagen seleccionada: ${images[0].name}. Descargando...`);
+                const buffer = await this.googleDriveService.downloadImageBuffer(images[0].id!);
+                featuredMediaId = await this.wordpressService.uploadMedia(buffer, images[0].name || `call_${callId}.jpg`);
+              }
+            } catch (driveError) {
+              this.logger.error(`Error en Drive: ${driveError.message}`);
+            }
           }
-        } catch (driveError) {
-          this.logger.error(`Error procesando imágenes de Drive: ${driveError.message}`);
+
+          await this.wordpressService.createPropertyPost(callData, featuredMediaId);
+          publicadoWordpress = 'SI';
+        } catch (wpError) {
+          this.logger.error(`Error en WordPress: ${wpError.message}`);
         }
+      } else {
+        this.logger.log(`No se cumple el criterio para WordPress (Éxito: ${isSuccessful}, Disponible: ${isAvailable}). Solo se guardará en Sheets.`);
       }
 
-      // 3. Crear Post en WordPress
-      this.logger.log('Creando post en WordPress...');
-      await this.wordpressService.createPropertyPost(body, featuredMediaId);
+      // 3. Guardar en Google Sheets (Siempre se intenta si el Agent ID es correcto)
+      this.logger.log('Guardando datos en Google Sheets...');
+      await this.sheetsService.addRow(callData, publicadoWordpress);
 
     } catch (error) {
-      this.logger.error(`Error procesando el webhook: ${error.message}`, error.stack);
+      const fromNum = callData.from_number || callData.to_number || 'unknown';
+      this.logger.error(`[Webhook Error] Call ${callId} from ${fromNum}: ${error.message}`, error.stack);
     }
   }
 }

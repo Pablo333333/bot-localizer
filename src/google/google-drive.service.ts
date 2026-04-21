@@ -27,10 +27,15 @@ export class GoogleDriveService implements OnModuleInit {
     this.logger.log('Google Drive Service inicializado correctamente');
   }
 
-  async getImagesFromFolder(folderId: string): Promise<drive_v3.Schema$File[]> {
+  async getImagesFromFolder(folderId: string, searchTerm?: string): Promise<drive_v3.Schema$File[]> {
     try {
+      let query = `'${folderId}' in parents and (mimeType contains 'image/') and trashed = false`;
+      if (searchTerm) {
+        query += ` and name contains '${searchTerm}'`;
+      }
+
       const response = await this.drive.files.list({
-        q: `'${folderId}' in parents and (mimeType contains 'image/') and trashed = false`,
+        q: query,
         fields: 'files(id, name, mimeType)',
       });
 

@@ -8,6 +8,7 @@ const COL_PHONE = 'Teléfono';
 const COL_CALL_STATUS = 'Estado Llamada';
 const STATUS_INITIATED = 'Llamada Iniciada';
 
+// TODO Fase 2: Implementar POST /outbound/trigger-batch para envíos masivos bajo demanda.
 @Injectable()
 export class OutboundService {
   private readonly logger = new Logger(OutboundService.name);
