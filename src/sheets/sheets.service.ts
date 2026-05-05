@@ -44,6 +44,48 @@ export class SheetsService implements OnModuleInit {
     return this.doc;
   }
 
+  async addLead(data: {
+    from: string;
+    entities: any;
+    state: string;
+    summary?: string;
+  }): Promise<void> {
+    const sheet: GoogleSpreadsheetWorksheet = this.doc.sheetsByTitle['reC26'] || this.doc.sheetsByIndex[0];
+    await sheet.loadHeaderRow();
+
+    const knownHeaders = new Set(sheet.headerValues);
+
+    const mapping: Record<string, string> = {
+      'Marca temporal':             new Date().toLocaleString('es-ES', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }).replace(',', ''),
+      'Llamado por':               'Localisto (Lead Inbound)',
+      'Teléfono contacto1':        data.from,
+      'Tipo de inmueble':          data.entities.tipo_negocio || '',
+      'Disponibilidad':            data.entities.operacion || '',
+      'Municipio':                 data.entities.ubicacion || '',
+      'Precio ALQUILER/mes':       data.entities.presupuesto_max?.toString() || '',
+      'Estado':                    data.state,
+      'Información adicional':     data.summary || '',
+    };
+
+    const rowValue: Record<string, string> = {};
+    for (const [column, value] of Object.entries(mapping)) {
+      if (knownHeaders.has(column)) {
+        rowValue[column] = value;
+      }
+    }
+
+    await sheet.addRow(rowValue as any);
+    this.logger.log(`Lead de ${data.from} registrado correctamente en Sheets.`);
+  }
+
   async addRow(data: RetellPayload, publicadoWP: string = 'NO'): Promise<void> {
     const sheet: GoogleSpreadsheetWorksheet = this.doc.sheetsByTitle['reC26'] || this.doc.sheetsByIndex[0];
     await sheet.loadHeaderRow();
@@ -93,7 +135,17 @@ export class SheetsService implements OnModuleInit {
       'Estado':                    val(cad?.estado),
       'Año de construcción':       val(cad?.anio_construccion),
       'Año reforma':               val(cad?.anio_reforma),
-      'Número aseos/baños':        val(cad?.numero_aseos || cad?.aseos, '', true),
+      'Número aseos/baños':        val(cad?.numero_banios || cad?.numero_aseos || cad?.aseos, '', true),
+      'Posición exacta':           val(cad?.posicion_exacta),
+      'Escaparates/Ventanales':    val(cad?.escaparates),
+      'Disposición (Diafano?)':    val(cad?.disposicion_diafano),
+      'Eventos':                   val(cad?.eventos),
+      'Almacen/trastienda (m2)':   val(cad?.almacen_trastienda, '', true),
+      'Terraza propia (Superficie m2)': val(cad?.terraza_patio, '', true),
+      'Equipamiento':              val(cad?.equipamiento),
+      'Certificado energético':     val(cad?.certificado_energetico || cad?.certificacion),
+      'Aforo máximo':              val(cad?.aforo_maximo, '', true),
+      'Limpieza':                  val(cad?.limpieza),
       'Tipo Via':                  val(cad?.tipo_via),
       'Nombre via':                val(cad?.nombre_via),
       'Numero Via':                val(cad?.numero_via || cad?.altura),
@@ -174,6 +226,17 @@ interface RetellPayload {
       numero_via?: string;
       pueblo_barrio?: string;
       fianza_meses?: string;
+      posicion_exacta?: string;
+      numero_banios?: string;
+      escaparates?: string;
+      disposicion_diafano?: string;
+      eventos?: string;
+      almacen_trastienda?: string;
+      terraza_patio?: string;
+      equipamiento?: string;
+      certificado_energetico?: string;
+      aforo_maximo?: string;
+      limpieza?: string;
     };
   };
 }

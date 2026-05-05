@@ -26,13 +26,16 @@
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/schedule": "^6.1.1",
+    "@nestjs/serve-static": "^5.0.5",
     "axios": "^1.13.6",
     "google-auth-library": "^10.6.2",
     "google-spreadsheet": "^5.2.0",
     "googleapis": "^171.4.0",
+    "openai": "^6.34.0",
     "reflect-metadata": "^0.2.2",
     "retell-sdk": "^5.10.1",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "twilio": "^6.0.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",

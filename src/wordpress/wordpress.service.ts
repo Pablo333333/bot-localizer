@@ -97,12 +97,25 @@ export class WordpressService {
         <li><strong>Año de construcción:</strong> ${val(cad?.anio_construccion)}</li>
         <li><strong>Año de reforma:</strong> ${val(cad?.anio_reforma)}</li>
         <li><strong>Número de plantas:</strong> ${val(cad?.num_plantas)}</li>
-        <li><strong>Número de aseos/baños:</strong> ${val(cad?.numero_aseos || cad?.aseos)}</li>
+        <li><strong>Número de aseos/baños:</strong> ${val(cad?.numero_aseos || cad?.aseos || cad?.numero_banios)}</li>
+        <li><strong>Aforo máximo:</strong> ${val(cad?.aforo_maximo)}</li>
         <li><strong>Vado:</strong> ${val(cad?.vado)}</li>
         <li><strong>Altura techos:</strong> ${val(cad?.altura_techos, 'No especificada')}</li>
         <li><strong>Iluminación:</strong> ${val(cad?.iluminacion, 'No especificada')}</li>
         <li><strong>Suelos:</strong> ${val(cad?.suelos)}</li>
-        <li><strong>Certificación energética:</strong> ${val(cad?.certificacion, 'No especificada')}</li>
+        <li><strong>Certificación energética:</strong> ${val(cad?.certificado_energetico || cad?.certificacion, 'No especificada')}</li>
+      </ul>
+
+      <h3>Distribución y Equipamiento</h3>
+      <ul>
+        <li><strong>Posición exacta:</strong> ${val(cad?.posicion_exacta)}</li>
+        <li><strong>Escaparates/Ventanales:</strong> ${val(cad?.escaparates)}</li>
+        <li><strong>Disposición (Diafano?):</strong> ${val(cad?.disposicion_diafano)}</li>
+        <li><strong>Almacen/trastienda:</strong> ${formatSurface(cad?.almacen_trastienda)}</li>
+        <li><strong>Terraza propia:</strong> ${formatSurface(cad?.terraza_patio)}</li>
+        <li><strong>Equipamiento:</strong> ${val(cad?.equipamiento)}</li>
+        <li><strong>Eventos permitidos:</strong> ${val(cad?.eventos)}</li>
+        <li><strong>Limpieza:</strong> ${val(cad?.limpieza)}</li>
       </ul>
 
       <h3>Ubicación</h3>
