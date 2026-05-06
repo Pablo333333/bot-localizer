@@ -35,20 +35,74 @@ export class CalendarService {
   }
 
   /**
-   * Consulta disponibilidad (Placeholder mejorado)
-   * En el futuro se integrará con freebusy de Google Calendar API
+   * Consulta disponibilidad real en Google Calendar
+   * Busca huecos libres entre 9:00 y 18:00 para los próximos 3 días
    */
   async getAvailableSlots(): Promise<string[]> {
-    this.logger.log(`Consultando disponibilidad para el calendario: ${this.calendarId}`);
-    // Simulamos disponibilidad para mañana
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const dateStr = tomorrow.toLocaleDateString('es-ES');
+    this.logger.log(`Consultando disponibilidad real para el calendario: ${this.calendarId}`);
     
-    return [
-      `${dateStr} a las 10:00`,
-      `${dateStr} a las 16:00`
-    ];
+    try {
+      const now = new Date();
+      const threeDaysLater = new Date();
+      threeDaysLater.setDate(now.getDate() + 3);
+
+      const response = await this.calendar.events.list({
+        calendarId: this.calendarId,
+        timeMin: now.toISOString(),
+        timeMax: threeDaysLater.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime',
+      });
+
+      const events = response.data.items || [];
+      const slots: string[] = [];
+
+      // Definimos el horario comercial: 9:00 a 18:00
+      const startHour = 9;
+      const endHour = 18;
+
+      for (let i = 0; i <= 3; i++) {
+        const day = new Date();
+        day.setDate(now.getDate() + i);
+        day.setHours(0, 0, 0, 0);
+
+        // Si es hoy y ya pasaron las 18:00, saltamos
+        if (i === 0 && now.getHours() >= endHour) continue;
+
+        const dateStr = day.toLocaleDateString('es-ES');
+
+        // Generamos huecos de 1 hora entre las 9 y las 17 (para terminar a las 18)
+        for (let hour = startHour; hour < endHour; hour++) {
+          const slotStart = new Date(day);
+          slotStart.setHours(hour, 0, 0, 0);
+
+          // Si es hoy, solo mostramos huecos futuros (con 2 horas de margen)
+          if (i === 0 && slotStart.getTime() < now.getTime() + 2 * 3600000) continue;
+
+          const slotEnd = new Date(slotStart);
+          slotEnd.setHours(hour + 1);
+
+          // Verificamos si este hueco choca con algún evento
+          const isBusy = events.some(event => {
+            const eventStart = new Date(event.start?.dateTime || event.start?.date || '');
+            const eventEnd = new Date(event.end?.dateTime || event.end?.date || '');
+            return (slotStart < eventEnd && slotEnd > eventStart);
+          });
+
+          if (!isBusy) {
+            slots.push(`${dateStr} a las ${hour}:00`);
+          }
+
+          // Limitamos a 6 huecos en total para no saturar el chat
+          if (slots.length >= 6) return slots;
+        }
+      }
+
+      return slots;
+    } catch (error) {
+      this.logger.error(`Error al consultar disponibilidad: ${error.message}`);
+      return ['Mañana a las 10:00', 'Mañana a las 16:00']; // Fallback
+    }
   }
 
   /**

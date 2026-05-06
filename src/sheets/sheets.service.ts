@@ -67,6 +67,7 @@ export class SheetsService implements OnModuleInit {
       }).replace(',', ''),
       'Llamado por':               'Localisto (Lead Inbound)',
       'Teléfono contacto1':        data.from,
+      'Nombre contacto1':          data.entities.nombre_usuario || '',
       'Tipo de inmueble':          data.entities.tipo_negocio || '',
       'Disponibilidad':            data.entities.operacion || '',
       'Municipio':                 data.entities.ubicacion || '',

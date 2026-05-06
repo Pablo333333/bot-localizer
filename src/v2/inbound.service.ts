@@ -19,6 +19,7 @@ export enum UserState {
 }
 
 export interface UserEntities {
+  nombre_usuario?: string;
   tipo_negocio?: string;
   ubicacion?: string;
   presupuesto_max?: number;
@@ -98,6 +99,7 @@ REGLAS DE IDENTIDAD:
               parameters: {
                 type: 'object',
                 properties: {
+                  nombre_usuario: { type: 'string', description: 'Nombre real del usuario si lo menciona.' },
                   tipo_negocio: { type: 'string' },
                   ubicacion: { type: 'string' },
                   presupuesto_max: { type: 'number' },
@@ -235,13 +237,45 @@ REGLAS DE IDENTIDAD:
   async searchProperties(filters: { type?: string; zone?: string; budget?: number }): Promise<any[]> {
     const wpUrl = this.configService.get<string>('WP_URL');
     const auth = Buffer.from(`${this.configService.get('WP_USERNAME')}:${this.configService.get('WP_APP_PASSWORD')}`).toString('base64');
+    
     try {
+      // Mapeo de categorías a slugs de WPResidence
+      const categoryMapping: Record<string, string> = {
+        'local': 'locales',
+        'comercial': 'locales',
+        'oficina': 'oficinas',
+        'nave': 'naves-industriales',
+        'industrial': 'naves-industriales',
+        'almacen': 'naves-industriales'
+      };
+
+      const categorySlug = filters.type ? categoryMapping[filters.type.toLowerCase()] : undefined;
+      
+      const params: any = {
+        per_page: 3,
+        search: filters.zone || '',
+      };
+
+      // Si detectamos una categoría clara, usamos el filtro de taxonomía de WPResidence
+      if (categorySlug) {
+        params['property_category'] = categorySlug;
+      } else if (filters.type) {
+        // Si no hay slug pero hay tipo, lo añadimos al search
+        params.search = `${filters.type} ${filters.zone || ''}`.trim();
+      }
+
       const response = await axios.get(`${wpUrl}/wp-json/wp/v2/estate_property`, {
-        params: { per_page: 3, search: `${filters.type} ${filters.zone}` },
+        params,
         headers: { Authorization: `Basic ${auth}` },
       });
-      return response.data.map((p: any) => ({ title: p.title.rendered, price: p.property_price || 'A consultar', link: p.link }));
+
+      return response.data.map((p: any) => ({ 
+        title: p.title.rendered, 
+        price: p.property_price || 'A consultar', 
+        link: p.link 
+      }));
     } catch (error) {
+      this.logger.error(`Error en searchProperties: ${error.message}`);
       throw new Error('API_FAILURE');
     }
   }
