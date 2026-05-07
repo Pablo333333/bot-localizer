@@ -20,7 +20,7 @@ import { CalendarService } from './v2/calendar.service';
     ScheduleModule.forRoot(),
     ServeStaticModule.forRoot({
       rootPath: join(process.cwd(), 'public'),
-      exclude: ['/api/(.*)', '/v2/(.*)'],
+      exclude: ['/api*', '/v2*'],
     }),
     WordpressModule,
     GoogleModule,

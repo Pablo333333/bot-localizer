@@ -6,7 +6,7 @@ import axios from 'axios';
 import { CalendarService } from './calendar.service';
 import twilio from 'twilio';
 import { Twilio } from 'twilio';
-
+import { WordpressService } from '../wordpress/wordpress.service';
 import { SheetsService } from '../sheets/sheets.service';
 
 export enum UserState {
@@ -41,6 +41,7 @@ export class InboundService {
     private configService: ConfigService,
     private calendarService: CalendarService,
     private sheetsService: SheetsService,
+    private wordpressService: WordpressService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('OPENAI_API_KEY'),
@@ -175,7 +176,11 @@ REGLAS DE IDENTIDAD:
         let searchContext = '';
         if (state === UserState.BUSCADOR && entities.tipo_negocio && entities.ubicacion) {
           try {
-            const results = await this.searchProperties({ type: entities.tipo_negocio, zone: entities.ubicacion, budget: entities.presupuesto_max });
+            const results = await this.wordpressService.searchProperties({ 
+              type: entities.tipo_negocio, 
+              zone: entities.ubicacion, 
+              budget: entities.presupuesto_max 
+            });
             searchContext = results.length > 0 ? `\nRESULTADOS: ${JSON.stringify(results)}` : '\nRESULTADOS: 0';
           } catch (e) {
             searchContext = '\nRESULTADOS: ERROR_TECNICO';
@@ -232,51 +237,5 @@ REGLAS DE IDENTIDAD:
     const text = aiReply.toLowerCase();
     if (text.includes('visita') || text.includes('agendar')) this.userStates.set(from, UserState.AGENDANDO);
     if (text.includes('confirmado') && text.includes('cita')) this.userStates.set(from, UserState.CITA_AGENDADA);
-  }
-
-  async searchProperties(filters: { type?: string; zone?: string; budget?: number }): Promise<any[]> {
-    const wpUrl = this.configService.get<string>('WP_URL');
-    const auth = Buffer.from(`${this.configService.get('WP_USERNAME')}:${this.configService.get('WP_APP_PASSWORD')}`).toString('base64');
-    
-    try {
-      // Mapeo de categorías a slugs de WPResidence
-      const categoryMapping: Record<string, string> = {
-        'local': 'locales',
-        'comercial': 'locales',
-        'oficina': 'oficinas',
-        'nave': 'naves-industriales',
-        'industrial': 'naves-industriales',
-        'almacen': 'naves-industriales'
-      };
-
-      const categorySlug = filters.type ? categoryMapping[filters.type.toLowerCase()] : undefined;
-      
-      const params: any = {
-        per_page: 3,
-        search: filters.zone || '',
-      };
-
-      // Si detectamos una categoría clara, usamos el filtro de taxonomía de WPResidence
-      if (categorySlug) {
-        params['property_category'] = categorySlug;
-      } else if (filters.type) {
-        // Si no hay slug pero hay tipo, lo añadimos al search
-        params.search = `${filters.type} ${filters.zone || ''}`.trim();
-      }
-
-      const response = await axios.get(`${wpUrl}/wp-json/wp/v2/estate_property`, {
-        params,
-        headers: { Authorization: `Basic ${auth}` },
-      });
-
-      return response.data.map((p: any) => ({ 
-        title: p.title.rendered, 
-        price: p.property_price || 'A consultar', 
-        link: p.link 
-      }));
-    } catch (error) {
-      this.logger.error(`Error en searchProperties: ${error.message}`);
-      throw new Error('API_FAILURE');
-    }
   }
 }
