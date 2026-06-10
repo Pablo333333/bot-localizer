@@ -117,8 +117,9 @@ export class SheetsController {
       }
 
       // 3. Guardar en Google Sheets (Siempre se intenta si el Agent ID es correcto)
-      this.logger.log('Guardando datos en Google Sheets...');
-      await this.sheetsService.addRow(callData, publicadoWordpress);
+      this.logger.log('Guardando datos en Google Sheets (Actualizando fila existente)...');
+      const phoneCalled = callData.from_number || callData.to_number || '';
+      await this.sheetsService.updateRowByPhone(phoneCalled, callData, publicadoWordpress);
 
     } catch (error) {
       const fromNum = callData.from_number || callData.to_number || 'unknown';

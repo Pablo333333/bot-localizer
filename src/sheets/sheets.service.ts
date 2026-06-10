@@ -114,6 +114,35 @@ export class SheetsService implements OnModuleInit {
       return s !== '' ? s : fallback;
     };
 
+    // Funciones de validación de negocio
+    const forceYesNo = (v: any) => {
+      const s = String(v || '').toUpperCase().trim();
+      return ['SI', 'SÍ', 'TRUE', '1', 'YES'].includes(s) ? 'SI' : 'NO';
+    };
+
+    const forceEstado = (v: any) => {
+      const options = ['En construcción', 'Nuevo', 'Reformado', 'Buen estado', 'Buena conservación', 'Segunda mano - por Reformar'];
+      const s = String(v || '').trim();
+      const found = options.find(opt => opt.toLowerCase() === s.toLowerCase());
+      return found || 'Buen estado'; // Valor por defecto
+    };
+
+    const forceCertificacion = (v: any) => {
+      const options = ['No consta', 'Exento', 'En tramite', 'A', 'B', 'C', 'D', 'F', 'G'];
+      const s = String(v || '').trim().toUpperCase();
+      const found = options.find(opt => opt.toUpperCase() === s);
+      if (found) return found;
+      if (s === 'A' || s === 'B' || s === 'C' || s === 'D' || s === 'F' || s === 'G') return s;
+      return 'No consta'; // Valor por defecto
+    };
+
+    const forcePublicadoPopalicer = (v: any) => {
+      const options = ['Si', 'No', 'No en este momento', 'Posiblemente en un futuro', 'No estoy seguro ahora'];
+      const s = String(v || '').trim();
+      const found = options.find(opt => opt.toLowerCase() === s.toLowerCase());
+      return found || 'No'; // Valor por defecto
+    };
+
     const mapping: Record<string, string> = {
       'Marca temporal':             new Date().toLocaleString('es-ES', {
         day: '2-digit',
@@ -125,15 +154,15 @@ export class SheetsService implements OnModuleInit {
         hour12: false,
       }).replace(',', ''),
       'Llamado por':               'Localisto (IA)',
-      'Propietario contactado?':    data.call_analysis?.call_successful ? 'SI' : 'NO',
-      'Publicado Popalicer?':      publicadoWP,
+      'Propietario contactado?':    data.call_analysis?.call_successful ? new Date().toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'NO',
+      'Publicado Popalicer?':      forcePublicadoPopalicer(publicadoWP),
       'Tipo de inmueble':          val(cad?.tipo_inmueble),
       'Disponibilidad':            val(cad?.disponibilidad),
       'Información adicional':     val(data.call_analysis?.call_summary || cad?.informacion_adicional),
       'Superficie Total':          val(cad?.superficie_total, '', true),
       'Superficie util':           val(cad?.superficie_util, '', true),
       'Negocio anterior':          val(cad?.negocio_anterior),
-      'Estado':                    val(cad?.estado),
+      'Estado':                    forceEstado(cad?.estado),
       'Año de construcción':       val(cad?.anio_construccion),
       'Año reforma':               val(cad?.anio_reforma),
       'Numero aseos/baños':        val(cad?.numero_banios || cad?.numero_aseos || cad?.aseos, '', true),
@@ -145,7 +174,7 @@ export class SheetsService implements OnModuleInit {
       'Almacen/trastienda (m2)':   val(cad?.almacen_trastienda, '', true),
       'Terraza propia (Superficie m2)': val(cad?.terraza_patio, '', true),
       'Equipamiento':              val(cad?.equipamiento),
-      'Certificación energética':   val(cad?.certificado_energetico || cad?.certificacion),
+      'Certificación energética':   forceCertificacion(cad?.certificado_energetico || cad?.certificacion),
       'Aforo máximo':              val(cad?.aforo_maximo, '', true),
       'Limpieza':                  val(cad?.limpieza),
       'Tipo Via':                  val(cad?.tipo_via),
@@ -163,9 +192,10 @@ export class SheetsService implements OnModuleInit {
       'Nombre contacto1':          val(cad?.nombre_contacto_1 || cad?.nombre_propietario || cad?.nombre_contacto),
       'Email propietario-gestor':  val(cad?.email),
       'Teléfonos de contacto':     val(data.from_number || data.to_number),
-      'Vado (SI/NO)':              val(cad?.vado),
+      'Vado (SI/NO)':              forceYesNo(cad?.vado),
       'Altura techos':             val(cad?.altura_techos),
       'Notas de Error':            !data.call_analysis?.call_successful ? val(data.call_analysis?.call_summary) : '',
+      'Publicacion Autorizada?':   forceYesNo(cad?.publicacion_autorizada),
     };
 
     // Solo incluir columnas que existen realmente en la hoja
@@ -180,6 +210,287 @@ export class SheetsService implements OnModuleInit {
     await sheet.addRow(rowValue as any);
     this.logger.log(`Fila agregada correctamente en reC26 para call_id: ${data.call_id}`);
   }
+
+  async updateRowByPhone(phoneCalled: string, data: RetellPayload, publicadoWP: string = 'NO'): Promise<void> {
+    const sheet = this.doc.sheetsByTitle['reC26'] || this.doc.sheetsByIndex[0];
+    const rows = await sheet.getRows();
+
+    // Buscar la fila correcta comparando el parámetro phoneCalled con el valor de las columnas
+    const row = rows.find(r => {
+      const tel1 = r.get('Teléfonos de contacto');
+      const tel2 = r.get('Telefono2');
+      const tel3 = r.get('Telefono3');
+      return tel1 === phoneCalled || tel2 === phoneCalled || tel3 === phoneCalled;
+    });
+
+    if (!row) {
+      this.logger.warn(`No se encontró ninguna fila para el teléfono: ${phoneCalled}`);
+      return;
+    }
+
+    const cad = data.call_analysis?.custom_analysis_data;
+
+    // Función auxiliar para sanitizar valores
+    const sanitize = (v: any, cleanSymbols: boolean = false) => {
+      if (v === undefined || v === null) return '';
+      let s = String(v).trim();
+      const lowerS = s.toLowerCase();
+      if (lowerS === 'no especificado' || lowerS === 'unknown' || lowerS === 'undefined' || lowerS === 'null') {
+        return '';
+      }
+      if (cleanSymbols) {
+        // Limpiar símbolos de moneda y unidades para campos numéricos
+        s = s.replace(/[€$m²\s]/g, '').replace(',', '.');
+      }
+      return s;
+    };
+
+    const val = (v: any, fallback: string = '', cleanSymbols: boolean = false) => {
+      const s = sanitize(v, cleanSymbols);
+      return s !== '' ? s : fallback;
+    };
+
+    // Funciones de validación de negocio
+    const forceYesNo = (v: any) => {
+      const s = String(v || '').toUpperCase().trim();
+      return ['SI', 'SÍ', 'TRUE', '1', 'YES'].includes(s) ? 'SI' : 'NO';
+    };
+
+    const forceEstado = (v: any) => {
+      const options = ['En construcción', 'Nuevo', 'Reformado', 'Buen estado', 'Buena conservación', 'Segunda mano - por Reformar'];
+      const s = String(v || '').trim();
+      const found = options.find(opt => opt.toLowerCase() === s.toLowerCase());
+      return found || 'Buen estado'; // Valor por defecto
+    };
+
+    const forceCertificacion = (v: any) => {
+      const options = ['No consta', 'Exento', 'En tramite', 'A', 'B', 'C', 'D', 'F', 'G'];
+      const s = String(v || '').trim().toUpperCase();
+      const found = options.find(opt => opt.toUpperCase() === s);
+      if (found) return found;
+      if (s === 'A' || s === 'B' || s === 'C' || s === 'D' || s === 'F' || s === 'G') return s;
+      return 'No consta'; // Valor por defecto
+    };
+
+    const forcePublicadoPopalicer = (v: any) => {
+      const options = ['Si', 'No', 'No en este momento', 'Posiblemente en un futuro', 'No estoy seguro ahora'];
+      const s = String(v || '').trim();
+      const found = options.find(opt => opt.toLowerCase() === s.toLowerCase());
+      return found || 'No'; // Valor por defecto
+    };
+
+    // Mapeo general de campos del inmueble
+    row.set('Tipo de inmueble', val(cad?.tipo_inmueble));
+    row.set('Disponibilidad del local', val(cad?.disponibilidad));
+    row.set('Información adicional', val(data.call_analysis?.call_summary || cad?.informacion_adicional));
+    row.set('Superficie Total', val(cad?.superficie_total, '', true));
+    row.set('Superficie util', val(cad?.superficie_util, '', true));
+    row.set('Negocio anterior', val(cad?.negocio_anterior));
+    row.set('Estado', forceEstado(cad?.estado));
+    row.set('Año de construcción', val(cad?.anio_construccion));
+    row.set('Año reforma', val(cad?.anio_reforma));
+    row.set('Numero aseos/baños', val(cad?.numero_banios || cad?.numero_aseos, '', true));
+    row.set('Posición exacta', val(cad?.posicion_exacta));
+    row.set('Escaparates/ventanales', val(cad?.escaparates));
+    row.set('Diafano?', val(cad?.['disposicion_diafano?'] || cad?.disposicion_diafano));
+    row.set('Eventos', val(cad?.eventos));
+    row.set('Almacen/trastienda (m2)', val(cad?.almacen_trastienda, '', true));
+    row.set('Terraza propia (Superficie m2)', val(cad?.terraza_patio, '', true));
+    row.set('Equipamiento', val(cad?.equipamiento));
+    row.set('Certificación energética', forceCertificacion(cad?.certificado_energetico || cad?.certificacion));
+    row.set('Aforo máximo', val(cad?.aforo_maximo, '', true));
+    row.set('Limpieza', val(cad?.limpieza));
+    row.set('Tipo Via', val(cad?.tipo_via));
+    row.set('Nombre via', val(cad?.nombre_via));
+    row.set('Numero Via', val(cad?.numero_via));
+    row.set('Pueblo/Barrio/distrito', val(cad?.pueblo_barrio || cad?.pueblo));
+    row.set('Municipio', val(cad?.municipio));
+    row.set('Provincia', val(cad?.provincia));
+    row.set('Precio VENTA', val(cad?.precio_venta, '', true));
+    row.set('Precio TRASPASO', val(cad?.precio_traspaso, '', true));
+    row.set('Precio ALQUILER/mes', val(cad?.precio_alquiler, '', true));
+    row.set('Fianza', val(cad?.fianza_meses || cad?.fianza, '', true));
+    row.set('Gastos de comunidad', val(cad?.gastos_comunidad, '', true));
+    row.set('Negociable', val(cad?.es_negociable));
+    row.set('Vado (SI/NO)', forceYesNo(cad?.vado));
+    row.set('Altura techos', val(cad?.altura_techos));
+    
+    // Campos Rosas: Gestión e Inyección Interna
+    const now = new Date();
+    const formattedDate = now.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const formattedDateTime = now.toLocaleString('es-ES', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    }).replace(',', '');
+
+    row.set('Marca temporal', formattedDateTime);
+    row.set('Llamado por', 'Localisto');
+    row.set('Propietario contactado?', data.call_analysis?.call_successful ? formattedDate : 'NO');
+    
+    row.set('Publicado Popalicer?', forcePublicadoPopalicer(publicadoWP));
+    row.set('Publicacion Autorizada?', forceYesNo(cad?.publicacion_autorizada));
+    row.set('Contrato', val(cad?.contrato));
+    row.set('Ilocalizable', val(cad?.Ilocalizable));
+    row.set('Email propietario-gestor', val(cad?.email_propietario_gestor || cad?.email));
+    row.set('Email Avisos', val(cad?.email_avisos));
+    row.set('Actualizado el', now.toISOString());
+
+    // Lógica de asignación para los bloques de contactos según cad?.target_contact
+    if (cad?.target_contact === 'contacto_1') {
+      row.set('Nombre contacto1', val(cad?.nombre_contacto_1));
+      row.set('Contacto1 con', val(cad?.contacto_1_con));
+      row.set('Contacto1 por', val(cad?.contacto_1_por));
+    } else if (cad?.target_contact === 'contacto_2') {
+      row.set('Nombre contacto2', val(cad?.nombre_contacto_2));
+      row.set('Contacto2 con', val(cad?.contacto_2_con));
+      row.set('Contacto2 por', val(cad?.contacto_2_por));
+    } else if (cad?.target_contact === 'contacto_3') {
+      row.set('Nombre contacto3', val(cad?.nombre_contacto_3));
+      row.set('Contacto3 con', val(cad?.contacto_3_con));
+      row.set('Contacto3 por', val(cad?.contacto_3_por));
+    }
+
+    await row.save();
+    this.logger.log(`Fila actualizada correctamente en reC26 para el teléfono: ${phoneCalled}`);
+  }
+
+  async testUpdateAsNewRow(data: RetellPayload, publicadoWP: string = 'NO'): Promise<void> {
+    const sheet: GoogleSpreadsheetWorksheet = this.doc.sheetsByTitle['reC26'] || this.doc.sheetsByIndex[0];
+    await sheet.loadHeaderRow();
+
+    const knownHeaders = new Set(sheet.headerValues);
+    const cad = data.call_analysis?.custom_analysis_data;
+
+    // Función auxiliar para sanitizar valores
+    const sanitize = (v: any, cleanSymbols: boolean = false) => {
+      if (v === undefined || v === null) return '';
+      let s = String(v).trim();
+      const lowerS = s.toLowerCase();
+      if (lowerS === 'no especificado' || lowerS === 'unknown' || lowerS === 'undefined' || lowerS === 'null') {
+        return '';
+      }
+      if (cleanSymbols) {
+        // Limpiar símbolos de moneda y unidades para campos numéricos
+        s = s.replace(/[€$m²\s]/g, '').replace(',', '.');
+      }
+      return s;
+    };
+
+    const val = (v: any, fallback: string = '', cleanSymbols: boolean = false) => {
+      const s = sanitize(v, cleanSymbols);
+      return s !== '' ? s : fallback;
+    };
+
+    // Funciones de validación de negocio
+    const forceYesNo = (v: any) => {
+      const s = String(v || '').toUpperCase().trim();
+      return ['SI', 'SÍ', 'TRUE', '1', 'YES'].includes(s) ? 'SI' : 'NO';
+    };
+
+    const forceEstado = (v: any) => {
+      const options = ['En construcción', 'Nuevo', 'Reformado', 'Buen estado', 'Buena conservación', 'Segunda mano - por Reformar'];
+      const s = String(v || '').trim();
+      const found = options.find(opt => opt.toLowerCase() === s.toLowerCase());
+      return found || 'Buen estado'; // Valor por defecto
+    };
+
+    const forceCertificacion = (v: any) => {
+      const options = ['No consta', 'Exento', 'En tramite', 'A', 'B', 'C', 'D', 'F', 'G'];
+      const s = String(v || '').trim().toUpperCase();
+      const found = options.find(opt => opt.toUpperCase() === s);
+      if (found) return found;
+      if (s === 'A' || s === 'B' || s === 'C' || s === 'D' || s === 'F' || s === 'G') return s;
+      return 'No consta'; // Valor por defecto
+    };
+
+    const forcePublicadoPopalicer = (v: any) => {
+      const options = ['Si', 'No', 'No en este momento', 'Posiblemente en un futuro', 'No estoy seguro ahora'];
+      const s = String(v || '').trim();
+      const found = options.find(opt => opt.toLowerCase() === s.toLowerCase());
+      return found || 'No'; // Valor por defecto
+    };
+
+    const mapping: Record<string, string> = {
+      'Marca temporal':             new Date().toLocaleString('es-ES', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }).replace(',', ''),
+      'Llamado por':               'Localisto (TEST)',
+      'Tipo de inmueble':          val(cad?.tipo_inmueble),
+      'Disponibilidad del local':  val(cad?.disponibilidad),
+      'Información adicional':     val(data.call_analysis?.call_summary || cad?.informacion_adicional),
+      'Superficie Total':          val(cad?.superficie_total, '', true),
+      'Superficie util':           val(cad?.superficie_util, '', true),
+      'Negocio anterior':          val(cad?.negocio_anterior),
+      'Estado':                    forceEstado(cad?.estado),
+      'Año de construcción':       val(cad?.anio_construccion),
+      'Año reforma':               val(cad?.anio_reforma),
+      'Numero aseos/baños':        val(cad?.numero_banios || cad?.numero_aseos, '', true),
+      'Posición exacta':           val(cad?.posicion_exacta),
+      'Escaparates/ventanales':    val(cad?.escaparates),
+      'Diafano?':                  val(cad?.disposicion_diafano),
+      'Eventos':                   val(cad?.eventos),
+      'Almacen/trastienda (m2)':   val(cad?.almacen_trastienda, '', true),
+      'Terraza propia (Superficie m2)': val(cad?.terraza_patio, '', true),
+      'Equipamiento':              val(cad?.equipamiento),
+      'Certificación energética':   forceCertificacion(cad?.certificado_energetico || cad?.certificacion),
+      'Aforo máximo':              val(cad?.aforo_maximo, '', true),
+      'Limpieza':                  val(cad?.limpieza),
+      'Tipo Via':                  val(cad?.tipo_via),
+      'Nombre via':                val(cad?.nombre_via),
+      'Numero Via':                val(cad?.numero_via),
+      'Pueblo/Barrio/distrito':    val(cad?.pueblo_barrio || cad?.pueblo),
+      'Municipio':                 val(cad?.municipio),
+      'Provincia':                 val(cad?.provincia),
+      'Precio VENTA':              val(cad?.precio_venta, '', true),
+      'Precio TRASPASO':           val(cad?.precio_traspaso, '', true),
+      'Precio ALQUILER/mes':       val(cad?.precio_alquiler, '', true),
+      'Fianza':                    val(cad?.fianza_meses || cad?.fianza, '', true),
+      'Gastos de comunidad':       val(cad?.gastos_comunidad, '', true),
+      'Negociable':                val(cad?.es_negociable),
+      'Vado (SI/NO)':              forceYesNo(cad?.vado),
+      'Altura techos':             val(cad?.altura_techos),
+      'Propietario contactado?':    data.call_analysis?.call_successful ? new Date().toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'NO',
+      'Publicado Popalicer?':      forcePublicadoPopalicer(publicadoWP),
+      'Publicacion Autorizada?':   forceYesNo(cad?.publicacion_autorizada),
+      'Contrato':                  val(cad?.contrato),
+      'Ilocalizable':              val(cad?.Ilocalizable),
+      'Email propietario-gestor':  val(cad?.email_propietario_gestor || cad?.email),
+      'Email Avisos':              val(cad?.email_avisos),
+      'Actualizado el':            new Date().toISOString(),
+      'Teléfonos de contacto':     val(data.from_number || data.to_number),
+    };
+
+    // Lógica de asignación para los bloques de contactos según cad?.target_contact
+    if (cad?.target_contact === 'contacto_1') {
+      mapping['Nombre contacto1'] = val(cad?.nombre_contacto_1);
+      mapping['Contacto1 con'] = val(cad?.contacto_1_con);
+      mapping['Contacto1 por'] = val(cad?.contacto_1_por);
+    } else if (cad?.target_contact === 'contacto_2') {
+      mapping['Nombre contacto2'] = val(cad?.nombre_contacto_2);
+      mapping['Contacto2 con'] = val(cad?.contacto_2_con);
+      mapping['Contacto2 por'] = val(cad?.contacto_2_por);
+    } else if (cad?.target_contact === 'contacto_3') {
+      mapping['Nombre contacto3'] = val(cad?.nombre_contacto_3);
+      mapping['Contacto3 con'] = val(cad?.contacto_3_con);
+      mapping['Contacto3 por'] = val(cad?.contacto_3_por);
+    }
+
+    const rowValue: Record<string, string> = {};
+    for (const [column, value] of Object.entries(mapping)) {
+      if (knownHeaders.has(column)) {
+        rowValue[column] = value;
+      }
+    }
+
+    await sheet.addRow(rowValue as any);
+    this.logger.log(`Fila de TEST agregada correctamente en reC26 para call_id: ${data.call_id}`);
+  }
 }
 
 interface RetellPayload {
@@ -191,6 +502,24 @@ interface RetellPayload {
     call_successful?: boolean;
     call_summary?: string;
     custom_analysis_data?: {
+      target_contact?: string;
+      publicacion_autorizada?: string;
+      contrato?: string;
+      Ilocalizable?: string;
+      email_avisos?: string;
+      nombre_contacto_1?: string;
+      nombre_contacto_2?: string;
+      nombre_contacto_3?: string;
+      contacto_1_con?: string;
+      contacto_2_con?: string;
+      contacto_3_con?: string;
+      contacto_1_por?: string;
+      contacto_2_por?: string;
+      contacto_3_por?: string;
+      telefono_contacto_1?: string;
+      telefono_contacto_2?: string;
+      telefono_contacto_3?: string;
+      email_propietario_gestor?: string;
       tipo_inmueble?: string;
       disponibilidad?: string;
       estado?: string;
@@ -220,7 +549,6 @@ interface RetellPayload {
       negocio_anterior?: string;
       nombre_propietario?: string;
       nombre_contacto?: string;
-      nombre_contacto_1?: string;
       contacto_preferido?: string;
       email?: string;
       informacion_adicional?: string;
@@ -231,6 +559,7 @@ interface RetellPayload {
       posicion_exacta?: string;
       numero_banios?: string;
       escaparates?: string;
+      'disposicion_diafano?'?: string;
       disposicion_diafano?: string;
       eventos?: string;
       almacen_trastienda?: string;
