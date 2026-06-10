@@ -10,12 +10,29 @@ export class GoogleDriveService implements OnModuleInit {
   private drive: drive_v3.Drive;
 
   async onModuleInit(): Promise<void> {
-    const credentials = JSON.parse(
-      fs.readFileSync(
-        path.join(process.cwd(), 'google-credentials.json'),
-        'utf8',
-      ),
-    );
+    let credentials: any;
+
+    if (process.env.GOOGLE_CREDENTIALS_JSON) {
+      try {
+        credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
+        this.logger.log(
+          'Google Drive: Usando credenciales desde variable de entorno',
+        );
+      } catch (err) {
+        this.logger.error(
+          'Error al parsear GOOGLE_CREDENTIALS_JSON, usando fallback de archivo',
+        );
+      }
+    }
+
+    if (!credentials) {
+      const credentialsPath = path.join(
+        process.cwd(),
+        'google-credentials.json',
+      );
+      credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
+      this.logger.log('Google Drive: Usando credenciales desde archivo físico');
+    }
 
     const auth = new JWT({
       email: credentials.client_email,
