@@ -4,14 +4,15 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import Retell from 'retell-sdk';
 import { SheetsService } from '../sheets/sheets.service';
 
-const COL_CALL_STATUS = 'Estado Llamada';
+const COL_CALL_STATUS = 'Llamado';
+const COL_CALL_ID = 'Call ID';
 const COL_TIPO_INMUEBLE = 'Tipo de inmueble';
-const COL_DISPONIBILIDAD = 'Disponibilidad';
-const STATUS_INITIATED = 'Llamada Iniciada';
+const COL_DISPONIBILIDAD = 'Disponibilidad del local';
+const STATUS_LLAMADO = 'Sí';
 
 // Columnas de contactos según especificación del cliente
-const COL_C1_CON = 'Contacto 1 con';
-const COL_C1_TEL = 'Teléfono contacto1';
+const COL_C1_CON = 'Contacto1 con';
+const COL_C1_TEL = 'Teléfonos de contacto';
 const COL_C2_CON = 'Contacto2 con';
 const COL_C2_TEL = 'Telefono2';
 const COL_C3_CON = 'Contacto3 con';
@@ -38,7 +39,7 @@ export class OutboundService {
 
   @Cron(CronExpression.EVERY_5_MINUTES)
   async checkPendingCalls(): Promise<void> {
-    this.logger.log('Buscando filas con llamadas pendientes...');
+    this.logger.log('Iniciando control de llamadas salientes...');
 
     const doc = this.sheetsService.getDoc();
     const sheet = doc.sheetsByIndex[0];
@@ -46,19 +47,34 @@ export class OutboundService {
     await sheet.loadHeaderRow();
     const rows = await sheet.getRows();
 
-    let callsSent = 0;
-    const MAX_TEST_CALLS = 10;
+    // Control global previo: contar llamadas ya realizadas o en proceso
+    const alreadyCalledRows = rows.filter((row) => {
+      const status = row.get(COL_CALL_STATUS)?.toString().trim();
+      const callId = row.get(COL_CALL_ID)?.toString().trim();
+      return status || callId;
+    });
+
+    const totalCallsMade = alreadyCalledRows.length;
+    const GLOBAL_LIMIT = 10;
+
+    if (totalCallsMade >= GLOBAL_LIMIT) {
+      this.logger.log(
+        `[OutboundService] Límite global absoluto de ${GLOBAL_LIMIT} llamadas de prueba alcanzado en el Sheets. No se realizarán más llamadas.`,
+      );
+      return;
+    }
+
+    let remainingCalls = GLOBAL_LIMIT - totalCallsMade;
+    this.logger.log(
+      `Estado global: ${totalCallsMade}/${GLOBAL_LIMIT} llamadas realizadas. Cupo disponible: ${remainingCalls}`,
+    );
 
     for (const row of rows) {
-      if (callsSent >= MAX_TEST_CALLS) {
-        this.logger.log(
-          `Se ha alcanzado el límite de ${MAX_TEST_CALLS} llamadas de prueba.`,
-        );
-        break;
-      }
+      if (remainingCalls <= 0) break;
 
       const status = row.get(COL_CALL_STATUS)?.toString().trim();
-      if (status) continue;
+      const callId = row.get(COL_CALL_ID)?.toString().trim();
+      if (status || callId) continue;
 
       const rawPhone = this.getBestPhone(row);
       if (!rawPhone) continue;
@@ -73,14 +89,8 @@ export class OutboundService {
         phone = '+34' + phone;
       }
 
-      const tipoInmueble =
-        row.get(COL_TIPO_INMUEBLE)?.toString().trim() ||
-        row.get('Tipo de inmueble')?.toString().trim() ||
-        '';
-      const disponibilidad =
-        row.get(COL_DISPONIBILIDAD)?.toString().trim() ||
-        row.get('Disponibilidad del local')?.toString().trim() ||
-        '';
+      const tipoInmueble = row.get(COL_TIPO_INMUEBLE)?.toString().trim() || '';
+      const disponibilidad = row.get(COL_DISPONIBILIDAD)?.toString().trim() || '';
 
       try {
         const call = await this.retell.call.createPhoneCall({
@@ -93,24 +103,20 @@ export class OutboundService {
           },
         });
 
-        row.set(COL_CALL_STATUS, STATUS_INITIATED);
+        // Actualización síncrona para blindar el anti-loop
+        row.set(COL_CALL_STATUS, STATUS_LLAMADO);
+        row.set(COL_CALL_ID, call.call_id);
         await row.save();
 
         this.logger.log(
-          `Llamada iniciada — número: ${phone} | call_id: ${call.call_id}`,
+          `Llamada iniciada con éxito — número: ${phone} | call_id: ${call.call_id}`,
         );
-        callsSent++;
+        remainingCalls--;
       } catch (err) {
         this.logger.error(
           `Error al llamar al número ${phone}: ${(err as Error).message}`,
         );
       }
-    }
-
-    if (callsSent === 0) {
-      this.logger.log(
-        'No se realizaron llamadas (no hay pendientes o no cumplen criterios).',
-      );
     }
   }
 
