@@ -60,8 +60,18 @@ export class OutboundService {
       const status = row.get(COL_CALL_STATUS)?.toString().trim();
       if (status) continue;
 
-      const phone = this.getBestPhone(row);
-      if (!phone) continue;
+      const rawPhone = this.getBestPhone(row);
+      if (!rawPhone) continue;
+
+      // Formateador estricto E.164 para España
+      let phone = rawPhone.replace(/\s+/g, '');
+      if (phone.startsWith('+34')) {
+        // Ya tiene el formato correcto
+      } else if (phone.startsWith('34')) {
+        phone = '+' + phone;
+      } else {
+        phone = '+34' + phone;
+      }
 
       const tipoInmueble =
         row.get(COL_TIPO_INMUEBLE)?.toString().trim() ||
