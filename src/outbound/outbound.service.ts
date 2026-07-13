@@ -33,7 +33,7 @@ export class OutboundService {
     this.retell = new Retell({
       apiKey: this.configService.getOrThrow<string>('RETELL_API_KEY'),
     });
-    this.agentId = this.configService.getOrThrow<string>('RETELL_AGENT_ID');
+    this.agentId = this.configService.getOrThrow<string>('RETELL_OUTBOUND_AGENT_ID');
     this.fromNumber = this.configService.getOrThrow<string>('RETELL_FROM_NUMBER');
   }
 
@@ -55,7 +55,7 @@ export class OutboundService {
     });
 
     const totalCallsMade = alreadyCalledRows.length;
-    const GLOBAL_LIMIT = 10;
+    const GLOBAL_LIMIT = 50;
 
     if (totalCallsMade >= GLOBAL_LIMIT) {
       this.logger.log(

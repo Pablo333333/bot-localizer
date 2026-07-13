@@ -42,14 +42,26 @@ export class SheetsController {
     const callId = callData.call_id;
 
     // 1. Contexto de Identidad: Solo procesar para el Agente Outbound ID específico
-    const TARGET_AGENT_ID = 'agent_b8abf941c156192b1995f36c5d';
-    if (agentId !== TARGET_AGENT_ID) {
-      this.logger.warn(`Ignorando webhook: Agent ID ${agentId} no coincide con el objetivo.`);
+    const TARGET_AGENT_ID = this.configService.get<string>('RETELL_OUTBOUND_AGENT_ID') || 'agent_b8abf941c156192b1995f36c5d';
+    const INBOUND_AGENT_ID = this.configService.get<string>('RETELL_INBOUND_AGENT_ID');
+
+    if (agentId !== TARGET_AGENT_ID && agentId !== INBOUND_AGENT_ID) {
+      this.logger.warn(`Ignorando webhook: Agent ID ${agentId} no coincide con objetivos.`);
       return;
     }
 
     const cad = callData.call_analysis?.custom_analysis_data;
     const callSummary = callData.call_analysis?.call_summary || '';
+    
+    // Logging detallado de campos extraídos por la IA
+    if (cad) {
+      this.logger.log(`[IA Data Extraction] Campos detectados para Call ID ${callId}:`);
+      Object.entries(cad).forEach(([key, value]) => {
+        console.log(`  - ${key}: ${value}`);
+      });
+    } else {
+      this.logger.warn(`[IA Data Extraction] No se detectó custom_analysis_data para Call ID ${callId}`);
+    }
     
     // Flexibilización de call_successful: Si no viene, validamos por longitud del resumen
     let isSuccessful = callData.call_analysis?.call_successful === true;

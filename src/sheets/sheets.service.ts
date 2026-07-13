@@ -246,6 +246,11 @@ export class SheetsService implements OnModuleInit {
     }
 
     const cad = data.call_analysis?.custom_analysis_data;
+    
+    this.logger.log(`[updateRowByPhone] Iniciando mapeo de datos para el teléfono: ${phoneCalled}`);
+    if (cad) {
+      this.logger.log(`[updateRowByPhone] Datos extraídos (CAD): ${JSON.stringify(cad)}`);
+    }
 
     // Función auxiliar para sanitizar valores
     const sanitize = (v: any, cleanSymbols: boolean = false) => {
@@ -297,74 +302,82 @@ export class SheetsService implements OnModuleInit {
     };
 
     // Mapeo general de campos del inmueble
-    row.set('Tipo de inmueble', val(cad?.tipo_inmueble));
-    row.set('Disponibilidad del local', val(cad?.disponibilidad));
-    row.set('Información adicional', val(data.call_analysis?.call_summary || cad?.informacion_adicional));
-    row.set('Superficie Total', val(cad?.superficie_total, '', true));
-    row.set('Superficie util', val(cad?.superficie_util, '', true));
-    row.set('Negocio anterior', val(cad?.negocio_anterior));
-    row.set('Estado', forceEstado(cad?.estado));
-    row.set('Año de construcción', val(cad?.anio_construccion));
-    row.set('Año reforma', val(cad?.anio_reforma));
-    row.set('Numero aseos/baños', val(cad?.numero_banios || cad?.numero_aseos, '', true));
-    row.set('Posición exacta', val(cad?.posicion_exacta));
-    row.set('Escaparates/ventanales', val(cad?.escaparates));
-    row.set('Diafano?', val(cad?.['disposicion_diafano?'] || cad?.disposicion_diafano));
-    row.set('Eventos', val(cad?.eventos));
-    row.set('Almacen/trastienda (m2)', val(cad?.almacen_trastienda, '', true));
-    row.set('Terraza propia (Superficie m2)', val(cad?.terraza_patio, '', true));
-    row.set('Equipamiento', val(cad?.equipamiento));
-    row.set('Certificación energética', forceCertificacion(cad?.certificado_energetico || cad?.certificacion));
-    row.set('Aforo máximo', val(cad?.aforo_maximo, '', true));
-    row.set('Limpieza', val(cad?.limpieza));
-    row.set('Tipo Via', val(cad?.tipo_via));
-    row.set('Nombre via', val(cad?.nombre_via));
-    row.set('Numero Via', val(cad?.numero_via));
-    row.set('Pueblo/Barrio/distrito', val(cad?.pueblo_barrio || cad?.pueblo));
-    row.set('Municipio', val(cad?.municipio));
-    row.set('Provincia', val(cad?.provincia));
-    row.set('Precio VENTA', val(cad?.precio_venta, '', true));
-    row.set('Precio TRASPASO', val(cad?.precio_traspaso, '', true));
-    row.set('Precio ALQUILER/mes', val(cad?.precio_alquiler, '', true));
-    row.set('Fianza', val(cad?.fianza_meses || cad?.fianza, '', true));
-    row.set('Gastos de comunidad', val(cad?.gastos_comunidad, '', true));
-    row.set('Negociable', val(cad?.es_negociable));
-    row.set('Vado (SI/NO)', forceYesNo(cad?.vado));
-    row.set('Altura techos', val(cad?.altura_techos));
-    
-    // Campos Rosas: Gestión e Inyección Interna
-    const now = new Date();
-    const formattedDate = now.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    const formattedDateTime = now.toLocaleString('es-ES', {
-      day: '2-digit', month: '2-digit', year: 'numeric',
-      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
-    }).replace(',', '');
-
-    row.set('Marca temporal', formattedDateTime);
-    row.set('Llamado por', 'Localisto');
-    row.set('Propietario contactado?', data.call_analysis?.call_successful ? formattedDate : 'NO');
-    
-    row.set('Publicado Popalicer?', forcePublicadoPopalicer(publicadoWP));
-    row.set('Publicacion Autorizada?', forceYesNo(cad?.publicacion_autorizada));
-    row.set('Contrato', val(cad?.contrato));
-    row.set('Ilocalizable', val(cad?.Ilocalizable));
-    row.set('Email propietario-gestor', val(cad?.email_propietario_gestor || cad?.email));
-    row.set('Email Avisos', val(cad?.email_avisos));
-    row.set('Actualizado el', now.toISOString());
+    const mapping: Record<string, string> = {
+      'Tipo de inmueble':          val(cad?.tipo_inmueble),
+      'Disponibilidad del local':  val(cad?.disponibilidad),
+      'Información adicional':     val(data.call_analysis?.call_summary || cad?.informacion_adicional),
+      'Superficie Total':          val(cad?.superficie_total, '', true),
+      'Superficie util':           val(cad?.superficie_util, '', true),
+      'Negocio anterior':          val(cad?.negocio_anterior),
+      'Estado':                    forceEstado(cad?.estado),
+      'Año de construcción':       val(cad?.anio_construccion),
+      'Año reforma':               val(cad?.anio_reforma),
+      'Numero aseos/baños':        val(cad?.numero_banios || cad?.numero_aseos, '', true),
+      'Posición exacta':           val(cad?.posicion_exacta),
+      'Escaparates/ventanales':    val(cad?.escaparates),
+      'Diafano?':                  val(cad?.['disposicion_diafano?'] || cad?.disposicion_diafano),
+      'Eventos':                   val(cad?.eventos),
+      'Almacen/trastienda (m2)':   val(cad?.almacen_trastienda, '', true),
+      'Terraza propia (Superficie m2)': val(cad?.terraza_patio, '', true),
+      'Equipamiento':              val(cad?.equipamiento),
+      'Certificación energética':   forceCertificacion(cad?.certificado_energetico || cad?.certificacion),
+      'Aforo máximo':              val(cad?.aforo_maximo, '', true),
+      'Limpieza':                  val(cad?.limpieza),
+      'Tipo Via':                  val(cad?.tipo_via),
+      'Nombre via':                val(cad?.nombre_via),
+      'Numero Via':                val(cad?.numero_via),
+      'Pueblo/Barrio/distrito':    val(cad?.pueblo_barrio || cad?.pueblo),
+      'Municipio':                 val(cad?.municipio),
+      'Provincia':                 val(cad?.provincia),
+      'Precio VENTA':              val(cad?.precio_venta, '', true),
+      'Precio TRASPASO':           val(cad?.precio_traspaso, '', true),
+      'Precio ALQUILER/mes':       val(cad?.precio_alquiler, '', true),
+      'Fianza':                    val(cad?.fianza_meses || cad?.fianza, '', true),
+      'Gastos de comunidad':       val(cad?.gastos_comunidad, '', true),
+      'Negociable':                val(cad?.es_negociable),
+      'Vado (SI/NO)':              forceYesNo(cad?.vado),
+      'Altura techos':             val(cad?.altura_techos),
+      'Nº plantas':                val(cad?.num_plantas),
+      'Iluminación':               val(cad?.iluminacion),
+      'Suelos':                    val(cad?.suelos),
+      'Contrato':                  val(cad?.contrato),
+      'Ilocalizable':              val(cad?.Ilocalizable),
+      'Email propietario-gestor':  val(cad?.email_propietario_gestor || cad?.email),
+      'Email Avisos':              val(cad?.email_avisos),
+      'Publicacion Autorizada?':   forceYesNo(cad?.publicacion_autorizada),
+      'Marca temporal':            new Date().toLocaleString('es-ES', {
+                                    day: '2-digit', month: '2-digit', year: 'numeric',
+                                    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+                                  }).replace(',', ''),
+      'Llamado por':               'Localisto',
+      'Propietario contactado?':    data.call_analysis?.call_successful ? new Date().toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'NO',
+      'Publicado Popalicer?':      forcePublicadoPopalicer(publicadoWP),
+      'Actualizado el':            new Date().toISOString(),
+    };
 
     // Lógica de asignación para los bloques de contactos según cad?.target_contact
     if (cad?.target_contact === 'contacto_1') {
-      row.set('Nombre contacto1', val(cad?.nombre_contacto_1));
-      row.set('Contacto1 con', val(cad?.contacto_1_con));
-      row.set('Contacto1 por', val(cad?.contacto_1_por));
+      mapping['Nombre contacto1'] = val(cad?.nombre_contacto_1);
+      mapping['Contacto1 con'] = val(cad?.contacto_1_con);
+      mapping['Contacto1 por'] = val(cad?.contacto_1_por);
     } else if (cad?.target_contact === 'contacto_2') {
-      row.set('Nombre contacto2', val(cad?.nombre_contacto_2));
-      row.set('Contacto2 con', val(cad?.contacto_2_con));
-      row.set('Contacto2 por', val(cad?.contacto_2_por));
+      mapping['Nombre contacto2'] = val(cad?.nombre_contacto_2);
+      mapping['Contacto2 con'] = val(cad?.contacto_2_con);
+      mapping['Contacto2 por'] = val(cad?.contacto_2_por);
     } else if (cad?.target_contact === 'contacto_3') {
-      row.set('Nombre contacto3', val(cad?.nombre_contacto_3));
-      row.set('Contacto3 con', val(cad?.contacto_3_con));
-      row.set('Contacto3 por', val(cad?.contacto_3_por));
+      mapping['Nombre contacto3'] = val(cad?.nombre_contacto_3);
+      mapping['Contacto3 con'] = val(cad?.contacto_3_con);
+      mapping['Contacto3 por'] = val(cad?.contacto_3_por);
+    }
+
+    // Aplicar los cambios a la fila de forma segura (solo si la columna existe)
+    const sheetHeaders = new Set(sheet.headerValues);
+    for (const [key, value] of Object.entries(mapping)) {
+      if (sheetHeaders.has(key)) {
+        row.set(key, value);
+      } else {
+        this.logger.debug(`[updateRowByPhone] Saltando columna inexistente: ${key}`);
+      }
     }
 
     await row.save();
