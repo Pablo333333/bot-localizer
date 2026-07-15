@@ -67,21 +67,12 @@ export class SheetsService implements OnModuleInit {
     state: string;
     summary?: string;
   }): Promise<void> {
-    const sheet: GoogleSpreadsheetWorksheet = this.doc.sheetsByTitle['reC26'] || this.doc.sheetsByIndex[0];
+    const sheet: GoogleSpreadsheetWorksheet = this.doc.sheetsByTitle['Localizados'] || this.doc.sheetsByIndex[0];
     await sheet.loadHeaderRow();
 
     const knownHeaders = new Set(sheet.headerValues);
 
     const mapping: Record<string, string> = {
-      'Marca temporal':             new Date().toLocaleString('es-ES', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      }).replace(',', ''),
       'Llamado por':               'Localisto (Lead Inbound)',
       'Teléfono contacto1':        data.from,
       'Nombre contacto1':          data.entities.nombre_usuario || '',
@@ -105,7 +96,7 @@ export class SheetsService implements OnModuleInit {
   }
 
   async addRow(data: RetellPayload, publicadoWP: string = 'NO'): Promise<void> {
-    const sheet: GoogleSpreadsheetWorksheet = this.doc.sheetsByTitle['reC26'] || this.doc.sheetsByIndex[0];
+    const sheet: GoogleSpreadsheetWorksheet = this.doc.sheetsByTitle['Localizados'] || this.doc.sheetsByIndex[0];
     await sheet.loadHeaderRow();
 
     const knownHeaders = new Set(sheet.headerValues);
@@ -161,15 +152,6 @@ export class SheetsService implements OnModuleInit {
     };
 
     const mapping: Record<string, string> = {
-      'Marca temporal':             new Date().toLocaleString('es-ES', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      }).replace(',', ''),
       'Llamado por':               'Localisto (IA)',
       'Propietario contactado?':    data.call_analysis?.call_successful ? new Date().toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'NO',
       'Publicado Popalicer?':      forcePublicadoPopalicer(publicadoWP),
@@ -223,13 +205,13 @@ export class SheetsService implements OnModuleInit {
       }
     }
 
-    this.logger.debug(`Escribiendo en reC26 para call_id ${data.call_id}`);
+    this.logger.debug(`Escribiendo en Localizados para call_id ${data.call_id}`);
     await sheet.addRow(rowValue as any);
-    this.logger.log(`Fila agregada correctamente en reC26 para call_id: ${data.call_id}`);
+    this.logger.log(`Fila agregada correctamente en Localizados para call_id: ${data.call_id}`);
   }
 
   async updateRowByPhone(phoneCalled: string, data: RetellPayload, publicadoWP: string = 'NO'): Promise<void> {
-    const sheet = this.doc.sheetsByTitle['reC26'] || this.doc.sheetsByIndex[0];
+    const sheet = this.doc.sheetsByTitle['Localizados'] || this.doc.sheetsByIndex[0];
     const rows = await sheet.getRows();
 
     // Buscar la fila correcta comparando el parámetro phoneCalled con el valor de las columnas
@@ -302,6 +284,10 @@ export class SheetsService implements OnModuleInit {
     };
 
     // Mapeo general de campos del inmueble
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const formattedDateTime = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+
     const mapping: Record<string, string> = {
       'Tipo de inmueble':          val(cad?.tipo_inmueble),
       'Disponibilidad del local':  val(cad?.disponibilidad),
@@ -345,14 +331,10 @@ export class SheetsService implements OnModuleInit {
       'Email propietario-gestor':  val(cad?.email_propietario_gestor || cad?.email),
       'Email Avisos':              val(cad?.email_avisos),
       'Publicacion Autorizada?':   forceYesNo(cad?.publicacion_autorizada),
-      'Marca temporal':            new Date().toLocaleString('es-ES', {
-                                    day: '2-digit', month: '2-digit', year: 'numeric',
-                                    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
-                                  }).replace(',', ''),
-      'Llamado por':               'Localisto',
       'Propietario contactado?':    data.call_analysis?.call_successful ? new Date().toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'NO',
       'Publicado Popalicer?':      forcePublicadoPopalicer(publicadoWP),
-      'Actualizado el':            new Date().toISOString(),
+      'Llamado FP':                'SI',
+      'Fecha actualización':       formattedDateTime,
     };
 
     // Lógica de asignación para los bloques de contactos según cad?.target_contact
@@ -381,11 +363,11 @@ export class SheetsService implements OnModuleInit {
     }
 
     await row.save();
-    this.logger.log(`Fila actualizada correctamente en reC26 para el teléfono: ${phoneCalled}`);
+    this.logger.log(`Fila actualizada correctamente en Localizados para el teléfono: ${phoneCalled}`);
   }
 
   async testUpdateAsNewRow(data: RetellPayload, publicadoWP: string = 'NO'): Promise<void> {
-    const sheet: GoogleSpreadsheetWorksheet = this.doc.sheetsByTitle['reC26'] || this.doc.sheetsByIndex[0];
+    const sheet: GoogleSpreadsheetWorksheet = this.doc.sheetsByTitle['Localizados'] || this.doc.sheetsByIndex[0];
     await sheet.loadHeaderRow();
 
     const knownHeaders = new Set(sheet.headerValues);
@@ -441,15 +423,6 @@ export class SheetsService implements OnModuleInit {
     };
 
     const mapping: Record<string, string> = {
-      'Marca temporal':             new Date().toLocaleString('es-ES', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      }).replace(',', ''),
       'Llamado por':               'Localisto (TEST)',
       'Tipo de inmueble':          val(cad?.tipo_inmueble),
       'Disponibilidad del local':  val(cad?.disponibilidad),
@@ -492,7 +465,7 @@ export class SheetsService implements OnModuleInit {
       'Ilocalizable':              val(cad?.Ilocalizable),
       'Email propietario-gestor':  val(cad?.email_propietario_gestor || cad?.email),
       'Email Avisos':              val(cad?.email_avisos),
-      'Actualizado el':            new Date().toISOString(),
+      'Fecha actualización':       new Date().toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).replace(',', ''),
       'Teléfonos de contacto':     val(data.from_number || data.to_number),
     };
 
@@ -519,7 +492,7 @@ export class SheetsService implements OnModuleInit {
     }
 
     await sheet.addRow(rowValue as any);
-    this.logger.log(`Fila de TEST agregada correctamente en reC26 para call_id: ${data.call_id}`);
+    this.logger.log(`Fila de TEST agregada correctamente en Localizados para call_id: ${data.call_id}`);
   }
 }
 
