@@ -12,7 +12,6 @@ const COL_FECHA_ACTUALIZACION = 'Fecha actualización';
 const COL_TIPO_INMUEBLE = 'Tipo de inmueble';
 const COL_DISPONIBILIDAD = 'Disponibilidad del local';
 
-/** Valores que marcan la fila como ya procesada (no volver a llamar). */
 const MARKED_STATUSES = new Set(['SI', 'SÍ', 'INTENTADO', 'YES', 'TRUE']);
 
 const COL_C1_CON = 'Contacto1 con';
@@ -24,7 +23,7 @@ const COL_C3_TEL = 'Telefono3';
 
 const MAX_DAILY_CALLS = 5;
 const DELAY_BETWEEN_CALLS_MS = 90_000;
-const ANTI_REPEAT_MS = 12 * 60 * 60 * 1000; // 12 horas
+const ANTI_REPEAT_MS = 12 * 60 * 60 * 1000;
 const TIMEZONE = 'Europe/Madrid';
 const BUSINESS_START_MINUTES = 10 * 60;
 const BUSINESS_END_MINUTES = 20 * 60 + 30;
@@ -37,11 +36,9 @@ export class OutboundService {
   private readonly fromNumber: string;
   private isRunning = false;
 
-  /** Teléfonos ya intentados hoy (Europe/Madrid). */
+  /** Fuente de verdad del límite diario: intentos de esta sesión/día Madrid. */
   private readonly attemptedPhonesToday = new Set<string>();
-  /** Teléfono → timestamp del último intento (anti-repetición 12h). */
   private readonly lastAttemptByPhone = new Map<string, number>();
-  /** Contador de INTENTOS (disparos a Retell) del día Madrid. */
   private dailyAttemptCount = 0;
   private dailyAttemptDateKey = '';
 
@@ -59,7 +56,9 @@ export class OutboundService {
   @Cron(CronExpression.EVERY_5_MINUTES)
   async checkPendingCalls(): Promise<void> {
     if (this.isRunning) {
-      this.logger.log('[OutboundService] Ejecución anterior aún en curso. Se omite este ciclo.');
+      this.logger.log(
+        '[OutboundService] Descartado ciclo: ejecución anterior aún en curso.',
+      );
       return;
     }
 
@@ -72,11 +71,14 @@ export class OutboundService {
   }
 
   private async processPendingCalls(): Promise<void> {
-    this.logger.log('Iniciando control de llamadas salientes...');
+    const madridNow = this.getMadridParts(new Date());
+    this.logger.log(
+      `[OutboundService] Inicio ciclo. Hora Madrid: ${madridNow.day}/${madridNow.month}/${madridNow.year} ${String(madridNow.hour).padStart(2, '0')}:${String(madridNow.minute).padStart(2, '0')} (weekday=${madridNow.weekday})`,
+    );
 
     if (!this.isWithinBusinessHours()) {
       this.logger.log(
-        `[OutboundService] Fuera de horario laboral (L-V 10:00-20:30 ${TIMEZONE}). No se lanzan llamadas.`,
+        `[OutboundService] Descartado ciclo: Fuera de horario laboral (L-V 10:00-20:30 ${TIMEZONE}).`,
       );
       return;
     }
@@ -88,74 +90,102 @@ export class OutboundService {
 
     if (!sheet) {
       this.logger.error(
-        `[OutboundService] No se encontró la pestaña "${SHEET_NAME}". Abortando.`,
+        `[OutboundService] Descartado ciclo: no existe la pestaña "${SHEET_NAME}".`,
       );
       return;
     }
 
     await sheet.loadHeaderRow();
-    const rows = await sheet.getRows();
+    const headers = sheet.headerValues || [];
+    this.logger.log(
+      `[OutboundService] Cabeceras clave → Llamado FP: ${headers.includes(COL_LLAMADO_FP) ? 'OK' : 'FALTA'} | Call ID: ${headers.includes(COL_CALL_ID) ? 'OK' : 'FALTA'} | Marca temporal: ${headers.includes(COL_MARCA_TEMPORAL) ? 'OK' : 'FALTA'}`,
+    );
 
-    // Límite diario = INTENTOS (memoria + filas marcadas hoy en Sheets)
-    const sheetAttemptsToday = this.countAttemptsTodayFromSheet(rows);
-    const attemptsToday = Math.max(this.dailyAttemptCount, sheetAttemptsToday);
+    const rows = await sheet.getRows();
+    this.logger.log(`[OutboundService] Filas leídas en "${SHEET_NAME}": ${rows.length}`);
+
+    // Límite diario: SOLO memoria (no bloquear por formatos raros de Fecha actualización)
+    const attemptsToday = this.dailyAttemptCount;
+    this.logger.log(
+      `[OutboundService] Cupo diario (memoria): ${attemptsToday}/${MAX_DAILY_CALLS}. Set teléfonos hoy: ${this.attemptedPhonesToday.size}`,
+    );
 
     if (attemptsToday >= MAX_DAILY_CALLS) {
-      this.dailyAttemptCount = Math.max(this.dailyAttemptCount, sheetAttemptsToday);
       this.logger.log(
-        `[OutboundService] Límite diario de INTENTOS alcanzado (${attemptsToday}/${MAX_DAILY_CALLS}). Cron detenido hasta mañana.`,
+        `[OutboundService] Descartado ciclo: Límite alcanzado (${attemptsToday}/${MAX_DAILY_CALLS}).`,
       );
       return;
     }
 
     let remainingToday = MAX_DAILY_CALLS - attemptsToday;
-    this.logger.log(
-      `Cupo diario de intentos: ${attemptsToday}/${MAX_DAILY_CALLS}. Disponibles: ${remainingToday}`,
-    );
 
-    const pendingRows = rows
-      .filter((row) => this.isPendingRow(row))
-      .sort((a, b) => {
-        const dateA = this.parseMarcaTemporal(a.get(COL_MARCA_TEMPORAL)?.toString());
-        const dateB = this.parseMarcaTemporal(b.get(COL_MARCA_TEMPORAL)?.toString());
-        return dateA - dateB;
+    // Clasificar filas con motivo explícito de descarte
+    type Candidate = { row: any; rowNumber: number; phone: string; phoneKey: string; marcaTs: number };
+    const candidates: Candidate[] = [];
+    let discardedCount = 0;
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNumber = i + 2; // fila 1 = headers
+      const reason = this.getDiscardReason(row, rowNumber);
+
+      if (reason) {
+        discardedCount++;
+        this.logger.log(
+          `[OutboundService] Fila ${rowNumber} descartada: ${reason}`,
+        );
+        continue;
+      }
+
+      const rawPhone = this.getBestPhone(row)!;
+      const phone = this.formatE164Spain(rawPhone);
+      candidates.push({
+        row,
+        rowNumber,
+        phone,
+        phoneKey: this.normalizePhoneKey(phone),
+        marcaTs: this.parseMarcaTemporal(row.get(COL_MARCA_TEMPORAL)?.toString()),
       });
+    }
+
+    candidates.sort((a, b) => a.marcaTs - b.marcaTs);
 
     this.logger.log(
-      `[OutboundService] ${pendingRows.length} filas pendientes en "${SHEET_NAME}" (orden Marca temporal ASC).`,
+      `[OutboundService] Resumen selección: ${candidates.length} candidatas | ${discardedCount} descartadas | cupo restante ${remainingToday}`,
     );
+
+    if (candidates.length === 0) {
+      this.logger.log(
+        '[OutboundService] Descartado ciclo: ninguna fila candidata tras filtros (ver logs de descarte por fila).',
+      );
+      return;
+    }
 
     let callsLaunchedThisRun = 0;
 
-    for (const row of pendingRows) {
-      if (remainingToday <= 0) break;
+    for (const candidate of candidates) {
+      if (remainingToday <= 0) {
+        this.logger.log(
+          `[OutboundService] Fila ${candidate.rowNumber} descartada: Límite alcanzado (${this.dailyAttemptCount}/${MAX_DAILY_CALLS}).`,
+        );
+        break;
+      }
 
-      const rawPhone = this.getBestPhone(row);
-      if (!rawPhone) continue;
+      const { row, rowNumber, phone, phoneKey } = candidate;
 
-      const phone = this.formatE164Spain(rawPhone);
-      const phoneKey = this.normalizePhoneKey(phone);
-
-      // Anti-repetición en memoria (hoy + últimas 12h)
+      // Re-check memoria (por si otra fila del mismo lote ya usó el número)
       if (this.attemptedPhonesToday.has(phoneKey)) {
-        this.logger.log(`[OutboundService] Skip ${phone}: ya intentado hoy (memoria).`);
+        this.logger.log(
+          `[OutboundService] Fila ${rowNumber} descartada: Teléfono repetido hoy (memoria) → ${phone}`,
+        );
         continue;
       }
+
       const lastTs = this.lastAttemptByPhone.get(phoneKey);
       if (lastTs && Date.now() - lastTs < ANTI_REPEAT_MS) {
         this.logger.log(
-          `[OutboundService] Skip ${phone}: intentado en las últimas 12h (memoria).`,
+          `[OutboundService] Fila ${rowNumber} descartada: Teléfono repetido en últimas 12h (memoria) → ${phone}`,
         );
-        continue;
-      }
-
-      // Anti-repetición desde Sheets (Fecha actualización < 12h)
-      if (this.wasAttemptedInLast12Hours(row)) {
-        this.logger.log(
-          `[OutboundService] Skip ${phone}: Fecha actualización dentro de las últimas 12h.`,
-        );
-        // Sincronizar memoria para no re-evaluar
-        this.rememberAttempt(phoneKey);
         continue;
       }
 
@@ -172,27 +202,26 @@ export class OutboundService {
 
           if (!this.isWithinBusinessHours()) {
             this.logger.log(
-              '[OutboundService] Se salió del horario laboral durante el retardo. Deteniendo lote.',
+              `[OutboundService] Fila ${rowNumber} descartada: Fuera de horario (tras retardo). Deteniendo lote.`,
             );
             break;
           }
         }
 
-        // 1) MARCAR INTENTO EN SHEETS ANTES de pegarle a Retell (anti-bucle crítico)
+        this.logger.log(
+          `[OutboundService] Fila ${rowNumber} ACEPTADA → marcando Llamado FP=SI y disparando Retell (${phone})`,
+        );
+
+        // Marcar ANTES de Retell
         row.set(COL_LLAMADO_FP, 'SI');
         row.set(COL_FECHA_ACTUALIZACION, nowLabel);
         await row.save();
-        this.logger.log(
-          `[OutboundService] Fila marcada Llamado FP=SI ANTES de Retell → ${phone}`,
-        );
 
-        // 2) Contar intento + memoria (aunque Retell falle después)
         this.rememberAttempt(phoneKey);
         this.dailyAttemptCount++;
         remainingToday--;
         callsLaunchedThisRun++;
 
-        // 3) Disparar llamada a Retell
         const call = await this.retell.call.createPhoneCall({
           from_number: this.fromNumber,
           to_number: phone,
@@ -207,29 +236,109 @@ export class OutboundService {
         await row.save();
 
         this.logger.log(
-          `Intento disparado — número: ${phone} | call_id: ${call.call_id} | intentos hoy: ${this.dailyAttemptCount}/${MAX_DAILY_CALLS}`,
+          `[OutboundService] Fila ${rowNumber} OK — call_id=${call.call_id} | intentos hoy=${this.dailyAttemptCount}/${MAX_DAILY_CALLS}`,
         );
       } catch (err) {
-        // La fila YA quedó marcada SI + Fecha actualización; no se reintentará
         this.logger.error(
-          `Error al llamar al número ${phone} (fila ya marcada, no se reintentará): ${(err as Error).message}`,
+          `[OutboundService] Fila ${rowNumber} error Retell (ya marcada SI, no se reintenta): ${(err as Error).message}`,
         );
       }
     }
 
     this.logger.log(
-      `[OutboundService] Ciclo terminado. Intentos en este run: ${callsLaunchedThisRun}. Total día: ${this.dailyAttemptCount}/${MAX_DAILY_CALLS}`,
+      `[OutboundService] Ciclo terminado. Intentos en este run: ${callsLaunchedThisRun}. Total día (memoria): ${this.dailyAttemptCount}/${MAX_DAILY_CALLS}`,
     );
   }
 
-  private isPendingRow(row: any): boolean {
-    const llamadoFp = row.get(COL_LLAMADO_FP)?.toString().trim().toUpperCase() || '';
-    if (MARKED_STATUSES.has(llamadoFp)) return false;
+  /**
+   * Devuelve el motivo de descarte, o null si la fila es candidata.
+   */
+  private getDiscardReason(row: any, rowNumber: number): string | null {
+    const llamadoFpRaw = row.get(COL_LLAMADO_FP)?.toString().trim() || '';
+    const llamadoFp = llamadoFpRaw.toUpperCase();
+    if (MARKED_STATUSES.has(llamadoFp)) {
+      return `Llamado FP ya marcado ("${llamadoFpRaw}")`;
+    }
 
     const callId = row.get(COL_CALL_ID)?.toString().trim();
-    if (callId) return false;
+    if (callId) {
+      return `Call ID ya presente ("${callId}")`;
+    }
 
-    return true;
+    // Anti-repetición 12h solo si parseamos bien la fecha; si el formato es desconocido, NO bloqueamos
+    const fechaRaw = row.get(COL_FECHA_ACTUALIZACION)?.toString().trim() || '';
+    if (fechaRaw) {
+      const ts = this.parseFlexibleDateTime(fechaRaw);
+      if (ts !== null && Date.now() - ts < ANTI_REPEAT_MS) {
+        return `Fecha actualización reciente (<12h): "${fechaRaw}"`;
+      }
+      if (ts === null) {
+        this.logger.debug(
+          `[OutboundService] Fila ${rowNumber}: Fecha actualización con formato no parseable ("${fechaRaw}"); se ignora para anti-12h.`,
+        );
+      }
+    }
+
+    const phoneResult = this.getBestPhoneWithReason(row);
+    if (!phoneResult.phone) {
+      return phoneResult.reason || 'Sin teléfono válido';
+    }
+
+    const phone = this.formatE164Spain(phoneResult.phone);
+    const phoneKey = this.normalizePhoneKey(phone);
+
+    if (this.attemptedPhonesToday.has(phoneKey)) {
+      return `Teléfono repetido hoy (memoria) → ${phone}`;
+    }
+
+    const lastTs = this.lastAttemptByPhone.get(phoneKey);
+    if (lastTs && Date.now() - lastTs < ANTI_REPEAT_MS) {
+      return `Teléfono repetido en últimas 12h (memoria) → ${phone}`;
+    }
+
+    return null;
+  }
+
+  private getBestPhoneWithReason(row: any): { phone: string | null; reason?: string } {
+    const contacts = [
+      {
+        label: 'contacto1',
+        role: row.get(COL_C1_CON)?.toString().trim(),
+        phone: row.get(COL_C1_TEL)?.toString().trim(),
+      },
+      {
+        label: 'contacto2',
+        role: row.get(COL_C2_CON)?.toString().trim(),
+        phone: row.get(COL_C2_TEL)?.toString().trim(),
+      },
+      {
+        label: 'contacto3',
+        role: row.get(COL_C3_CON)?.toString().trim(),
+        phone: row.get(COL_C3_TEL)?.toString().trim(),
+      },
+    ];
+
+    const validContacts = contacts.filter((c) => c.phone);
+    if (validContacts.length === 0) {
+      return { phone: null, reason: 'Sin teléfono en Contacto1/2/3' };
+    }
+
+    const particular = validContacts.find((c) => c.role === 'Particular');
+    if (particular) return { phone: particular.phone };
+
+    const indeterminado = validContacts.find(
+      (c) => !c.role || c.role === 'Indeterminado',
+    );
+    if (indeterminado) return { phone: indeterminado.phone };
+
+    if (validContacts.every((c) => c.role === 'Profesional')) {
+      return {
+        phone: null,
+        reason: `Solo contactos Profesional (${validContacts.map((c) => c.label).join(', ')})`,
+      };
+    }
+
+    return { phone: validContacts[0].phone };
   }
 
   private rememberAttempt(phoneKey: string): void {
@@ -242,7 +351,7 @@ export class OutboundService {
     const todayKey = this.getMadridDateKey(new Date());
     if (this.dailyAttemptDateKey !== todayKey) {
       this.logger.log(
-        `[OutboundService] Nuevo día Madrid (${todayKey}). Reset contadores diarios en memoria.`,
+        `[OutboundService] Nuevo día Madrid (${todayKey}). Reset contador/Set en memoria.`,
       );
       this.dailyAttemptDateKey = todayKey;
       this.dailyAttemptCount = 0;
@@ -252,64 +361,61 @@ export class OutboundService {
 
   private getMadridDateKey(date: Date): string {
     const p = this.getMadridParts(date);
-    return `${p.year}-${p.month}-${p.day}`;
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    return `${p.year}-${pad(p.month)}-${pad(p.day)}`;
   }
 
   private normalizePhoneKey(phone: string): string {
     return phone.replace(/\D/g, '');
   }
 
-  private wasAttemptedInLast12Hours(row: any): boolean {
-    const fecha = row.get(COL_FECHA_ACTUALIZACION)?.toString().trim();
-    if (!fecha) return false;
-    const ts = this.parseSheetDateTime(fecha);
-    if (ts === null) return false;
-    return Date.now() - ts < ANTI_REPEAT_MS;
-  }
-
   /**
-   * Cuenta INTENTOS de hoy en Sheets: filas con Llamado FP marcado
-   * y Fecha actualización del día Madrid actual.
+   * Parsea fechas flexibles: DD/MM/YYYY, YYYY/MM/DD, YYYY-MM-DD, con o sin hora.
+   * Devuelve timestamp o null si no se puede interpretar (NO bloquea el ciclo).
    */
-  private countAttemptsTodayFromSheet(rows: any[]): number {
-    const todayKey = this.getMadridDateKey(new Date());
+  private parseFlexibleDateTime(raw: string): number | null {
+    const cleaned = raw.trim().replace(',', ' ').replace(/\s+/g, ' ');
 
-    return rows.filter((row) => {
-      const llamadoFp = row.get(COL_LLAMADO_FP)?.toString().trim().toUpperCase() || '';
-      const callId = row.get(COL_CALL_ID)?.toString().trim();
-      const marked = MARKED_STATUSES.has(llamadoFp) || !!callId;
-      if (!marked) return false;
+    // YYYY-MM-DD[ HH:mm[:ss]] o YYYY/MM/DD[...]
+    let match = cleaned.match(
+      /^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/,
+    );
+    if (match) {
+      const [, y, m, d, hh = '0', mm = '0', ss = '0'] = match;
+      return this.toLocalTs(+y, +m, +d, +hh, +mm, +ss);
+    }
 
-      const fecha = row.get(COL_FECHA_ACTUALIZACION)?.toString().trim() || '';
-      if (!fecha) return false;
+    // DD/MM/YYYY[ HH:mm[:ss]] o DD-MM-YYYY
+    match = cleaned.match(
+      /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/,
+    );
+    if (match) {
+      const [, d, m, y, hh = '0', mm = '0', ss = '0'] = match;
+      return this.toLocalTs(+y, +m, +d, +hh, +mm, +ss);
+    }
 
-      const datePart = fecha.split(/\s+/)[0];
-      const match = datePart.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-      if (!match) return false;
+    // Serial Excel / número (días desde 1899-12-30)
+    if (/^\d+(\.\d+)?$/.test(cleaned)) {
+      const serial = Number(cleaned);
+      if (serial > 20000 && serial < 100000) {
+        const excelEpoch = Date.UTC(1899, 11, 30);
+        return excelEpoch + serial * 86400000;
+      }
+    }
 
-      const key = `${Number(match[3])}-${Number(match[2])}-${Number(match[1])}`;
-      return key === todayKey;
-    }).length;
+    const fallback = Date.parse(cleaned);
+    return Number.isNaN(fallback) ? null : fallback;
   }
 
-  private parseSheetDateTime(raw: string): number | null {
-    const cleaned = raw.trim().replace(',', '');
-    const match = cleaned.match(
-      /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/,
-    );
-    if (!match) return null;
-
-    const [, d, m, y, hh = '0', mm = '0', ss = '0'] = match;
-    // Interpretar como hora Madrid → UTC aproximado vía Date con offset no fiable;
-    // usamos componentes locales equivalentes (suficiente para ventana 12h).
-    const ts = new Date(
-      Number(y),
-      Number(m) - 1,
-      Number(d),
-      Number(hh),
-      Number(mm),
-      Number(ss),
-    ).getTime();
+  private toLocalTs(
+    y: number,
+    m: number,
+    d: number,
+    hh: number,
+    mm: number,
+    ss: number,
+  ): number | null {
+    const ts = new Date(y, m - 1, d, hh, mm, ss).getTime();
     return Number.isNaN(ts) ? null : ts;
   }
 
@@ -364,24 +470,8 @@ export class OutboundService {
 
   private parseMarcaTemporal(raw: string | undefined | null): number {
     if (!raw) return Number.POSITIVE_INFINITY;
-    const cleaned = raw.trim().replace(',', '');
-    const match = cleaned.match(
-      /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/,
-    );
-    if (match) {
-      const [, d, m, y, hh = '0', mm = '0', ss = '0'] = match;
-      const ts = new Date(
-        Number(y),
-        Number(m) - 1,
-        Number(d),
-        Number(hh),
-        Number(mm),
-        Number(ss),
-      ).getTime();
-      return Number.isNaN(ts) ? Number.POSITIVE_INFINITY : ts;
-    }
-    const fallback = Date.parse(cleaned);
-    return Number.isNaN(fallback) ? Number.POSITIVE_INFINITY : fallback;
+    const ts = this.parseFlexibleDateTime(raw);
+    return ts ?? Number.POSITIVE_INFINITY;
   }
 
   private formatMadridDateTime(date: Date): string {
@@ -409,34 +499,6 @@ export class OutboundService {
   }
 
   private getBestPhone(row: any): string | null {
-    const contacts = [
-      {
-        role: row.get(COL_C1_CON)?.toString().trim(),
-        phone: row.get(COL_C1_TEL)?.toString().trim(),
-      },
-      {
-        role: row.get(COL_C2_CON)?.toString().trim(),
-        phone: row.get(COL_C2_TEL)?.toString().trim(),
-      },
-      {
-        role: row.get(COL_C3_CON)?.toString().trim(),
-        phone: row.get(COL_C3_TEL)?.toString().trim(),
-      },
-    ];
-
-    const validContacts = contacts.filter((c) => c.phone);
-    if (validContacts.length === 0) return null;
-
-    const particular = validContacts.find((c) => c.role === 'Particular');
-    if (particular) return particular.phone;
-
-    const indeterminado = validContacts.find(
-      (c) => !c.role || c.role === 'Indeterminado',
-    );
-    if (indeterminado) return indeterminado.phone;
-
-    if (validContacts.every((c) => c.role === 'Profesional')) return null;
-
-    return validContacts[0].phone;
+    return this.getBestPhoneWithReason(row).phone;
   }
 }
