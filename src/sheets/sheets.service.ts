@@ -211,20 +211,39 @@ export class SheetsService implements OnModuleInit {
   }
 
   async updateRowByPhone(phoneCalled: string, data: RetellPayload, publicadoWP: string = 'NO'): Promise<void> {
-    const sheet = this.doc.sheetsByTitle['Localizados'] || this.doc.sheetsByIndex[0];
+    const sheet = this.doc.sheetsByTitle['Localizados'];
+    if (!sheet) {
+      this.logger.error('[updateRowByPhone] Pestaña "Localizados" no encontrada.');
+      return;
+    }
+
+    await sheet.loadHeaderRow();
     const rows = await sheet.getRows();
 
-    // Buscar la fila correcta comparando el parámetro phoneCalled con el valor de las columnas
-    const row = rows.find(r => {
-      const tel1 = r.get('Teléfonos de contacto');
-      const tel2 = r.get('Telefono2');
-      const tel3 = r.get('Telefono3');
-      return tel1 === phoneCalled || tel2 === phoneCalled || tel3 === phoneCalled;
+    const normalizePhone = (p: any): string =>
+      String(p || '').replace(/\D/g, '').replace(/^34/, '');
+
+    const target = normalizePhone(phoneCalled);
+
+    // Buscar por dígitos normalizados (tolera +34 / espacios / formatos distintos)
+    const row = rows.find((r) => {
+      const tels = [
+        r.get('Teléfonos de contacto'),
+        r.get('Telefono2'),
+        r.get('Telefono3'),
+      ].map(normalizePhone);
+      return target !== '' && tels.includes(target);
     });
 
     if (!row) {
       this.logger.warn(`No se encontró ninguna fila para el teléfono: ${phoneCalled}`);
       return;
+    }
+
+    // Refuerzo anti-bucle: siempre marcar Llamado FP aunque el resto del mapeo falle después
+    row.set('Llamado FP', 'SI');
+    if (data.call_id) {
+      row.set('Call ID', data.call_id);
     }
 
     const cad = data.call_analysis?.custom_analysis_data;
