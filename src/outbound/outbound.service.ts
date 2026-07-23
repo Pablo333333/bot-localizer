@@ -5,7 +5,7 @@ import Retell from 'retell-sdk';
 import { SheetsService } from '../sheets/sheets.service';
 
 const SHEET_NAME = 'Localizados';
-const COL_LLAMADO_FP = 'Llamado FP';
+const COL_LLAMADO = 'Llamado';
 const COL_CALL_ID = 'Call ID';
 const COL_MARCA_TEMPORAL = 'Marca temporal';
 const COL_FECHA_ACTUALIZACION = 'Fecha actualización';
@@ -14,11 +14,12 @@ const COL_DISPONIBILIDAD = 'Disponibilidad del local';
 
 const MARKED_STATUSES = new Set(['SI', 'SÍ', 'INTENTADO', 'YES', 'TRUE']);
 
-const COL_C1_CON = 'Contacto1 con';
-const COL_C1_TEL = 'Teléfonos de contacto';
-const COL_C2_CON = 'Contacto2 con';
+// Teléfonos y roles exactos de la pestaña Localizados
+const COL_C1_ROL = 'Contacto1 por';
+const COL_C1_TEL = 'Telefono1';
+const COL_C2_ROL = 'Contacto2 por';
 const COL_C2_TEL = 'Telefono2';
-const COL_C3_CON = 'Contacto3 con';
+const COL_C3_ROL = 'Contacto3 por';
 const COL_C3_TEL = 'Telefono3';
 
 const MAX_DAILY_CALLS = 5;
@@ -98,7 +99,7 @@ export class OutboundService {
     await sheet.loadHeaderRow();
     const headers = sheet.headerValues || [];
     this.logger.log(
-      `[OutboundService] Cabeceras clave → Llamado FP: ${headers.includes(COL_LLAMADO_FP) ? 'OK' : 'FALTA'} | Call ID: ${headers.includes(COL_CALL_ID) ? 'OK' : 'FALTA'} | Marca temporal: ${headers.includes(COL_MARCA_TEMPORAL) ? 'OK' : 'FALTA'}`,
+      `[OutboundService] Cabeceras clave → Llamado: ${headers.includes(COL_LLAMADO) ? 'OK' : 'FALTA'} | Telefono1: ${headers.includes(COL_C1_TEL) ? 'OK' : 'FALTA'} | Contacto1 por: ${headers.includes(COL_C1_ROL) ? 'OK' : 'FALTA'} | Call ID: ${headers.includes(COL_CALL_ID) ? 'OK' : 'FALTA'} | Marca temporal: ${headers.includes(COL_MARCA_TEMPORAL) ? 'OK' : 'FALTA'}`,
     );
 
     const rows = await sheet.getRows();
@@ -209,11 +210,11 @@ export class OutboundService {
         }
 
         this.logger.log(
-          `[OutboundService] Fila ${rowNumber} ACEPTADA → marcando Llamado FP=SI y disparando Retell (${phone})`,
+          `[OutboundService] Fila ${rowNumber} ACEPTADA → marcando Llamado=SI y disparando Retell (${phone})`,
         );
 
         // Marcar ANTES de Retell
-        row.set(COL_LLAMADO_FP, 'SI');
+        row.set(COL_LLAMADO, 'SI');
         row.set(COL_FECHA_ACTUALIZACION, nowLabel);
         await row.save();
 
@@ -254,10 +255,10 @@ export class OutboundService {
    * Devuelve el motivo de descarte, o null si la fila es candidata.
    */
   private getDiscardReason(row: any, rowNumber: number): string | null {
-    const llamadoFpRaw = row.get(COL_LLAMADO_FP)?.toString().trim() || '';
-    const llamadoFp = llamadoFpRaw.toUpperCase();
-    if (MARKED_STATUSES.has(llamadoFp)) {
-      return `Llamado FP ya marcado ("${llamadoFpRaw}")`;
+    const llamadoRaw = row.get(COL_LLAMADO)?.toString().trim() || '';
+    const llamado = llamadoRaw.toUpperCase();
+    if (MARKED_STATUSES.has(llamado)) {
+      return `Llamado ya marcado ("${llamadoRaw}")`;
     }
 
     const callId = row.get(COL_CALL_ID)?.toString().trim();
@@ -302,39 +303,49 @@ export class OutboundService {
   private getBestPhoneWithReason(row: any): { phone: string | null; reason?: string } {
     const contacts = [
       {
-        label: 'contacto1',
-        role: row.get(COL_C1_CON)?.toString().trim(),
+        label: 'Telefono1/Contacto1 por',
+        role: row.get(COL_C1_ROL)?.toString().trim(),
         phone: row.get(COL_C1_TEL)?.toString().trim(),
       },
       {
-        label: 'contacto2',
-        role: row.get(COL_C2_CON)?.toString().trim(),
+        label: 'Telefono2/Contacto2 por',
+        role: row.get(COL_C2_ROL)?.toString().trim(),
         phone: row.get(COL_C2_TEL)?.toString().trim(),
       },
       {
-        label: 'contacto3',
-        role: row.get(COL_C3_CON)?.toString().trim(),
+        label: 'Telefono3/Contacto3 por',
+        role: row.get(COL_C3_ROL)?.toString().trim(),
         phone: row.get(COL_C3_TEL)?.toString().trim(),
       },
     ];
 
     const validContacts = contacts.filter((c) => c.phone);
     if (validContacts.length === 0) {
-      return { phone: null, reason: 'Sin teléfono en Contacto1/2/3' };
+      return { phone: null, reason: 'Sin teléfono en Telefono1/Telefono2/Telefono3' };
     }
 
-    const particular = validContacts.find((c) => c.role === 'Particular');
+    // Prioridad: Particular → Indeterminado/vacío → omitir si todos Profesional
+    const particular = validContacts.find(
+      (c) => (c.role || '').toLowerCase() === 'particular',
+    );
     if (particular) return { phone: particular.phone };
 
-    const indeterminado = validContacts.find(
-      (c) => !c.role || c.role === 'Indeterminado',
-    );
+    const indeterminado = validContacts.find((c) => {
+      const role = (c.role || '').trim().toLowerCase();
+      return !role || role === 'indeterminado';
+    });
     if (indeterminado) return { phone: indeterminado.phone };
 
-    if (validContacts.every((c) => c.role === 'Profesional')) {
+    if (
+      validContacts.every(
+        (c) => (c.role || '').trim().toLowerCase() === 'profesional',
+      )
+    ) {
       return {
         phone: null,
-        reason: `Solo contactos Profesional (${validContacts.map((c) => c.label).join(', ')})`,
+        reason: `Solo contactos Profesional (${validContacts
+          .map((c) => `${c.label}="${c.role}"`)
+          .join(', ')})`,
       };
     }
 

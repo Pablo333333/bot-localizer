@@ -190,7 +190,7 @@ export class SheetsService implements OnModuleInit {
       'Negociable':                val(cad?.es_negociable),
       'Nombre contacto1':          val(cad?.nombre_contacto_1 || cad?.nombre_propietario || cad?.nombre_contacto),
       'Email propietario-gestor':  val(cad?.email),
-      'Teléfonos de contacto':     val(data.from_number || data.to_number),
+      'Telefono1':                 val(data.from_number || data.to_number),
       'Vado (SI/NO)':              forceYesNo(cad?.vado),
       'Altura techos':             val(cad?.altura_techos),
       'Notas de Error':            !data.call_analysis?.call_successful ? val(data.call_analysis?.call_summary) : '',
@@ -225,10 +225,10 @@ export class SheetsService implements OnModuleInit {
 
     const target = normalizePhone(phoneCalled);
 
-    // Buscar por dígitos normalizados (tolera +34 / espacios / formatos distintos)
+    // Buscar por Telefono1 / Telefono2 / Telefono3 (nombres exactos de Localizados)
     const row = rows.find((r) => {
       const tels = [
-        r.get('Teléfonos de contacto'),
+        r.get('Telefono1'),
         r.get('Telefono2'),
         r.get('Telefono3'),
       ].map(normalizePhone);
@@ -240,8 +240,8 @@ export class SheetsService implements OnModuleInit {
       return;
     }
 
-    // Refuerzo anti-bucle: siempre marcar Llamado FP aunque el resto del mapeo falle después
-    row.set('Llamado FP', 'SI');
+    // Refuerzo anti-bucle: siempre marcar Llamado aunque el resto del mapeo falle después
+    row.set('Llamado', 'SI');
     if (data.call_id) {
       row.set('Call ID', data.call_id);
     }
@@ -352,7 +352,7 @@ export class SheetsService implements OnModuleInit {
       'Publicacion Autorizada?':   forceYesNo(cad?.publicacion_autorizada),
       'Propietario contactado?':    data.call_analysis?.call_successful ? new Date().toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'NO',
       'Publicado Popalicer?':      forcePublicadoPopalicer(publicadoWP),
-      'Llamado FP':                'SI',
+      'Llamado':                   'SI',
       'Fecha actualización':       formattedDateTime,
     };
 
@@ -485,7 +485,8 @@ export class SheetsService implements OnModuleInit {
       'Email propietario-gestor':  val(cad?.email_propietario_gestor || cad?.email),
       'Email Avisos':              val(cad?.email_avisos),
       'Fecha actualización':       new Date().toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).replace(',', ''),
-      'Teléfonos de contacto':     val(data.from_number || data.to_number),
+      'Telefono1':                 val(data.from_number || data.to_number),
+      'Llamado':                   'SI',
     };
 
     // Lógica de asignación para los bloques de contactos según cad?.target_contact
