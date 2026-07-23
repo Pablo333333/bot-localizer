@@ -129,13 +129,22 @@ export class SheetsController {
       }
 
       // 3. Guardar en Google Sheets (Siempre se intenta si el Agent ID es correcto)
+      // Outbound: buscar SIEMPRE por to_number (destinatario). Nunca usar from_number
+      // (nuestro número Retell, p.ej. +34871075112).
       this.logger.log('Guardando datos en Google Sheets (Actualizando fila existente)...');
-      const phoneCalled = callData.from_number || callData.to_number || '';
+      const phoneCalled = callData.to_number || '';
+      if (!phoneCalled) {
+        this.logger.warn(
+          `[Webhook] Call ${callId}: to_number vacío; no se puede localizar la fila en Sheets.`,
+        );
+        return;
+      }
+      this.logger.log(`[Webhook] Buscando fila por to_number (destinatario): ${phoneCalled}`);
       await this.sheetsService.updateRowByPhone(phoneCalled, callData, publicadoWordpress);
 
     } catch (error) {
-      const fromNum = callData.from_number || callData.to_number || 'unknown';
-      this.logger.error(`[Webhook Error] Call ${callId} from ${fromNum}: ${error.message}`, error.stack);
+      const destNum = callData.to_number || 'unknown';
+      this.logger.error(`[Webhook Error] Call ${callId} to ${destNum}: ${error.message}`, error.stack);
     }
   }
 }
