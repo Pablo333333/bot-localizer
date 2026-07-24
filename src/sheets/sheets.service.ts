@@ -342,8 +342,8 @@ export class SheetsService implements OnModuleInit {
       'Negociable':                val(cad?.es_negociable),
       'Vado (SI/NO)':              forceYesNo(cad?.vado),
       'Altura techos':             val(cad?.altura_techos),
-      'Nº plantas':                val(cad?.num_plantas),
-      'Iluminación':               val(cad?.iluminacion),
+      'Numero plantas':            val(cad?.num_plantas),
+      'Iluminacion':               val(cad?.iluminacion),
       'Suelos':                    val(cad?.suelos),
       'Contrato':                  val(cad?.contrato),
       'Ilocalizable':              val(cad?.Ilocalizable),
@@ -353,7 +353,7 @@ export class SheetsService implements OnModuleInit {
       'Propietario contactado?':    data.call_analysis?.call_successful ? new Date().toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'NO',
       'Publicado Popalicer?':      forcePublicadoPopalicer(publicadoWP),
       'Llamado':                   'SI',
-      'Fecha actualización':       formattedDateTime,
+      'Fecha actualizacion':       formattedDateTime,
     };
 
     // Lógica de asignación para los bloques de contactos según cad?.target_contact
@@ -371,13 +371,11 @@ export class SheetsService implements OnModuleInit {
       mapping['Contacto3 por'] = val(cad?.contacto_3_por);
     }
 
-    // Aplicar los cambios a la fila de forma segura (solo si la columna existe)
+    // Aplicar solo columnas que existen en la hoja (sin log por cada skip)
     const sheetHeaders = new Set(sheet.headerValues);
     for (const [key, value] of Object.entries(mapping)) {
       if (sheetHeaders.has(key)) {
         row.set(key, value);
-      } else {
-        this.logger.debug(`[updateRowByPhone] Saltando columna inexistente: ${key}`);
       }
     }
 
@@ -484,7 +482,7 @@ export class SheetsService implements OnModuleInit {
       'Ilocalizable':              val(cad?.Ilocalizable),
       'Email propietario-gestor':  val(cad?.email_propietario_gestor || cad?.email),
       'Email Avisos':              val(cad?.email_avisos),
-      'Fecha actualización':       new Date().toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).replace(',', ''),
+      'Fecha actualizacion':       new Date().toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).replace(',', ''),
       'Telefono1':                 val(data.from_number || data.to_number),
       'Llamado':                   'SI',
     };

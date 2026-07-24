@@ -8,7 +8,7 @@ const SHEET_NAME = 'Localizados';
 const COL_LLAMADO = 'Llamado';
 const COL_CALL_ID = 'Call ID';
 const COL_MARCA_TEMPORAL = 'Marca temporal';
-const COL_FECHA_ACTUALIZACION = 'Fecha actualización';
+const COL_FECHA_ACTUALIZACION = 'Fecha actualizacion';
 const COL_TIPO_INMUEBLE = 'Tipo de inmueble';
 const COL_DISPONIBILIDAD = 'Disponibilidad del local';
 
