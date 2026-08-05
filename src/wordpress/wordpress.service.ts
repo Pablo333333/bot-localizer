@@ -2,21 +2,61 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { lastValueFrom } from 'rxjs';
+import {
+  PlanStatus,
+  SyncUserPlanPayload,
+} from './dto/sync-user-plan.dto';
 
 @Injectable()
 export class WordpressService {
   private readonly logger = new Logger(WordpressService.name);
   private readonly wpUrl: string;
+  /** Base de la REST API, p.ej. https://www.localicer.com/wp-json */
+  private readonly apiUrl: string;
   private readonly wpUser: string;
   private readonly wpPass: string;
+  private readonly apiToken?: string;
+  private readonly stripeSyncPath: string;
 
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
   ) {
     this.wpUrl = this.configService.getOrThrow<string>('WP_URL').replace(/\/$/, '');
-    this.wpUser = this.configService.getOrThrow<string>('WP_USERNAME');
-    this.wpPass = this.configService.getOrThrow<string>('WP_APP_PASSWORD');
+    this.apiUrl = (
+      this.configService.get<string>('WORDPRESS_API_URL') ||
+      `${this.wpUrl}/wp-json`
+    ).replace(/\/$/, '');
+    this.wpUser =
+      this.configService.get<string>('WORDPRESS_API_USER') ||
+      this.configService.getOrThrow<string>('WP_USERNAME');
+    this.wpPass =
+      this.configService.get<string>('WORDPRESS_API_PASSWORD') ||
+      this.configService.getOrThrow<string>('WP_APP_PASSWORD');
+    this.apiToken =
+      this.configService.get<string>('WORDPRESS_API_TOKEN') || undefined;
+    this.stripeSyncPath =
+      this.configService.get<string>('WORDPRESS_STRIPE_SYNC_PATH') ||
+      '/localicer/v1/stripe/sync-plan';
+  }
+
+  private getAuthHeaders(
+    extra: Record<string, string> = {},
+  ): Record<string, string> {
+    if (this.apiToken) {
+      return {
+        Authorization: `Bearer ${this.apiToken}`,
+        'Content-Type': 'application/json',
+        ...extra,
+      };
+    }
+
+    const auth = Buffer.from(`${this.wpUser}:${this.wpPass}`).toString('base64');
+    return {
+      Authorization: `Basic ${auth}`,
+      'Content-Type': 'application/json',
+      ...extra,
+    };
   }
 
   // Funciones de utilidad compartidas
@@ -149,14 +189,12 @@ export class WordpressService {
       <p><em>Publicado automáticamente por Localisto IA. Referencia de llamada: ${data.call_id}</em></p>
     `;
 
-    const auth = Buffer.from(`${this.wpUser}:${this.wpPass}`).toString('base64');
-
     try {
       this.logger.log(`Intentando crear post en WordPress para: ${title}`);
       
       const response = await lastValueFrom(
         this.httpService.post(
-          `${this.wpUrl}/wp-json/wp/v2/posts`,
+          `${this.apiUrl}/wp/v2/posts`,
           {
             title: title,
             content: content,
@@ -164,10 +202,7 @@ export class WordpressService {
             featured_media: featuredMediaId || undefined,
           },
           {
-            headers: {
-              Authorization: `Basic ${auth}`,
-              'Content-Type': 'application/json',
-            },
+            headers: this.getAuthHeaders(),
           }
         )
       );
@@ -184,21 +219,18 @@ export class WordpressService {
   }
 
   async uploadMedia(buffer: Buffer, fileName: string): Promise<number> {
-    const auth = Buffer.from(`${this.wpUser}:${this.wpPass}`).toString('base64');
-
     try {
       this.logger.log(`Subiendo imagen a WordPress: ${fileName}`);
       
       const response = await lastValueFrom(
         this.httpService.post(
-          `${this.wpUrl}/wp-json/wp/v2/media`,
+          `${this.apiUrl}/wp/v2/media`,
           buffer,
           {
-            headers: {
-              Authorization: `Basic ${auth}`,
-              'Content-Type': 'image/jpeg', // O detectar por extensión si es necesario
+            headers: this.getAuthHeaders({
+              'Content-Type': 'image/jpeg',
               'Content-Disposition': `attachment; filename="${fileName}"`,
-            },
+            }),
           }
         )
       );
@@ -214,9 +246,94 @@ export class WordpressService {
     }
   }
 
+  /**
+   * Activa o renueva el plan del usuario tras un cobro exitoso en Stripe.
+   * WordPress debe exponer el endpoint configurado en WORDPRESS_STRIPE_SYNC_PATH
+   * y actualizar rol / meta (plan_status, anuncios_limite, price_id, etc.).
+   */
+  async activateUserPlan(
+    payload: Omit<SyncUserPlanPayload, 'planStatus'> & {
+      planStatus?: PlanStatus;
+    },
+  ): Promise<any> {
+    return this.syncUserPlan({
+      ...payload,
+      planStatus: payload.planStatus ?? 'active',
+    });
+  }
+
+  /**
+   * Marca la suscripción como cancelada / plan gratuito en WordPress.
+   */
+  async cancelUserPlan(
+    payload: Omit<SyncUserPlanPayload, 'planStatus' | 'event'> & {
+      event?: SyncUserPlanPayload['event'];
+    },
+  ): Promise<any> {
+    return this.syncUserPlan({
+      ...payload,
+      planStatus: 'cancelled',
+      event: payload.event ?? 'customer.subscription.deleted',
+      meta: {
+        plan_status: 'cancelled',
+        ...payload.meta,
+      },
+    });
+  }
+
+  /**
+   * Envía el estado del plan a WordPress (endpoint Localicer).
+   * Payload esperado por WP: userId/email, priceId, plan_status, meta...
+   */
+  async syncUserPlan(payload: SyncUserPlanPayload): Promise<any> {
+    const path = this.stripeSyncPath.startsWith('/')
+      ? this.stripeSyncPath
+      : `/${this.stripeSyncPath}`;
+    const url = `${this.apiUrl}${path}`;
+
+    const body = {
+      user_id: payload.userId,
+      email: payload.email,
+      price_id: payload.priceId,
+      plan_status: payload.planStatus,
+      mode: payload.mode,
+      stripe_session_id: payload.stripeSessionId,
+      stripe_subscription_id: payload.stripeSubscriptionId,
+      stripe_customer_id: payload.stripeCustomerId,
+      stripe_invoice_id: payload.stripeInvoiceId,
+      event: payload.event,
+      meta: {
+        plan_status: payload.planStatus,
+        price_id: payload.priceId,
+        ...payload.meta,
+      },
+    };
+
+    try {
+      this.logger.log(
+        `Sincronizando plan WP: userId=${payload.userId} | status=${payload.planStatus} | event=${payload.event}`,
+      );
+
+      const response = await lastValueFrom(
+        this.httpService.post(url, body, {
+          headers: this.getAuthHeaders(),
+        }),
+      );
+
+      this.logger.log(
+        `Plan sincronizado en WP para userId=${payload.userId}: ${JSON.stringify(response.data)}`,
+      );
+      return response.data;
+    } catch (error: any) {
+      this.logger.error(
+        `Error al sincronizar plan en WordPress: ${error.response?.data?.message || error.message}`,
+        error.stack,
+      );
+      throw error;
+    }
+  }
+
   async searchProperties(filters: { type?: string; zone?: string; city?: string; budget?: number }): Promise<any[]> {
-    const auth = Buffer.from(`${this.wpUser}:${this.wpPass}`).toString('base64');
-    
     try {
       // Mapeo de categorías a slugs de WPResidence
       const categoryMapping: Record<string, string> = {
@@ -246,9 +363,9 @@ export class WordpressService {
       this.logger.log(`Buscando propiedades en WP con filtros: ${JSON.stringify(params)}`);
 
       const response = await lastValueFrom(
-        this.httpService.get(`${this.wpUrl}/wp-json/wp/v2/estate_property`, {
+        this.httpService.get(`${this.apiUrl}/wp/v2/estate_property`, {
           params: { ...params, _embed: 1 },
-          headers: { Authorization: `Basic ${auth}` },
+          headers: this.getAuthHeaders(),
         })
       );
 

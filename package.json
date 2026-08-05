@@ -29,6 +29,8 @@
     "@nestjs/schedule": "^6.1.1",
     "@nestjs/serve-static": "^5.0.5",
     "axios": "^1.13.6",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
     "google-auth-library": "^10.6.2",
     "google-spreadsheet": "^5.2.0",
     "googleapis": "^171.4.0",
@@ -36,6 +38,7 @@
     "reflect-metadata": "^0.2.2",
     "retell-sdk": "^5.10.1",
     "rxjs": "^7.8.1",
+    "stripe": "^22.4.0",
     "twilio": "^6.0.0"
   },
   "devDependencies": {

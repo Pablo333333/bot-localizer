@@ -10,6 +10,7 @@ import { SheetsController } from './sheets/sheets.controller';
 import { SheetsService } from './sheets/sheets.service';
 import { WordpressModule } from './wordpress/wordpress.module';
 import { GoogleModule } from './google/google.module';
+import { StripeModule } from './stripe/stripe.module';
 import { InboundService } from './v2/inbound.service';
 import { WhatsAppWebhook } from './v2/whatsapp.webhook';
 import { CalendarService } from './v2/calendar.service';
@@ -20,10 +21,11 @@ import { CalendarService } from './v2/calendar.service';
     ScheduleModule.forRoot(),
     ServeStaticModule.forRoot({
       rootPath: join(process.cwd(), 'public'),
-      exclude: ['/api*', '/v2*'],
+      exclude: ['/api*', '/v2*', '/stripe*'],
     }),
     WordpressModule,
     GoogleModule,
+    StripeModule,
   ],
   controllers: [AppController, SheetsController, WhatsAppWebhook],
   providers: [AppService, SheetsService, OutboundService, InboundService, CalendarService],
