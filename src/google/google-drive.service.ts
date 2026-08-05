@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { google, drive_v3 } from 'googleapis';
+import { drive, drive_v3 } from '@googleapis/drive';
 import { JWT } from 'google-auth-library';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -7,7 +7,7 @@ import * as path from 'path';
 @Injectable()
 export class GoogleDriveService implements OnModuleInit {
   private readonly logger = new Logger(GoogleDriveService.name);
-  private drive: drive_v3.Drive;
+  private driveClient: drive_v3.Drive;
 
   async onModuleInit(): Promise<void> {
     let credentials: any;
@@ -40,7 +40,7 @@ export class GoogleDriveService implements OnModuleInit {
       scopes: ['https://www.googleapis.com/auth/drive.readonly'],
     });
 
-    this.drive = google.drive({ version: 'v3', auth });
+    this.driveClient = drive({ version: 'v3', auth });
     this.logger.log('Google Drive Service inicializado correctamente');
   }
 
@@ -51,7 +51,7 @@ export class GoogleDriveService implements OnModuleInit {
         query += ` and name contains '${searchTerm}'`;
       }
 
-      const response = await this.drive.files.list({
+      const response = await this.driveClient.files.list({
         q: query,
         fields: 'files(id, name, mimeType)',
       });
@@ -65,7 +65,7 @@ export class GoogleDriveService implements OnModuleInit {
 
   async downloadImageBuffer(fileId: string): Promise<Buffer> {
     try {
-      const response = await this.drive.files.get(
+      const response = await this.driveClient.files.get(
         { fileId, alt: 'media' },
         { responseType: 'arraybuffer' },
       );

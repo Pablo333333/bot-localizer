@@ -12,6 +12,7 @@
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
+    "start:prod:safe": "node --max-old-space-size=4096 dist/main",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
     "test:watch": "jest --watch",
@@ -21,6 +22,8 @@
     "test:webhook": "ts-node test-retell-webhook.ts"
   },
   "dependencies": {
+    "@googleapis/calendar": "^16.0.0",
+    "@googleapis/drive": "^21.0.0",
     "@nestjs/axios": "^4.0.1",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.3",
@@ -33,7 +36,6 @@
     "class-validator": "^0.15.1",
     "google-auth-library": "^10.6.2",
     "google-spreadsheet": "^5.2.0",
-    "googleapis": "^171.4.0",
     "openai": "^6.34.0",
     "reflect-metadata": "^0.2.2",
     "retell-sdk": "^5.10.1",

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { google, calendar_v3 } from 'googleapis';
+import { calendar, calendar_v3 } from '@googleapis/calendar';
 import { JWT } from 'google-auth-library';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -8,7 +8,7 @@ import * as path from 'path';
 @Injectable()
 export class CalendarService {
   private readonly logger = new Logger(CalendarService.name);
-  private calendar: calendar_v3.Calendar;
+  private calendarClient: calendar_v3.Calendar;
   private readonly calendarId: string;
 
   constructor(private configService: ConfigService) {
@@ -50,7 +50,7 @@ export class CalendarService {
         scopes: ['https://www.googleapis.com/auth/calendar'],
       });
 
-      this.calendar = google.calendar({ version: 'v3', auth });
+      this.calendarClient = calendar({ version: 'v3', auth });
       this.logger.log('Google Calendar Service inicializado correctamente');
     } catch (error) {
       this.logger.error(`Error al inicializar Google Calendar: ${error.message}`);
@@ -69,7 +69,7 @@ export class CalendarService {
       const threeDaysLater = new Date();
       threeDaysLater.setDate(now.getDate() + 3);
 
-      const response = await this.calendar.events.list({
+      const response = await this.calendarClient.events.list({
         calendarId: this.calendarId,
         timeMin: now.toISOString(),
         timeMax: threeDaysLater.toISOString(),
@@ -150,7 +150,7 @@ export class CalendarService {
         },
       };
 
-      await this.calendar.events.insert({
+      await this.calendarClient.events.insert({
         calendarId: this.calendarId,
         requestBody: event,
       });
