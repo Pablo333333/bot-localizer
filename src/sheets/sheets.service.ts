@@ -589,6 +589,14 @@ interface RetellPayload {
       certificado_energetico?: string;
       aforo_maximo?: string;
       limpieza?: string;
+      url_imagen?: string;
+      imagen_url?: string;
+      imagen_drive?: string;
+      google_drive_url?: string;
+      drive_url?: string;
+      foto_url?: string;
+      url_foto?: string;
+      image_url?: string;
     };
   };
 }

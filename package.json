@@ -19,7 +19,8 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "test:webhook": "ts-node test-retell-webhook.ts"
+    "test:webhook": "ts-node test-retell-webhook.ts",
+    "test:wp-payload": "ts-node test-wp-property-payload.ts"
   },
   "dependencies": {
     "@googleapis/calendar": "^16.0.0",

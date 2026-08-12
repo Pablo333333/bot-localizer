@@ -76,4 +76,71 @@ export class GoogleDriveService implements OnModuleInit {
       throw error;
     }
   }
+
+  /**
+   * Extrae el fileId de URLs típicas de Google Drive.
+   * Soporta: /file/d/ID/, open?id=, uc?id=, drive.google.com/uc?export=download&id=
+   */
+  extractFileIdFromUrl(url: string): string | null {
+    if (!url) return null;
+    const trimmed = url.trim();
+
+    const patterns = [
+      /\/file\/d\/([a-zA-Z0-9_-]+)/,
+      /[?&]id=([a-zA-Z0-9_-]+)/,
+      /\/d\/([a-zA-Z0-9_-]+)/,
+    ];
+
+    for (const re of patterns) {
+      const m = trimmed.match(re);
+      if (m?.[1]) return m[1];
+    }
+
+    // Si ya parece un ID crudo
+    if (/^[a-zA-Z0-9_-]{20,}$/.test(trimmed)) {
+      return trimmed;
+    }
+
+    return null;
+  }
+
+  /** Convierte un link de Drive a URL de descarga directa (útil para logs / fallback HTTP). */
+  toDirectDownloadUrl(fileIdOrUrl: string): string {
+    const fileId =
+      this.extractFileIdFromUrl(fileIdOrUrl) || fileIdOrUrl.trim();
+    return `https://drive.google.com/uc?export=download&id=${fileId}`;
+  }
+
+  /**
+   * Descarga una imagen desde una URL de Google Drive (o ID) usando la API de Drive.
+   */
+  async downloadImageFromUrl(
+    driveUrl: string,
+  ): Promise<{ buffer: Buffer; fileId: string; fileName: string; mimeType: string }> {
+    const fileId = this.extractFileIdFromUrl(driveUrl);
+    if (!fileId) {
+      throw new Error(`No se pudo extraer fileId de la URL de Drive: ${driveUrl}`);
+    }
+
+    this.logger.log(`Descargando imagen de Drive por URL. fileId=${fileId}`);
+
+    let fileName = `drive_${fileId}.jpg`;
+    let mimeType = 'image/jpeg';
+
+    try {
+      const meta = await this.driveClient.files.get({
+        fileId,
+        fields: 'id, name, mimeType',
+      });
+      if (meta.data.name) fileName = meta.data.name;
+      if (meta.data.mimeType) mimeType = meta.data.mimeType;
+    } catch (metaErr: any) {
+      this.logger.warn(
+        `No se pudo leer metadata de Drive (${fileId}): ${metaErr.message}. Se usará nombre por defecto.`,
+      );
+    }
+
+    const buffer = await this.downloadImageBuffer(fileId);
+    return { buffer, fileId, fileName, mimeType };
+  }
 }
