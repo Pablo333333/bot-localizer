@@ -3,6 +3,14 @@ import { GoogleSpreadsheet, GoogleSpreadsheetWorksheet } from 'google-spreadshee
 import { JWT } from 'google-auth-library';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  a1ForHeader,
+  filterTrackingFields,
+} from './sheets-tracking';
+import {
+  buildCadPropertyUpdates,
+  shouldWriteCell,
+} from './sheets-cad-updates';
 
 @Injectable()
 export class SheetsService implements OnModuleInit {
@@ -210,7 +218,80 @@ export class SheetsService implements OnModuleInit {
     this.logger.log(`Fila agregada correctamente en Localizados para call_id: ${data.call_id}`);
   }
 
-  async updateRowByPhone(phoneCalled: string, data: RetellPayload, publicadoWP: string = 'NO'): Promise<void> {
+  /**
+   * Escribe celdas concretas vía A1. Nunca row.save() (fila completa).
+   * Si se pasa existingRow, omite valores vacíos o equivalentes al original.
+   */
+  async updateSpecificCells(
+    sheet: GoogleSpreadsheetWorksheet,
+    rowNumber: number,
+    fields: Record<string, string | number | undefined | null>,
+    existingRow?: { get: (key: string) => unknown },
+  ): Promise<void> {
+    await sheet.loadHeaderRow();
+    const headers = sheet.headerValues || [];
+    const headerSet = new Set(headers);
+
+    const cells: { a1: string; header: string; value: string }[] = [];
+    for (const [key, raw] of Object.entries(fields)) {
+      if (raw === undefined || raw === null) continue;
+      const value = String(raw).trim();
+      if (!value) continue;
+
+      const header = headers.find(
+        (h) => String(h || '').trim().toLowerCase() === key.trim().toLowerCase(),
+      );
+      if (!header || !headerSet.has(header)) continue;
+
+      if (existingRow && !shouldWriteCell(existingRow.get(header), value)) {
+        continue;
+      }
+
+      const a1 = a1ForHeader(header, headers, rowNumber);
+      if (!a1) continue;
+      cells.push({ a1, header, value });
+    }
+
+    if (cells.length === 0) {
+      this.logger.log(
+        `[updateSpecificCells] Fila ${rowNumber}: sin celdas que cambiar.`,
+      );
+      return;
+    }
+
+    await sheet.loadCells(cells.map((c) => c.a1));
+    for (const { a1, value } of cells) {
+      sheet.getCellByA1(a1).value = value;
+    }
+    await sheet.saveUpdatedCells();
+
+    this.logger.log(
+      `[updateSpecificCells] Fila ${rowNumber} → ${cells.map((c) => `${c.header}(${c.a1})="${c.value}"`).join(', ')}`,
+    );
+  }
+
+  /** Tracking del bot (outbound). Solo cabeceras de tracking. */
+  async updateTrackingCells(
+    sheet: GoogleSpreadsheetWorksheet,
+    rowNumber: number,
+    fields: Record<string, string | number | undefined | null>,
+    existingRow?: { get: (key: string) => unknown },
+  ): Promise<void> {
+    await sheet.loadHeaderRow();
+    const allowed = filterTrackingFields(fields, sheet.headerValues || []);
+    await this.updateSpecificCells(sheet, rowNumber, allowed, existingRow);
+  }
+
+  /**
+   * Tras llamada Retell: tracking + solo celdas de inmueble que Retell
+   * extraiga con valor nuevo no vacío (precio, superficie, estado, …).
+   */
+  async updateRowByPhone(
+    phoneCalled: string,
+    data: RetellPayload,
+    publicadoWP?: string,
+    wpPostId?: number | string,
+  ): Promise<void> {
     const sheet = this.doc.sheetsByTitle['Localizados'];
     if (!sheet) {
       this.logger.error('[updateRowByPhone] Pestaña "Localizados" no encontrada.');
@@ -225,7 +306,6 @@ export class SheetsService implements OnModuleInit {
 
     const target = normalizePhone(phoneCalled);
 
-    // Buscar por Telefono1 / Telefono2 / Telefono3 (nombres exactos de Localizados)
     const row = rows.find((r) => {
       const tels = [
         r.get('Telefono1'),
@@ -240,147 +320,58 @@ export class SheetsService implements OnModuleInit {
       return;
     }
 
-    // Refuerzo anti-bucle: siempre marcar Llamado aunque el resto del mapeo falle después
-    row.set('Llamado', 'SI');
-    if (data.call_id) {
-      row.set('Call ID', data.call_id);
-    }
-
-    const cad = data.call_analysis?.custom_analysis_data;
-    
-    this.logger.log(`[updateRowByPhone] Iniciando mapeo de datos para el teléfono: ${phoneCalled}`);
-    if (cad) {
-      this.logger.log(`[updateRowByPhone] Datos extraídos (CAD): ${JSON.stringify(cad)}`);
-    }
-
-    // Función auxiliar para sanitizar valores
-    const sanitize = (v: any, cleanSymbols: boolean = false) => {
-      if (v === undefined || v === null) return '';
-      let s = String(v).trim();
-      const lowerS = s.toLowerCase();
-      if (lowerS === 'no especificado' || lowerS === 'unknown' || lowerS === 'undefined' || lowerS === 'null') {
-        return '';
-      }
-      if (cleanSymbols) {
-        // Limpiar símbolos de moneda y unidades para campos numéricos
-        s = s.replace(/[€$m²\s]/g, '').replace(',', '.');
-      }
-      return s;
-    };
-
-    const val = (v: any, fallback: string = '', cleanSymbols: boolean = false) => {
-      const s = sanitize(v, cleanSymbols);
-      return s !== '' ? s : fallback;
-    };
-
-    // Funciones de validación de negocio
-    const forceYesNo = (v: any) => {
-      const s = String(v || '').toUpperCase().trim();
-      return ['SI', 'SÍ', 'TRUE', '1', 'YES'].includes(s) ? 'SI' : 'NO';
-    };
-
-    const forceEstado = (v: any) => {
-      const options = ['En construcción', 'Nuevo', 'Reformado', 'Buen estado', 'Buena conservación', 'Segunda mano - por Reformar'];
-      const s = String(v || '').trim();
-      const found = options.find(opt => opt.toLowerCase() === s.toLowerCase());
-      return found || 'Buen estado'; // Valor por defecto
-    };
-
-    const forceCertificacion = (v: any) => {
-      const options = ['No consta', 'Exento', 'En tramite', 'A', 'B', 'C', 'D', 'F', 'G'];
-      const s = String(v || '').trim().toUpperCase();
-      const found = options.find(opt => opt.toUpperCase() === s);
-      if (found) return found;
-      if (s === 'A' || s === 'B' || s === 'C' || s === 'D' || s === 'F' || s === 'G') return s;
-      return 'No consta'; // Valor por defecto
-    };
-
-    const forcePublicadoPopalicer = (v: any) => {
-      const options = ['Si', 'No', 'No en este momento', 'Posiblemente en un futuro', 'No estoy seguro ahora'];
-      const s = String(v || '').trim();
-      const found = options.find(opt => opt.toLowerCase() === s.toLowerCase());
-      return found || 'No'; // Valor por defecto
-    };
-
-    // Mapeo general de campos del inmueble
     const now = new Date();
     const pad = (n: number) => n.toString().padStart(2, '0');
     const formattedDateTime = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const contactDate = now.toLocaleDateString('es-ES', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
 
-    const mapping: Record<string, string> = {
-      'Tipo de inmueble':          val(cad?.tipo_inmueble),
-      'Disponibilidad del local':  val(cad?.disponibilidad),
-      'Información adicional':     val(data.call_analysis?.call_summary || cad?.informacion_adicional),
-      'Superficie Total':          val(cad?.superficie_total, '', true),
-      'Superficie util':           val(cad?.superficie_util, '', true),
-      'Negocio anterior':          val(cad?.negocio_anterior),
-      'Estado':                    forceEstado(cad?.estado),
-      'Año de construcción':       val(cad?.anio_construccion),
-      'Año reforma':               val(cad?.anio_reforma),
-      'Numero aseos/baños':        val(cad?.numero_banios || cad?.numero_aseos, '', true),
-      'Posición exacta':           val(cad?.posicion_exacta),
-      'Escaparates/ventanales':    val(cad?.escaparates),
-      'Diafano?':                  val(cad?.['disposicion_diafano?'] || cad?.disposicion_diafano),
-      'Eventos':                   val(cad?.eventos),
-      'Almacen/trastienda (m2)':   val(cad?.almacen_trastienda, '', true),
-      'Terraza propia (Superficie m2)': val(cad?.terraza_patio, '', true),
-      'Equipamiento':              val(cad?.equipamiento),
-      'Certificación energética':   forceCertificacion(cad?.certificado_energetico || cad?.certificacion),
-      'Aforo máximo':              val(cad?.aforo_maximo, '', true),
-      'Limpieza':                  val(cad?.limpieza),
-      'Tipo Via':                  val(cad?.tipo_via),
-      'Nombre via':                val(cad?.nombre_via),
-      'Numero Via':                val(cad?.numero_via),
-      'Pueblo/Barrio/distrito':    val(cad?.pueblo_barrio || cad?.pueblo),
-      'Municipio':                 val(cad?.municipio),
-      'Provincia':                 val(cad?.provincia),
-      'Precio VENTA':              val(cad?.precio_venta, '', true),
-      'Precio TRASPASO':           val(cad?.precio_traspaso, '', true),
-      'Precio ALQUILER/mes':       val(cad?.precio_alquiler, '', true),
-      'Fianza':                    val(cad?.fianza_meses || cad?.fianza, '', true),
-      'Gastos de comunidad':       val(cad?.gastos_comunidad, '', true),
-      'Negociable':                val(cad?.es_negociable),
-      'Vado (SI/NO)':              forceYesNo(cad?.vado),
-      'Altura techos':             val(cad?.altura_techos),
-      'Numero plantas':            val(cad?.num_plantas),
-      'Iluminacion':               val(cad?.iluminacion),
-      'Suelos':                    val(cad?.suelos),
-      'Contrato':                  val(cad?.contrato),
-      'Ilocalizable':              val(cad?.Ilocalizable),
-      'Email propietario-gestor':  val(cad?.email_propietario_gestor || cad?.email),
-      'Email Avisos':              val(cad?.email_avisos),
-      'Publicacion Autorizada?':   forceYesNo(cad?.publicacion_autorizada),
-      'Propietario contactado?':    data.call_analysis?.call_successful ? new Date().toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'NO',
-      'Publicado Popalicer?':      forcePublicadoPopalicer(publicadoWP),
-      'Llamado':                   'SI',
-      'Fecha actualizacion':       formattedDateTime,
+    const publicado =
+      publicadoWP === undefined || publicadoWP === null
+        ? undefined
+        : ['SI', 'SÍ', 'TRUE', 'YES', '1'].includes(
+              String(publicadoWP).trim().toUpperCase(),
+            )
+          ? 'Si'
+          : 'No';
+
+    const tracking: Record<string, string | number | undefined> = {
+      Llamado: 'SI',
+      'Call ID': data.call_id,
+      'Fecha actualizacion': formattedDateTime,
+      'Fecha Llamada': formattedDateTime,
+      'Fecha llamada': formattedDateTime,
+      'Propietario contactado?': data.call_analysis?.call_successful
+        ? contactDate
+        : undefined,
+      'Publicado Popalicer?': publicado,
+      'WP Post ID': wpPostId,
+      'Wp Post ID': wpPostId,
+      'Notas de Error':
+        data.call_analysis?.call_successful === false
+          ? data.call_analysis?.call_summary
+          : undefined,
     };
 
-    // Lógica de asignación para los bloques de contactos según cad?.target_contact
-    if (cad?.target_contact === 'contacto_1') {
-      mapping['Nombre contacto1'] = val(cad?.nombre_contacto_1);
-      mapping['Contacto1 con'] = val(cad?.contacto_1_con);
-      mapping['Contacto1 por'] = val(cad?.contacto_1_por);
-    } else if (cad?.target_contact === 'contacto_2') {
-      mapping['Nombre contacto2'] = val(cad?.nombre_contacto_2);
-      mapping['Contacto2 con'] = val(cad?.contacto_2_con);
-      mapping['Contacto2 por'] = val(cad?.contacto_2_por);
-    } else if (cad?.target_contact === 'contacto_3') {
-      mapping['Nombre contacto3'] = val(cad?.nombre_contacto_3);
-      mapping['Contacto3 con'] = val(cad?.contacto_3_con);
-      mapping['Contacto3 por'] = val(cad?.contacto_3_por);
-    }
+    const propertyUpdates = buildCadPropertyUpdates(
+      data.call_analysis?.custom_analysis_data,
+      (header) => row.get(header),
+      { callSummary: data.call_analysis?.call_summary },
+    );
 
-    // Aplicar solo columnas que existen en la hoja (sin log por cada skip)
-    const sheetHeaders = new Set(sheet.headerValues);
-    for (const [key, value] of Object.entries(mapping)) {
-      if (sheetHeaders.has(key)) {
-        row.set(key, value);
-      }
-    }
+    this.logger.log(
+      `[updateRowByPhone] Fila ${row.rowNumber} tel=${phoneCalled} tracking + ${Object.keys(propertyUpdates).length} celdas inmueble: ${Object.keys(propertyUpdates).join(', ') || '(sin cambios)'}`,
+    );
 
-    await row.save();
-    this.logger.log(`Fila actualizada correctamente en Localizados para el teléfono: ${phoneCalled}`);
+    await this.updateSpecificCells(
+      sheet,
+      row.rowNumber,
+      { ...tracking, ...propertyUpdates },
+      row,
+    );
   }
 
   async testUpdateAsNewRow(data: RetellPayload, publicadoWP: string = 'NO'): Promise<void> {

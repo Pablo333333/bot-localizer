@@ -3,14 +3,13 @@ import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import Retell from 'retell-sdk';
 import { SheetsService } from '../sheets/sheets.service';
+import { buildRetellDynamicVariables } from './retell-dynamic-variables';
 
 const SHEET_NAME = 'Localizados';
 const COL_LLAMADO = 'Llamado';
 const COL_CALL_ID = 'Call ID';
 const COL_MARCA_TEMPORAL = 'Marca temporal';
 const COL_FECHA_ACTUALIZACION = 'Fecha actualizacion';
-const COL_TIPO_INMUEBLE = 'Tipo de inmueble';
-const COL_DISPONIBILIDAD = 'Disponibilidad del local';
 
 const MARKED_STATUSES = new Set(['SI', 'SÍ', 'INTENTADO', 'YES', 'TRUE']);
 
@@ -190,8 +189,7 @@ export class OutboundService {
         continue;
       }
 
-      const tipoInmueble = row.get(COL_TIPO_INMUEBLE)?.toString().trim() || '';
-      const disponibilidad = row.get(COL_DISPONIBILIDAD)?.toString().trim() || '';
+      const dynamicVars = buildRetellDynamicVariables(row);
       const nowLabel = this.formatMadridDateTime(new Date());
 
       try {
@@ -210,13 +208,14 @@ export class OutboundService {
         }
 
         this.logger.log(
-          `[OutboundService] Fila ${rowNumber} ACEPTADA → marcando Llamado=SI y disparando Retell (${phone})`,
+          `[OutboundService] Fila ${rowNumber} ACEPTADA → marcando Llamado=SI y disparando Retell (${phone}) | municipio="${dynamicVars.municipio}"`,
         );
 
-        // Marcar ANTES de Retell
-        row.set(COL_LLAMADO, 'SI');
-        row.set(COL_FECHA_ACTUALIZACION, nowLabel);
-        await row.save();
+        // Marcar ANTES de Retell — solo celdas de tracking (nunca row.save() de fila completa)
+        await this.sheetsService.updateTrackingCells(sheet, row.rowNumber, {
+          [COL_LLAMADO]: 'SI',
+          [COL_FECHA_ACTUALIZACION]: nowLabel,
+        }, row);
 
         this.rememberAttempt(phoneKey);
         this.dailyAttemptCount++;
@@ -227,14 +226,12 @@ export class OutboundService {
           from_number: this.fromNumber,
           to_number: phone,
           override_agent_id: this.agentId,
-          retell_llm_dynamic_variables: {
-            tipo_inmueble: tipoInmueble,
-            disponibilidad: disponibilidad,
-          },
+          retell_llm_dynamic_variables: dynamicVars,
         });
 
-        row.set(COL_CALL_ID, call.call_id);
-        await row.save();
+        await this.sheetsService.updateTrackingCells(sheet, row.rowNumber, {
+          [COL_CALL_ID]: call.call_id,
+        });
 
         this.logger.log(
           `[OutboundService] Fila ${rowNumber} OK — call_id=${call.call_id} | intentos hoy=${this.dailyAttemptCount}/${MAX_DAILY_CALLS}`,

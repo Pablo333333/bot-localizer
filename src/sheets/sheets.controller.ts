@@ -182,7 +182,8 @@ export class SheetsController {
     );
 
     try {
-      let publicadoWordpress = 'NO';
+      let publicadoWordpress: string | undefined;
+      let wpPostId: number | string | undefined;
 
       // 2. Filtro de Éxito y Disponibilidad para WordPress
       if (isSuccessful && isAvailable) {
@@ -194,17 +195,19 @@ export class SheetsController {
             cad,
             callId,
           );
-          await this.wordpressService.createPropertyPost(
+          const created = await this.wordpressService.createPropertyPost(
             callData,
             featuredMediaId,
           );
           publicadoWordpress = 'SI';
+          wpPostId = created?.id;
         } catch (wpError) {
           this.logger.error(`Error en WordPress: ${wpError.message}`);
+          publicadoWordpress = 'NO';
         }
       } else {
         this.logger.log(
-          `No se cumple el criterio para WordPress (Éxito: ${isSuccessful}, Disponible: ${isAvailable}). Solo se guardará en Sheets.`,
+          `No se cumple el criterio para WordPress (Éxito: ${isSuccessful}, Disponible: ${isAvailable}). Se actualizará tracking y celdas de inmueble solo si Retell trajo datos nuevos.`,
         );
       }
 
@@ -226,6 +229,7 @@ export class SheetsController {
         phoneCalled,
         callData,
         publicadoWordpress,
+        wpPostId,
       );
     } catch (error) {
       const destNum = callData.to_number || 'unknown';
