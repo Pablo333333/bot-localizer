@@ -1,0 +1,162 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum LeadStatus {
+  nuevo
+  interesado
+  cita_programada
+  cerrado
+}
+
+enum Channel {
+  whatsapp
+  email
+  llamada
+  sms
+}
+
+enum EnrollmentStatus {
+  active
+  paused
+  completed
+  cancelled
+}
+
+enum StepRunStatus {
+  pending
+  scheduled
+  processing
+  sent
+  failed
+  skipped
+  cancelled
+}
+
+model Lead {
+  id              String     @id @default(cuid())
+  phone           String
+  email           String?
+  name            String?
+  source          String? // whatsapp_inbound | outbound | sheets_sync | manual
+  status          LeadStatus @default(nuevo)
+  /// Número de fila en la hoja Localizados (para sync de estado de vuelta a Sheets)
+  sheetsRowNumber Int?
+  /// Call ID / WP user / otra referencia externa
+  externalRef     String?
+  metadata        Json?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  statusChangedAt DateTime   @default(now())
+
+  enrollments    SequenceEnrollment[]
+  communications CommunicationLog[]
+
+  @@unique([phone])
+  @@index([status, createdAt])
+  @@index([sheetsRowNumber])
+}
+
+model Sequence {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  steps       SequenceStep[]
+  enrollments SequenceEnrollment[]
+}
+
+model SequenceStep {
+  id              String  @id @default(cuid())
+  sequenceId      String
+  sequence        Sequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  order           Int
+  channel         Channel
+  /// Minutos desde el enroll (0 = inmediato; 4320 = 3d; 10080 = 7d)
+  delayMinutes    Int
+  templateKey     String
+  templatePayload Json?
+  maxRetries      Int     @default(3)
+
+  stepRuns SequenceStepRun[]
+
+  @@unique([sequenceId, order])
+}
+
+model SequenceEnrollment {
+  id               String           @id @default(cuid())
+  leadId           String
+  sequenceId       String
+  lead             Lead             @relation(fields: [leadId], references: [id])
+  sequence         Sequence         @relation(fields: [sequenceId], references: [id])
+  status           EnrollmentStatus @default(active)
+  currentStepOrder Int              @default(1)
+  enrolledAt       DateTime         @default(now())
+  completedAt      DateTime?
+  cancelledAt      DateTime?
+  cancelReason     String?
+
+  stepRuns SequenceStepRun[]
+
+  @@index([leadId, status])
+  @@index([status])
+}
+
+model SequenceStepRun {
+  id           String        @id @default(cuid())
+  enrollmentId String
+  enrollment   SequenceEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  stepId       String
+  step         SequenceStep  @relation(fields: [stepId], references: [id])
+  status       StepRunStatus @default(pending)
+  scheduledFor DateTime
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  attempts     Int           @default(0)
+  lastError    String?
+  /// BullMQ job id (para cancelar al cambiar estado del lead)
+  jobId        String?
+  providerRef  String?
+
+  errorLogs ExecutionErrorLog[]
+
+  @@index([status, scheduledFor])
+  @@index([enrollmentId])
+  @@index([jobId])
+}
+
+model CommunicationLog {
+  id          String   @id @default(cuid())
+  leadId      String
+  lead        Lead     @relation(fields: [leadId], references: [id])
+  channel     Channel
+  direction   String // outbound | inbound
+  summary     String?
+  providerRef String?
+  stepRunId   String?
+  createdAt   DateTime @default(now())
+
+  @@index([leadId, createdAt])
+  @@index([channel, createdAt])
+}
+
+model ExecutionErrorLog {
+  id        String           @id @default(cuid())
+  stepRunId String?
+  stepRun   SequenceStepRun? @relation(fields: [stepRunId], references: [id])
+  code      String?
+  message   String
+  payload   Json?
+  createdAt DateTime         @default(now())
+
+  @@index([createdAt])
+}

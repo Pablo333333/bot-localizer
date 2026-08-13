@@ -9,6 +9,7 @@ import {
 import {
   buildEstatePropertyPayload,
   formatCurrencyDisplay,
+  sanitizeValue,
   toWordpressRequestBody,
 } from './property-mapper';
 
@@ -130,6 +131,72 @@ export class WordpressService {
       body: toWordpressRequestBody(payload),
       mapping: payload._mapping,
     };
+  }
+
+  /**
+   * Actualiza un estate_property existente (sync desde Google Sheets).
+   */
+  async updatePropertyPost(
+    postId: number,
+    fields: {
+      tipo_inmueble?: string;
+      municipio?: string;
+      precio_alquiler?: string;
+      precio_venta?: string;
+      disponibilidad?: string;
+      estado?: string;
+      title?: string;
+    },
+  ): Promise<any> {
+    const title =
+      fields.title ||
+      (fields.tipo_inmueble && fields.municipio
+        ? `${fields.tipo_inmueble} en ${fields.municipio}`
+        : undefined);
+
+    const meta: Record<string, string> = {};
+    const alquiler = sanitizeValue(fields.precio_alquiler, true);
+    const venta = sanitizeValue(fields.precio_venta, true);
+    if (alquiler) {
+      meta.property_price = alquiler;
+      meta.property_label = '/mes';
+    } else if (venta) {
+      meta.property_price = venta;
+    }
+    const estado = sanitizeValue(fields.estado);
+    if (estado) meta.property_status = estado;
+    const municipio = sanitizeValue(fields.municipio);
+    if (municipio) meta.property_address = municipio;
+
+    const payload: Record<string, unknown> = {};
+    if (title) payload.title = title;
+    if (Object.keys(meta).length) payload.meta = meta;
+
+    if (Object.keys(payload).length === 0) {
+      this.logger.warn(`updatePropertyPost ${postId}: nothing to update`);
+      return null;
+    }
+
+    try {
+      const response = await lastValueFrom(
+        this.httpService.post(
+          `${this.apiUrl}/wp/v2/estate_property/${postId}`,
+          payload,
+          { headers: this.getAuthHeaders() },
+        ),
+      );
+      this.logger.log(
+        `estate_property ${postId} actualizado desde Sheets sync`,
+      );
+      return response.data;
+    } catch (error: any) {
+      this.logger.error(
+        `Error updating estate_property ${postId}: ${
+          error.response?.data?.message || error.message
+        }`,
+      );
+      throw error;
+    }
   }
 
   async uploadMedia(

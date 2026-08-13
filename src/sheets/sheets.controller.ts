@@ -4,6 +4,8 @@ import { WordpressService } from '../wordpress/wordpress.service';
 import { GoogleDriveService } from '../google/google-drive.service';
 import { ConfigService } from '@nestjs/config';
 import { extractImageUrlFromCad } from '../wordpress/property-mapper';
+import { PropertyPublishEmailService } from '../notifications/property-publish-email.service';
+import { NoAnswerFollowupService } from '../nurturing/followup/no-answer-followup.service';
 
 @Controller('webhooks')
 export class SheetsController {
@@ -14,6 +16,8 @@ export class SheetsController {
     private readonly wordpressService: WordpressService,
     private readonly googleDriveService: GoogleDriveService,
     private readonly configService: ConfigService,
+    private readonly propertyPublishEmail: PropertyPublishEmailService,
+    private readonly noAnswerFollowup: NoAnswerFollowupService,
   ) {
     this.verifyDocAccess();
   }
@@ -113,7 +117,6 @@ export class SheetsController {
 
     const eventType = body.event_type || body.event;
 
-    // Solo procesar si el evento es 'call_analyzed'
     if (eventType !== 'call_analyzed') {
       this.logger.log(
         `Ignorando evento de tipo: ${eventType}. Solo se procesa 'call_analyzed'.`,
@@ -125,15 +128,21 @@ export class SheetsController {
     const agentId = callData.agent_id;
     const callId = callData.call_id;
 
-    // 1. Contexto de Identidad: Solo procesar para el Agente Outbound ID específico
     const TARGET_AGENT_ID =
       this.configService.get<string>('RETELL_OUTBOUND_AGENT_ID') ||
       'agent_b8abf941c156192b1995f36c5d';
     const INBOUND_AGENT_ID = this.configService.get<string>(
       'RETELL_INBOUND_AGENT_ID',
     );
+    const FOLLOWUP_AGENT_ID =
+      this.configService.get<string>('RETELL_AGENT_ID_FOLLOWUP') ||
+      'agent_25c341a3bcc06e505b5ed2850c';
 
-    if (agentId !== TARGET_AGENT_ID && agentId !== INBOUND_AGENT_ID) {
+    if (
+      agentId !== TARGET_AGENT_ID &&
+      agentId !== INBOUND_AGENT_ID &&
+      agentId !== FOLLOWUP_AGENT_ID
+    ) {
       this.logger.warn(
         `Ignorando webhook: Agent ID ${agentId} no coincide con objetivos.`,
       );
@@ -143,7 +152,6 @@ export class SheetsController {
     const cad = callData.call_analysis?.custom_analysis_data;
     const callSummary = callData.call_analysis?.call_summary || '';
 
-    // Logging detallado de campos extraídos por la IA
     if (cad) {
       this.logger.log(
         `[IA Data Extraction] Campos detectados para Call ID ${callId}:`,
@@ -157,7 +165,6 @@ export class SheetsController {
       );
     }
 
-    // Flexibilización de call_successful: Si no viene, validamos por longitud del resumen
     let isSuccessful = callData.call_analysis?.call_successful === true;
     if (
       callData.call_analysis?.call_successful === undefined ||
@@ -169,7 +176,6 @@ export class SheetsController {
       );
     }
 
-    // Flexibilización de "Disponible"
     const dispValue = String(cad?.disponibilidad || '')
       .toUpperCase()
       .trim();
@@ -182,10 +188,24 @@ export class SheetsController {
     );
 
     try {
+      if (agentId === TARGET_AGENT_ID || agentId === FOLLOWUP_AGENT_ID) {
+        try {
+          const followup =
+            await this.noAnswerFollowup.handleOutboundCallAnalyzed(callData);
+          this.logger.log(
+            `Nurturing follow-up: phase=${followup.phase} outcome=${followup.outcome} wa=${followup.whatsappSent} sms=${followup.smsSent} enroll=${followup.enrolled} ilocalizable=${followup.markedIlocalizable} lead=${followup.leadId}`,
+          );
+        } catch (followErr: any) {
+          this.logger.error(
+            `Nurturing follow-up error: ${followErr.message}`,
+            followErr.stack,
+          );
+        }
+      }
+
       let publicadoWordpress: string | undefined;
       let wpPostId: number | string | undefined;
 
-      // 2. Filtro de Éxito y Disponibilidad para WordPress
       if (isSuccessful && isAvailable) {
         try {
           this.logger.log(
@@ -201,7 +221,33 @@ export class SheetsController {
           );
           publicadoWordpress = 'SI';
           wpPostId = created?.id;
-        } catch (wpError) {
+
+          const propertyTitle =
+            typeof created?.title === 'object'
+              ? created.title?.rendered
+              : created?.title;
+          const propertyUrl =
+            created?.link ||
+            (created?.id
+              ? `${this.configService.get('WP_URL')?.replace(/\/$/, '')}/?p=${created.id}`
+              : undefined);
+
+          const notifyTo =
+            cad?.email_avisos ||
+            cad?.email_propietario_gestor ||
+            cad?.email ||
+            this.configService.get<string>('PROPERTY_PUBLISH_NOTIFY_TO') ||
+            'somos@localicer.com';
+
+          if (propertyUrl) {
+            await this.propertyPublishEmail.sendPropertyPublishedEmail({
+              to: String(notifyTo),
+              propertyTitle: propertyTitle || 'Anuncio Localicer',
+              propertyUrl,
+              callId,
+            });
+          }
+        } catch (wpError: any) {
           this.logger.error(`Error en WordPress: ${wpError.message}`);
           publicadoWordpress = 'NO';
         }
@@ -211,7 +257,6 @@ export class SheetsController {
         );
       }
 
-      // 3. Guardar en Google Sheets
       this.logger.log(
         'Guardando datos en Google Sheets (Actualizando fila existente)...',
       );
@@ -231,7 +276,7 @@ export class SheetsController {
         publicadoWordpress,
         wpPostId,
       );
-    } catch (error) {
+    } catch (error: any) {
       const destNum = callData.to_number || 'unknown';
       this.logger.error(
         `[Webhook Error] Call ${callId} to ${destNum}: ${error.message}`,
