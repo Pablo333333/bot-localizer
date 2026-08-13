@@ -3,6 +3,12 @@ import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import Retell from 'retell-sdk';
 import { SheetsService } from '../sheets/sheets.service';
+import {
+  NURTURING_PHASE3_DISABLED_LOG,
+  isNurturingPhase3Enabled,
+} from '../nurturing/phase3-enabled';
+import { resolveRetellFromNumber } from '../nurturing/toni-fase3.constants';
+import { isPublicacionAutorizadaSi } from './publicacion-autorizada';
 import { buildRetellDynamicVariables } from './retell-dynamic-variables';
 
 const SHEET_NAME = 'Localizados';
@@ -50,11 +56,22 @@ export class OutboundService {
       apiKey: this.configService.getOrThrow<string>('RETELL_API_KEY'),
     });
     this.agentId = this.configService.getOrThrow<string>('RETELL_OUTBOUND_AGENT_ID');
-    this.fromNumber = this.configService.getOrThrow<string>('RETELL_FROM_NUMBER');
+    this.fromNumber = resolveRetellFromNumber(
+      this.configService.get<string>('RETELL_FROM_NUMBER'),
+    );
   }
 
   @Cron(CronExpression.EVERY_5_MINUTES)
   async checkPendingCalls(): Promise<void> {
+    if (
+      !isNurturingPhase3Enabled(
+        this.configService.get('NURTURING_PHASE3_ENABLED'),
+      )
+    ) {
+      this.logger.log(NURTURING_PHASE3_DISABLED_LOG);
+      return;
+    }
+
     if (this.isRunning) {
       this.logger.log(
         '[OutboundService] Descartado ciclo: ejecución anterior aún en curso.',
@@ -127,7 +144,7 @@ export class OutboundService {
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const rowNumber = i + 2; // fila 1 = headers
-      const reason = this.getDiscardReason(row, rowNumber);
+      const reason = this.getDiscardReason(row, rowNumber, headers);
 
       if (reason) {
         discardedCount++;
@@ -251,7 +268,19 @@ export class OutboundService {
   /**
    * Devuelve el motivo de descarte, o null si la fila es candidata.
    */
-  private getDiscardReason(row: any, rowNumber: number): string | null {
+  private getDiscardReason(
+    row: any,
+    rowNumber: number,
+    headerValues?: string[],
+  ): string | null {
+    if (!isPublicacionAutorizadaSi(row, headerValues)) {
+      const raw =
+        row.get('Publicacion Autorizada?') ??
+        row.get('Publicación Autorizada?') ??
+        '';
+      return `Publicacion Autorizada? no es SI ("${String(raw).trim() || 'vacío'}") — no se llama ni se procesa`;
+    }
+
     const llamadoRaw = row.get(COL_LLAMADO)?.toString().trim() || '';
     const llamado = llamadoRaw.toUpperCase();
     if (MARKED_STATUSES.has(llamado)) {

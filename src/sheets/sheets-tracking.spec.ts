@@ -22,6 +22,8 @@ describe('sheets-tracking', () => {
     expect(isTrackingHeader('Call ID')).toBe(true);
     expect(isTrackingHeader('Fecha Llamada')).toBe(true);
     expect(isTrackingHeader('WP Post ID')).toBe(true);
+    expect(isTrackingHeader('Referencia')).toBe(true);
+    expect(isTrackingHeader('Referencia / WP Post ID')).toBe(true);
     expect(isTrackingHeader('Municipio')).toBe(false);
     expect(isTrackingHeader('Tipo de inmueble')).toBe(false);
     expect(isTrackingHeader('Nombre contacto2')).toBe(false);
@@ -67,5 +69,11 @@ describe('sheets-tracking', () => {
     const headers = ['A', 'B', 'C', 'D', 'Municipio', 'Llamado'];
     expect(a1ForHeader('Llamado', headers, 12)).toBe('F12');
     expect(a1ForHeader('Municipio', headers, 12)).toBe('E12');
+  });
+
+  it('columna D (índice 3) es la letra D para WP Post ID / Referencia', () => {
+    expect(columnIndexToA1(3)).toBe('D');
+    const headers = ['Marca temporal', 'X', 'Y', 'Referencia / WP Post ID'];
+    expect(a1ForHeader('Referencia / WP Post ID', headers, 8)).toBe('D8');
   });
 });

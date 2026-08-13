@@ -1,9 +1,14 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { SequenceStep, StepRunStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NURTURING_STEP_JOB, NURTURING_STEPS_QUEUE } from '../../queue/queue.constants';
+import {
+  NURTURING_PHASE3_DISABLED_LOG,
+  isNurturingPhase3Enabled,
+} from '../phase3-enabled';
 import { NurturingStepJobData, stepRunJobId } from './nurturing-step.job';
 
 @Injectable()
@@ -12,6 +17,7 @@ export class SequenceScheduler {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
     @InjectQueue(NURTURING_STEPS_QUEUE) private readonly queue: Queue<NurturingStepJobData>,
   ) {}
 
@@ -24,6 +30,13 @@ export class SequenceScheduler {
     steps: SequenceStep[],
     enrolledAt: Date = new Date(),
   ): Promise<void> {
+    if (
+      !isNurturingPhase3Enabled(this.config.get('NURTURING_PHASE3_ENABLED'))
+    ) {
+      this.logger.log(NURTURING_PHASE3_DISABLED_LOG);
+      return;
+    }
+
     const ordered = [...steps].sort((a, b) => a.order - b.order);
 
     for (const step of ordered) {

@@ -1,5 +1,6 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   EnrollmentStatus,
   LeadStatus,
@@ -11,6 +12,10 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NURTURING_STEPS_QUEUE } from '../../queue/queue.constants';
 import { ChannelRegistry } from '../channels/channel.registry';
 import { LeadStatus as AppLeadStatus, TERMINAL_LEAD_STATUSES } from '../enums';
+import {
+  NURTURING_PHASE3_DISABLED_LOG,
+  isNurturingPhase3Enabled,
+} from '../phase3-enabled';
 import { NurturingStepJobData } from './nurturing-step.job';
 
 @Processor(NURTURING_STEPS_QUEUE)
@@ -20,11 +25,19 @@ export class SequenceProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly channels: ChannelRegistry,
+    private readonly config: ConfigService,
   ) {
     super();
   }
 
   async process(job: Job<NurturingStepJobData>): Promise<{ status: string }> {
+    if (
+      !isNurturingPhase3Enabled(this.config.get('NURTURING_PHASE3_ENABLED'))
+    ) {
+      this.logger.log(NURTURING_PHASE3_DISABLED_LOG);
+      return { status: 'disabled' };
+    }
+
     const { stepRunId, enrollmentId, leadId } = job.data;
     this.logger.log(
       `Processing job=${job.id} stepRun=${stepRunId} attempt=${job.attemptsMade + 1}`,

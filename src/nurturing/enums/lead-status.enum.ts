@@ -5,6 +5,8 @@ export enum LeadStatus {
   CITA_PROGRAMADA = 'cita_programada',
   /** Rechazo explícito / cerrado — detiene secuencias. NO usar para "no contesta". */
   CERRADO = 'cerrado',
+  /** Tras T+10 sin contacto. Detiene secuencias. */
+  ILOCALIZABLE = 'ilocalizable',
 }
 
 /**
@@ -14,6 +16,7 @@ export enum LeadStatus {
 export const TERMINAL_LEAD_STATUSES: ReadonlySet<LeadStatus> = new Set([
   LeadStatus.CITA_PROGRAMADA,
   LeadStatus.CERRADO,
+  LeadStatus.ILOCALIZABLE,
 ]);
 
 /** Outcomes de llamada Retell que NO deben cerrar el lead ni auto-stop */

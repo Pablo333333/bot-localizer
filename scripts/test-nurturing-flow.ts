@@ -1,6 +1,6 @@
 /**
  * E2E aislado del flujo Fase 3 (nurturing):
- * create lead → enroll → validar StepRuns/BullMQ → procesar WhatsApp →
+ * create lead → enroll → validar StepRuns T+7/T+10 →
  * status cita_programada → cancel jobs → metrics → cleanup
  *
  * Uso:
@@ -9,7 +9,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
-import { Job, Queue } from 'bullmq';
+import { Queue } from 'bullmq';
 import {
   Channel,
   EnrollmentStatus,
@@ -25,6 +25,7 @@ import {
 import { CallChannel } from '../src/nurturing/channels/call.channel';
 import { ChannelRegistry } from '../src/nurturing/channels/channel.registry';
 import { EmailChannel } from '../src/nurturing/channels/email.channel';
+import { SmsChannel } from '../src/nurturing/channels/sms.channel';
 import { WhatsappChannel } from '../src/nurturing/channels/whatsapp.channel';
 import { EnrollmentsService } from '../src/nurturing/enrollments/enrollments.service';
 import { SequenceProcessor } from '../src/nurturing/engine/sequence.processor';
@@ -82,6 +83,7 @@ function assert(condition: unknown, message: string): asserts condition {
     ChannelRegistry,
     WhatsappChannel,
     EmailChannel,
+    SmsChannel,
     CallChannel,
   ],
 })
@@ -89,6 +91,7 @@ class NurturingE2EModule {}
 
 async function main() {
   process.env.NURTURING_MOCK_CHANNELS = 'true';
+  process.env.NURTURING_PHASE3_ENABLED = 'true';
 
   console.log('\n=== Fase 3 E2E: Nurturing flow ===\n');
 
@@ -99,7 +102,6 @@ async function main() {
   const prisma = app.get(PrismaService);
   const leads = app.get(LeadsService);
   const enrollments = app.get(EnrollmentsService);
-  const processor = app.get(SequenceProcessor);
   const metrics = app.get(MetricsService);
   const queue = app.get<Queue<NurturingStepJobData>>(
     getQueueToken(NURTURING_STEPS_QUEUE),
@@ -164,20 +166,16 @@ async function main() {
       orderBy: { scheduledFor: 'asc' },
     });
 
-    assert(stepRuns.length === 3, `Expected 3 stepRuns, got ${stepRuns.length}`);
+    assert(stepRuns.length === 2, `Expected 2 stepRuns (T+7, T+10), got ${stepRuns.length}`);
 
-    const callD0 = stepRuns.find(
-      (r) => r.step.channel === Channel.llamada && r.step.delayMinutes === 0,
-    );
-    const waD0 = stepRuns.find(
-      (r) => r.step.channel === Channel.whatsapp && r.step.delayMinutes === 0,
-    );
     const callD7 = stepRuns.find(
       (r) => r.step.channel === Channel.llamada && r.step.delayMinutes === 10080,
     );
-    assert(callD0, 'Missing stepRun Call D0');
-    assert(waD0, 'Missing stepRun WhatsApp D0');
-    assert(callD7, 'Missing stepRun Call D7');
+    const callD10 = stepRuns.find(
+      (r) => r.step.channel === Channel.llamada && r.step.delayMinutes === 14400,
+    );
+    assert(callD7, 'Missing stepRun Call T+7 (10080 min)');
+    assert(callD10, 'Missing stepRun Call T+10 (14400 min)');
 
     console.log('\n✓ SequenceStepRuns programados:');
     for (const run of stepRuns) {
@@ -194,30 +192,7 @@ async function main() {
       );
     }
 
-    // 3) Simulate WhatsApp step (booking link)
-    const waRun = waD0!;
-    const waJob = (await queue.getJob(waRun.jobId!)) as Job<NurturingStepJobData>;
-    assert(waJob, 'WhatsApp BullMQ job not found');
-
-    console.log('\n→ Ejecutando SequenceProcessor para paso WhatsApp...');
-    const processResult = await processor.process(waJob);
-    console.log(`✓ Processor result: ${JSON.stringify(processResult)}`);
-
-    const waAfter = await prisma.sequenceStepRun.findUnique({
-      where: { id: waRun.id },
-    });
-    assert(waAfter?.status === StepRunStatus.sent, `WhatsApp stepRun status=${waAfter?.status}`);
-    console.log(
-      `✓ WhatsApp StepRun → sent (providerRef=${waAfter?.providerRef})`,
-    );
-
-    try {
-      await waJob.remove();
-    } catch {
-      /* ignore */
-    }
-
-    // 4) Change status → cita_programada (auto-stop)
+    // 3) Change status → cita_programada (auto-stop T+7 y T+10)
     console.log('\n→ PATCH status → cita_programada');
     const statusResult = await leads.updateStatus(leadId, {
       status: LeadStatus.CITA_PROGRAMADA,
@@ -234,32 +209,26 @@ async function main() {
       orderBy: { step: { order: 'asc' } },
     });
 
-    const callD0Final = afterCancel.find(
-      (r) => r.step.channel === Channel.llamada && r.step.delayMinutes === 0,
-    );
-    const waFinal = afterCancel.find((r) => r.step.channel === Channel.whatsapp);
     const callD7Final = afterCancel.find(
       (r) => r.step.channel === Channel.llamada && r.step.delayMinutes === 10080,
     );
-
-    assert(waFinal?.status === StepRunStatus.sent, 'WhatsApp should remain sent');
-    assert(
-      callD0Final?.status === StepRunStatus.cancelled ||
-        callD0Final?.status === StepRunStatus.sent ||
-        callD0Final?.status === StepRunStatus.scheduled ||
-        callD0Final?.status === StepRunStatus.failed,
-      // D0 call may still be scheduled/cancelled depending on processing
-      `Call D0 unexpected status=${callD0Final?.status}`,
+    const callD10Final = afterCancel.find(
+      (r) => r.step.channel === Channel.llamada && r.step.delayMinutes === 14400,
     );
+
     assert(
       callD7Final?.status === StepRunStatus.cancelled,
-      `Call D7 stepRun should be cancelled, got ${callD7Final?.status}`,
+      `Call T+7 stepRun should be cancelled, got ${callD7Final?.status}`,
+    );
+    assert(
+      callD10Final?.status === StepRunStatus.cancelled,
+      `Call T+10 stepRun should be cancelled, got ${callD10Final?.status}`,
     );
 
-    for (const run of [callD7Final!]) {
+    for (const run of [callD7Final!, callD10Final!]) {
       const job = run.jobId ? await queue.getJob(run.jobId) : null;
       const state = job ? await job.getState() : 'absent';
-      console.log(`  - ${run.step.channel} D7: db=${run.status} bull=${state}`);
+      console.log(`  - ${run.step.channel} delay=${run.step.delayMinutes}: db=${run.status} bull=${state}`);
       assert(!job, `BullMQ job still present for cancelled ${run.step.channel}`);
     }
 
@@ -270,7 +239,7 @@ async function main() {
       enrollmentAfter?.status === EnrollmentStatus.cancelled,
       `Enrollment status=${enrollmentAfter?.status}`,
     );
-    console.log('✓ Enrollment cancelled; jobs de 3d y 7d eliminados');
+    console.log('✓ Enrollment cancelled; jobs T+7 y T+10 eliminados');
 
     // 5) Metrics summary
     const summary = await metrics.getSummary({});

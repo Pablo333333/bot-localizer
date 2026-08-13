@@ -350,6 +350,8 @@ export class SheetsService implements OnModuleInit {
       'Publicado Popalicer?': publicado,
       'WP Post ID': wpPostId,
       'Wp Post ID': wpPostId,
+      Referencia: wpPostId,
+      'Referencia / WP Post ID': wpPostId,
       'Notas de Error':
         data.call_analysis?.call_successful === false
           ? data.call_analysis?.call_summary
@@ -372,6 +374,28 @@ export class SheetsService implements OnModuleInit {
       { ...tracking, ...propertyUpdates },
       row,
     );
+
+    if (wpPostId) {
+      await this.writeWpPostIdColumnD(sheet, row.rowNumber, wpPostId);
+    }
+  }
+
+  /** Columna D = Referencia / WP Post ID (Toni). Escritura A1 puntual. */
+  async writeWpPostIdColumnD(
+    sheet: GoogleSpreadsheetWorksheet,
+    rowNumber: number,
+    wpPostId: number | string,
+  ): Promise<void> {
+    const a1 = `D${rowNumber}`;
+    await sheet.loadCells(a1);
+    const cell = sheet.getCellByA1(a1);
+    const next = String(wpPostId).trim();
+    if (!next || String(cell.value ?? '').trim() === next) {
+      return;
+    }
+    cell.value = next;
+    await sheet.saveUpdatedCells();
+    this.logger.log(`[WP Post ID] ${a1} ← ${next}`);
   }
 
   async testUpdateAsNewRow(data: RetellPayload, publicadoWP: string = 'NO'): Promise<void> {

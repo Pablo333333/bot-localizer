@@ -12,6 +12,8 @@ enum LeadStatus {
   interesado
   cita_programada
   cerrado
+  /// Tras T+10 sin contacto (Toni Fase 3)
+  ilocalizable
 }
 
 enum Channel {

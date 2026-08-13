@@ -1,87 +1,105 @@
 import { Channel, PrismaClient } from '@prisma/client';
+import {
+  DEFAULT_TONI_SEQUENCE_NAME,
+  LEGACY_TONI_SEQUENCE_NAMES,
+  NURTURING_T10_DELAY_MINUTES,
+  NURTURING_T7_DELAY_MINUTES,
+  TEMPLATE_CALL_FOLLOWUP_D10,
+  TEMPLATE_CALL_FOLLOWUP_D7,
+  TONI_BOOKING_LINK,
+} from '../src/nurturing/toni-fase3.constants';
 
 const prisma = new PrismaClient();
 
-const DEFAULT_SEQUENCE_NAME = 'Seguimiento Toni (Call → WA → Call 7d)';
-
 /**
- * Secuencia Fase 3 según Toni (sin email intermedio):
- * 1) Llamada outbound inmediata
- * 2) WhatsApp inmediato (link de agendamiento — ideal tras no-contesta)
- * 3) Llamada a los 7 días
- * SMS queda preparado como canal (fallback), no en la secuencia default.
+ * Secuencia Fase 3 Toni:
+ * T+0 WA+SMS lo dispara NoAnswerFollowup tras la 1ª llamada outbound (no-contesta).
+ * Esta secuencia solo programa re-llamadas:
+ *   T+7  (10080 min) llamada agente follow-up
+ *   T+10 (14400 min) última llamada agente follow-up → si no hay contacto: ILOCALIZABLE
  */
 async function main() {
-  const bookingPlaceholder =
-    process.env.BOOKING_LINK ||
-    process.env.CALENDAR_BOOKING_URL ||
-    'https://www.localicer.com/agendar';
-
-  // Desactivar defaults anteriores (WA → Email 3d → Call)
   await prisma.sequence.updateMany({
     where: { isDefault: true },
     data: { isDefault: false, isActive: false },
   });
 
-  const existingToni = await prisma.sequence.findFirst({
-    where: { name: DEFAULT_SEQUENCE_NAME },
+  await prisma.sequence.updateMany({
+    where: { name: { in: LEGACY_TONI_SEQUENCE_NAMES } },
+    data: { isDefault: false, isActive: false },
+  });
+
+  const existing = await prisma.sequence.findFirst({
+    where: { name: DEFAULT_TONI_SEQUENCE_NAME },
     include: { steps: true },
   });
 
-  if (existingToni) {
+  const stepsCreate = [
+    {
+      order: 1,
+      channel: Channel.llamada,
+      delayMinutes: NURTURING_T7_DELAY_MINUTES,
+      templateKey: TEMPLATE_CALL_FOLLOWUP_D7,
+      templatePayload: {
+        summary: 'Segunda llamada de seguimiento (T+7 días)',
+        retellVariables: { nurturing_phase: 't7' },
+      },
+      maxRetries: 2,
+    },
+    {
+      order: 2,
+      channel: Channel.llamada,
+      delayMinutes: NURTURING_T10_DELAY_MINUTES,
+      templateKey: TEMPLATE_CALL_FOLLOWUP_D10,
+      templatePayload: {
+        summary: 'Tercera y última llamada de seguimiento (T+10 días)',
+        retellVariables: { nurturing_phase: 't10' },
+      },
+      maxRetries: 2,
+    },
+  ];
+
+  if (existing) {
     await prisma.sequence.update({
-      where: { id: existingToni.id },
-      data: { isDefault: true, isActive: true },
+      where: { id: existing.id },
+      data: {
+        isDefault: true,
+        isActive: true,
+        description:
+          'Tras no-contesta T+0 (WA+SMS inmediato): re-llamada T+7 y T+10 con agente follow-up. Sin contacto en T+10 → ILOCALIZABLE.',
+      },
     });
-    console.log(`Secuencia Toni ya existía, reactivada: ${existingToni.id}`);
+
+    const expected = [
+      { delay: NURTURING_T7_DELAY_MINUTES, key: TEMPLATE_CALL_FOLLOWUP_D7 },
+      { delay: NURTURING_T10_DELAY_MINUTES, key: TEMPLATE_CALL_FOLLOWUP_D10 },
+    ];
+    const matches =
+      existing.steps.length === 2 &&
+      expected.every((e, i) => {
+        const s = existing.steps.find((st) => st.order === i + 1);
+        return s?.delayMinutes === e.delay && s?.templateKey === e.key;
+      });
+
+    if (!matches) {
+      console.log(
+        'Pasos de la secuencia Toni desactualizados; se mantienen (hay StepRuns). Crea una secuencia nueva si hace falta re-seed limpio.',
+      );
+    }
+
+    console.log(`Secuencia Toni reactivada: ${existing.id}`);
     return;
   }
 
   const sequence = await prisma.sequence.create({
     data: {
-      name: DEFAULT_SEQUENCE_NAME,
+      name: DEFAULT_TONI_SEQUENCE_NAME,
       description:
-        'Paso 1: Llamada outbound → Paso 2: WhatsApp inmediato (link Calendar) → Paso 3: Llamada a los 7 días. Sin email intermedio.',
+        `T+0 WA/SMS (NoAnswerFollowup, link ${TONI_BOOKING_LINK}). ` +
+        'T+7 y T+10 llamadas con RETELL_AGENT_ID_FOLLOWUP. T+10 sin contacto → ILOCALIZABLE.',
       isActive: true,
       isDefault: true,
-      steps: {
-        create: [
-          {
-            order: 1,
-            channel: Channel.llamada,
-            delayMinutes: 0,
-            templateKey: 'nurturing.call.outbound_d0',
-            templatePayload: {
-              summary: 'Llamada outbound de seguimiento / captación',
-            },
-            maxRetries: 2,
-          },
-          {
-            order: 2,
-            channel: Channel.whatsapp,
-            delayMinutes: 0,
-            templateKey: 'nurturing.whatsapp.booking_link',
-            templatePayload: {
-              body:
-                'Hola {{name}}, no hemos podido hablar por teléfono. ' +
-                'Puedes agendar una visita aquí: {{booking_link}} ' +
-                '— Localicer',
-              booking_link: bookingPlaceholder,
-            },
-            maxRetries: 3,
-          },
-          {
-            order: 3,
-            channel: Channel.llamada,
-            delayMinutes: 10080, // 7 días
-            templateKey: 'nurturing.call.followup_d7',
-            templatePayload: {
-              summary: 'Segunda llamada de seguimiento (día 7)',
-            },
-            maxRetries: 2,
-          },
-        ],
-      },
+      steps: { create: stepsCreate },
     },
     include: { steps: { orderBy: { order: 'asc' } } },
   });

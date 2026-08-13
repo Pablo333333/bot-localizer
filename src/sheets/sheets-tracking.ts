@@ -12,8 +12,11 @@ export const BOT_TRACKING_HEADERS = [
   'Publicado Popalicer?',
   'WP Post ID',
   'Wp Post ID',
+  'Referencia',
+  'Referencia / WP Post ID',
   'Notas de Error',
   'Estado',
+  'Ilocalizable',
 ] as const;
 
 const TRACKING_LOOKUP = new Set(

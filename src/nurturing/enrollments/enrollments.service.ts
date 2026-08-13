@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   EnrollmentStatus,
   LeadStatus,
@@ -12,6 +13,10 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { LeadStatus as AppLeadStatus, TERMINAL_LEAD_STATUSES } from '../enums';
 import { SequenceScheduler } from '../engine/sequence.scheduler';
+import {
+  NURTURING_PHASE3_DISABLED_LOG,
+  isNurturingPhase3Enabled,
+} from '../phase3-enabled';
 
 @Injectable()
 export class EnrollmentsService {
@@ -20,12 +25,20 @@ export class EnrollmentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly scheduler: SequenceScheduler,
+    private readonly config: ConfigService,
   ) {}
 
   async enrollLead(
     leadId: string,
     sequenceId?: string,
   ): Promise<{ enrollmentId: string; sequenceId: string; stepsScheduled: number }> {
+    if (
+      !isNurturingPhase3Enabled(this.config.get('NURTURING_PHASE3_ENABLED'))
+    ) {
+      this.logger.log(NURTURING_PHASE3_DISABLED_LOG);
+      throw new BadRequestException(NURTURING_PHASE3_DISABLED_LOG);
+    }
+
     const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
     if (!lead) {
       throw new NotFoundException(`Lead ${leadId} not found`);

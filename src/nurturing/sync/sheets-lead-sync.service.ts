@@ -245,8 +245,15 @@ export class SheetsLeadSyncService {
       return;
     }
 
-    row.set(COL_ESTADO, status);
-    await row.save();
+    await this.sheetsService.updateTrackingCells(
+      sheet,
+      row.rowNumber,
+      {
+        Estado: status,
+        Ilocalizable: status === 'ilocalizable' ? 'SI' : undefined,
+      },
+      row,
+    );
     this.logger.log(
       `Synced status "${status}" → Sheets row ${row.rowNumber} (phone=${phone})`,
     );
@@ -303,6 +310,9 @@ export class SheetsLeadSyncService {
       s === 'visita_programada' // legacy alias
     ) {
       return PrismaLeadStatus.cita_programada;
+    }
+    if (s.includes('ilocaliz')) {
+      return PrismaLeadStatus.ilocalizable;
     }
     if (
       s.includes('cerrad') ||
