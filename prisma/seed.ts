@@ -13,9 +13,9 @@ const prisma = new PrismaClient();
 
 /**
  * Secuencia Fase 3 Toni:
- * T+0 WA+SMS lo dispara NoAnswerFollowup tras la 1ª llamada outbound (no-contesta).
+ * T+0 WhatsApp (sin SMS) lo dispara NoAnswerFollowup tras la 1ª llamada outbound (no-contesta).
  * Esta secuencia solo programa re-llamadas:
- *   T+7  (10080 min) llamada agente follow-up
+ *   T+7  (10080 min) llamada agente follow-up → si falla: SMS con enlace de cita
  *   T+10 (14400 min) última llamada agente follow-up → si no hay contacto: ILOCALIZABLE
  */
 async function main() {
@@ -66,7 +66,7 @@ async function main() {
         isDefault: true,
         isActive: true,
         description:
-          'Tras no-contesta T+0 (WA+SMS inmediato): re-llamada T+7 y T+10 con agente follow-up. Sin contacto en T+10 → ILOCALIZABLE.',
+          'Tras no-contesta T+0 (solo WhatsApp inmediato, sin SMS): re-llamada T+7 (SMS si falla) y T+10 con agente follow-up. Sin contacto en T+10 → ILOCALIZABLE.',
       },
     });
 
@@ -95,8 +95,8 @@ async function main() {
     data: {
       name: DEFAULT_TONI_SEQUENCE_NAME,
       description:
-        `T+0 WA/SMS (NoAnswerFollowup, link ${TONI_BOOKING_LINK}). ` +
-        'T+7 y T+10 llamadas con RETELL_AGENT_ID_FOLLOWUP. T+10 sin contacto → ILOCALIZABLE.',
+        `T+0 solo WhatsApp (NoAnswerFollowup, link ${TONI_BOOKING_LINK}; SMS omitido). ` +
+        'T+7 llamada follow-up + SMS si no contesta. T+10 última llamada; sin contacto → ILOCALIZABLE.',
       isActive: true,
       isDefault: true,
       steps: { create: stepsCreate },

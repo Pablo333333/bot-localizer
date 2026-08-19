@@ -9,8 +9,6 @@ import { LeadStatus } from '../enums';
 import { CallOutcome } from '../enums/lead-status.enum';
 import { LeadsService } from '../leads/leads.service';
 import {
-  TEMPLATE_CALL_FOLLOWUP_D10,
-  TEMPLATE_CALL_FOLLOWUP_D7,
   TEMPLATE_SMS_T0,
   TEMPLATE_SMS_T7,
   TEMPLATE_WA_T0,
@@ -26,11 +24,13 @@ import {
 } from '../phase3-enabled';
 import { normalizePhone } from '../utils/phone.util';
 import { CallOutcomeClassifier } from './call-outcome.classifier';
+import { planNoContactFollowup } from './no-answer-followup.policy';
 
 /**
- * T+0: NO_ANSWER/HANGUP → WA + SMS inmediatos + enroll T+7/T+10.
- * T+7: no-contesta → SMS con link de agendamiento.
- * T+10: no-contesta → estado ILOCALIZABLE.
+ * T+0: NO_ANSWER/HANGUP → solo WhatsApp (plantilla Localisto + enlace cita) + enroll T+7/T+10.
+ *       El SMS de seguimiento NO se envía en este primer intento.
+ * T+7: no-contesta / fallo de la rellamada → SMS con enlace para reservar la cita.
+ * T+10: no-contesta → estado ILOCALIZABLE (Prisma + Sheets).
  */
 @Injectable()
 export class NoAnswerFollowupService {
@@ -104,9 +104,14 @@ export class NoAnswerFollowupService {
     }
 
     const templateKey = await this.resolveTemplateKey(callData);
+    const nurturingPhase =
+      callData.retell_llm_dynamic_variables?.nurturing_phase ||
+      callData.collected_dynamic_variables?.nurturing_phase ||
+      callData.call_analysis?.custom_analysis_data?.nurturing_phase;
     const phase = resolveCallPhase({
       agentId: callData.agent_id,
       templateKey,
+      nurturingPhase: nurturingPhase ? String(nurturingPhase) : null,
       outboundAgentId: this.config.get<string>('RETELL_OUTBOUND_AGENT_ID'),
       followupAgentId: resolveRetellFollowupAgentId(
         this.config.get<string>('RETELL_AGENT_ID_FOLLOWUP'),
@@ -161,18 +166,23 @@ export class NoAnswerFollowupService {
     let smsSent = false;
     let enrolled = false;
     let markedIlocalizable = false;
+    const plan = noContact
+      ? planNoContactFollowup(phase)
+      : planNoContactFollowup('unknown');
 
-    if (noContact && phase === 't0') {
+    if (plan.sendWhatsApp || plan.sendSms) {
       const sent = await this.sendToniBookingMessages(lead, callData.call_id, {
-        whatsapp: true,
-        sms: true,
+        whatsapp: plan.sendWhatsApp,
+        sms: plan.sendSms,
         waKey: TEMPLATE_WA_T0,
-        smsKey: TEMPLATE_SMS_T0,
-        summaryPrefix: `t0_no_answer:${outcome}`,
+        smsKey: TEMPLATE_SMS_T7,
+        summaryPrefix: `${phase}_no_answer:${outcome}`,
       });
       whatsappSent = sent.whatsappSent;
       smsSent = sent.smsSent;
+    }
 
+    if (plan.enroll) {
       try {
         await this.enrollments.enrollLead(lead.id);
         enrolled = true;
@@ -185,17 +195,7 @@ export class NoAnswerFollowupService {
       }
     }
 
-    if (noContact && phase === 't7') {
-      const sent = await this.sendToniBookingMessages(lead, callData.call_id, {
-        whatsapp: false,
-        sms: true,
-        smsKey: TEMPLATE_SMS_T7,
-        summaryPrefix: `t7_no_answer:${outcome}`,
-      });
-      smsSent = sent.smsSent;
-    }
-
-    if (noContact && phase === 't10') {
+    if (plan.markIlocalizable) {
       await this.leads.updateStatus(lead.id, {
         status: LeadStatus.ILOCALIZABLE,
         reason: 't10_no_contact',

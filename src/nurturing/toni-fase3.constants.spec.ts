@@ -68,6 +68,13 @@ describe('Toni Fase 3 constants', () => {
         agentId: RETELL_FOLLOWUP_AGENT_ID_DEFAULT,
       }),
     ).toBe('t10');
+    expect(
+      resolveCallPhase({
+        agentId: RETELL_FOLLOWUP_AGENT_ID_DEFAULT,
+        followupAgentId: RETELL_FOLLOWUP_AGENT_ID_DEFAULT,
+        nurturingPhase: 't10',
+      }),
+    ).toBe('t10');
   });
 
   it('ILOCALIZABLE es estado terminal', () => {

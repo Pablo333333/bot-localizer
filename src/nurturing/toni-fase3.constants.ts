@@ -19,6 +19,7 @@ export const NURTURING_T10_DELAY_MINUTES = 14_400;
 export const TEMPLATE_CALL_FOLLOWUP_D7 = 'nurturing.call.followup_d7';
 export const TEMPLATE_CALL_FOLLOWUP_D10 = 'nurturing.call.followup_d10';
 export const TEMPLATE_WA_T0 = 'nurturing.whatsapp.no_answer_t0';
+/** Reservado. El SMS de T+0 está omitido a propósito (solo WhatsApp). */
 export const TEMPLATE_SMS_T0 = 'nurturing.sms.no_answer_t0';
 export const TEMPLATE_SMS_T7 = 'nurturing.sms.followup_d7';
 
@@ -56,7 +57,15 @@ export function resolveCallPhase(params: {
   templateKey?: string | null;
   outboundAgentId?: string;
   followupAgentId?: string;
+  nurturingPhase?: string | null;
 }): NurturingCallPhase {
+  const explicit = String(params.nurturingPhase || '')
+    .toLowerCase()
+    .trim();
+  if (explicit === 't0' || explicit === 't7' || explicit === 't10') {
+    return explicit;
+  }
+
   if (params.templateKey === TEMPLATE_CALL_FOLLOWUP_D7) return 't7';
   if (params.templateKey === TEMPLATE_CALL_FOLLOWUP_D10) return 't10';
 
