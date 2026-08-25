@@ -10,12 +10,13 @@ import { SheetsModule } from './sheets/sheets.module';
 import { WordpressModule } from './wordpress/wordpress.module';
 import { GoogleModule } from './google/google.module';
 import { StripeModule } from './stripe/stripe.module';
-import { InboundService } from './v2/inbound.service';
 import { WhatsAppWebhook } from './v2/whatsapp.webhook';
-import { CalendarService } from './v2/calendar.service';
+import { InboundModule } from './v2/inbound.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { QueueModule } from './queue/queue.module';
 import { NurturingModule } from './nurturing/nurturing.module';
+import { MetaModule } from './meta/meta.module';
+import { XModule } from './x/x.module';
 
 @Module({
   imports: [
@@ -23,7 +24,7 @@ import { NurturingModule } from './nurturing/nurturing.module';
     ScheduleModule.forRoot(),
     ServeStaticModule.forRoot({
       rootPath: join(process.cwd(), 'public'),
-      exclude: ['/api*', '/v2*', '/stripe*', '/nurturing*'],
+      exclude: ['/api*', '/v2*', '/stripe*', '/nurturing*', '/meta*', '/x*'],
     }),
     PrismaModule,
     QueueModule,
@@ -32,8 +33,11 @@ import { NurturingModule } from './nurturing/nurturing.module';
     GoogleModule,
     StripeModule,
     NurturingModule,
+    InboundModule,
+    MetaModule,
+    XModule,
   ],
   controllers: [AppController, WhatsAppWebhook],
-  providers: [AppService, OutboundService, InboundService, CalendarService],
+  providers: [AppService, OutboundService],
 })
 export class AppModule {}

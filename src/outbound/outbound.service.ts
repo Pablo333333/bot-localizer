@@ -3,12 +3,16 @@ import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import Retell from 'retell-sdk';
 import { SheetsService } from '../sheets/sheets.service';
-import {
-  NURTURING_PHASE3_DISABLED_LOG,
-  isNurturingPhase3Enabled,
-} from '../nurturing/phase3-enabled';
 import { resolveRetellFromNumber } from '../nurturing/toni-fase3.constants';
-import { isPublicacionAutorizadaSi } from './publicacion-autorizada';
+import {
+  OUTBOUND_CALLS_DISABLED_LOG,
+  isOutboundCallsEnabled,
+} from './outbound-enabled';
+import {
+  findPublicacionAutorizadaHeader,
+  isPublicacionAutorizadaSi,
+  readPublicacionAutorizadaRaw,
+} from './publicacion-autorizada';
 import { buildRetellDynamicVariables } from './retell-dynamic-variables';
 
 const SHEET_NAME = 'Localizados';
@@ -64,11 +68,14 @@ export class OutboundService {
   @Cron(CronExpression.EVERY_5_MINUTES)
   async checkPendingCalls(): Promise<void> {
     if (
-      !isNurturingPhase3Enabled(
-        this.configService.get('NURTURING_PHASE3_ENABLED'),
-      )
+      !isOutboundCallsEnabled({
+        outboundCallsEnabled: this.configService.get('OUTBOUND_CALLS_ENABLED'),
+        nurturingPhase3Enabled: this.configService.get(
+          'NURTURING_PHASE3_ENABLED',
+        ),
+      })
     ) {
-      this.logger.log(NURTURING_PHASE3_DISABLED_LOG);
+      this.logger.log(OUTBOUND_CALLS_DISABLED_LOG);
       return;
     }
 
@@ -114,8 +121,9 @@ export class OutboundService {
 
     await sheet.loadHeaderRow();
     const headers = sheet.headerValues || [];
+    const pubHeader = findPublicacionAutorizadaHeader(headers);
     this.logger.log(
-      `[OutboundService] Cabeceras clave → Llamado: ${headers.includes(COL_LLAMADO) ? 'OK' : 'FALTA'} | Telefono1: ${headers.includes(COL_C1_TEL) ? 'OK' : 'FALTA'} | Contacto1 por: ${headers.includes(COL_C1_ROL) ? 'OK' : 'FALTA'} | Call ID: ${headers.includes(COL_CALL_ID) ? 'OK' : 'FALTA'} | Marca temporal: ${headers.includes(COL_MARCA_TEMPORAL) ? 'OK' : 'FALTA'}`,
+      `[OutboundService] Cabeceras clave → Publicacion Autorizada?: ${pubHeader ? `OK ("${pubHeader}" idx=${headers.indexOf(pubHeader)})` : 'FALTA'} | Llamado: ${headers.includes(COL_LLAMADO) ? 'OK' : 'FALTA'} | Telefono1: ${headers.includes(COL_C1_TEL) ? 'OK' : 'FALTA'} | Contacto1 por: ${headers.includes(COL_C1_ROL) ? 'OK' : 'FALTA'} | Call ID: ${headers.includes(COL_CALL_ID) ? 'OK' : 'FALTA'} | Marca temporal: ${headers.includes(COL_MARCA_TEMPORAL) ? 'OK' : 'FALTA'}`,
     );
 
     const rows = await sheet.getRows();
@@ -274,10 +282,7 @@ export class OutboundService {
     headerValues?: string[],
   ): string | null {
     if (!isPublicacionAutorizadaSi(row, headerValues)) {
-      const raw =
-        row.get('Publicacion Autorizada?') ??
-        row.get('Publicación Autorizada?') ??
-        '';
+      const raw = readPublicacionAutorizadaRaw(row, headerValues);
       return `Publicacion Autorizada? no es SI ("${String(raw).trim() || 'vacío'}") — no se llama ni se procesa`;
     }
 
