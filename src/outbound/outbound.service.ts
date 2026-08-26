@@ -14,6 +14,12 @@ import {
   readPublicacionAutorizadaRaw,
 } from './publicacion-autorizada';
 import { buildRetellDynamicVariables } from './retell-dynamic-variables';
+import {
+  OUTBOUND_HOURS_DESCRIPTION,
+  OUTBOUND_TIMEZONE,
+  isWithinOutboundCallHours,
+  resolveMaxDailyCalls,
+} from './outbound-schedule';
 
 const SHEET_NAME = 'Localizados';
 const COL_LLAMADO = 'Llamado';
@@ -31,12 +37,9 @@ const COL_C2_TEL = 'Telefono2';
 const COL_C3_ROL = 'Contacto3 por';
 const COL_C3_TEL = 'Telefono3';
 
-const MAX_DAILY_CALLS = 5;
 const DELAY_BETWEEN_CALLS_MS = 90_000;
 const ANTI_REPEAT_MS = 12 * 60 * 60 * 1000;
-const TIMEZONE = 'Europe/Madrid';
-const BUSINESS_START_MINUTES = 10 * 60;
-const BUSINESS_END_MINUTES = 20 * 60 + 30;
+const TIMEZONE = OUTBOUND_TIMEZONE;
 
 @Injectable()
 export class OutboundService {
@@ -44,6 +47,7 @@ export class OutboundService {
   private readonly retell: Retell;
   private readonly agentId: string;
   private readonly fromNumber: string;
+  private readonly maxDailyCalls: number;
   private isRunning = false;
 
   /** Fuente de verdad del límite diario: intentos de esta sesión/día Madrid. */
@@ -62,6 +66,9 @@ export class OutboundService {
     this.agentId = this.configService.getOrThrow<string>('RETELL_OUTBOUND_AGENT_ID');
     this.fromNumber = resolveRetellFromNumber(
       this.configService.get<string>('RETELL_FROM_NUMBER'),
+    );
+    this.maxDailyCalls = resolveMaxDailyCalls(
+      this.configService.get('MAX_DAILY_CALLS'),
     );
   }
 
@@ -102,7 +109,7 @@ export class OutboundService {
 
     if (!this.isWithinBusinessHours()) {
       this.logger.log(
-        `[OutboundService] Descartado ciclo: Fuera de horario laboral (L-V 10:00-20:30 ${TIMEZONE}).`,
+        `[OutboundService] Descartado ciclo: Fuera de horario laboral (${OUTBOUND_HOURS_DESCRIPTION}).`,
       );
       return;
     }
@@ -132,17 +139,17 @@ export class OutboundService {
     // Límite diario: SOLO memoria (no bloquear por formatos raros de Fecha actualización)
     const attemptsToday = this.dailyAttemptCount;
     this.logger.log(
-      `[OutboundService] Cupo diario (memoria): ${attemptsToday}/${MAX_DAILY_CALLS}. Set teléfonos hoy: ${this.attemptedPhonesToday.size}`,
+      `[OutboundService] Cupo diario (memoria): ${attemptsToday}/${this.maxDailyCalls}. Set teléfonos hoy: ${this.attemptedPhonesToday.size}`,
     );
 
-    if (attemptsToday >= MAX_DAILY_CALLS) {
+    if (attemptsToday >= this.maxDailyCalls) {
       this.logger.log(
-        `[OutboundService] Descartado ciclo: Límite alcanzado (${attemptsToday}/${MAX_DAILY_CALLS}).`,
+        `[OutboundService] Descartado ciclo: Límite alcanzado (${attemptsToday}/${this.maxDailyCalls}).`,
       );
       return;
     }
 
-    let remainingToday = MAX_DAILY_CALLS - attemptsToday;
+    let remainingToday = this.maxDailyCalls - attemptsToday;
 
     // Clasificar filas con motivo explícito de descarte
     type Candidate = { row: any; rowNumber: number; phone: string; phoneKey: string; marcaTs: number };
@@ -191,7 +198,7 @@ export class OutboundService {
     for (const candidate of candidates) {
       if (remainingToday <= 0) {
         this.logger.log(
-          `[OutboundService] Fila ${candidate.rowNumber} descartada: Límite alcanzado (${this.dailyAttemptCount}/${MAX_DAILY_CALLS}).`,
+          `[OutboundService] Fila ${candidate.rowNumber} descartada: Límite alcanzado (${this.dailyAttemptCount}/${this.maxDailyCalls}).`,
         );
         break;
       }
@@ -226,7 +233,7 @@ export class OutboundService {
 
           if (!this.isWithinBusinessHours()) {
             this.logger.log(
-              `[OutboundService] Fila ${rowNumber} descartada: Fuera de horario (tras retardo). Deteniendo lote.`,
+              `[OutboundService] Fila ${rowNumber} descartada: Fuera de horario (${OUTBOUND_HOURS_DESCRIPTION}). Deteniendo lote.`,
             );
             break;
           }
@@ -259,7 +266,7 @@ export class OutboundService {
         });
 
         this.logger.log(
-          `[OutboundService] Fila ${rowNumber} OK — call_id=${call.call_id} | intentos hoy=${this.dailyAttemptCount}/${MAX_DAILY_CALLS}`,
+          `[OutboundService] Fila ${rowNumber} OK — call_id=${call.call_id} | intentos hoy=${this.dailyAttemptCount}/${this.maxDailyCalls}`,
         );
       } catch (err) {
         this.logger.error(
@@ -269,7 +276,7 @@ export class OutboundService {
     }
 
     this.logger.log(
-      `[OutboundService] Ciclo terminado. Intentos en este run: ${callsLaunchedThisRun}. Total día (memoria): ${this.dailyAttemptCount}/${MAX_DAILY_CALLS}`,
+      `[OutboundService] Ciclo terminado. Intentos en este run: ${callsLaunchedThisRun}. Total día (memoria): ${this.dailyAttemptCount}/${this.maxDailyCalls}`,
     );
   }
 
@@ -462,10 +469,7 @@ export class OutboundService {
   }
 
   private isWithinBusinessHours(now: Date = new Date()): boolean {
-    const madrid = this.getMadridParts(now);
-    if (madrid.weekday === 0 || madrid.weekday === 6) return false;
-    const minutes = madrid.hour * 60 + madrid.minute;
-    return minutes >= BUSINESS_START_MINUTES && minutes <= BUSINESS_END_MINUTES;
+    return isWithinOutboundCallHours(this.getMadridParts(now));
   }
 
   private getMadridParts(date: Date): {
