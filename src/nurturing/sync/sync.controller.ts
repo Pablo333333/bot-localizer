@@ -1,29 +1,48 @@
-import { Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
-import { NurturingApiKeyGuard } from '../guards/nurturing-api-key.guard';
-import { SheetsLeadSyncService } from './sheets-lead-sync.service';
-import { SheetsWordpressSyncService } from './sheets-wordpress-sync.service';
-
-@Controller('nurturing/sync')
-@UseGuards(NurturingApiKeyGuard)
-export class SyncController {
-  constructor(
-    private readonly sheetsSync: SheetsLeadSyncService,
-    private readonly sheetsWpSync: SheetsWordpressSyncService,
-  ) {}
-
-  @Post('sheets')
-  ingestFromSheets() {
-    return this.sheetsSync.ingestFromSheets();
-  }
-
-  /** Sync Sheets → WordPress (filas con columna "WP Post ID") */
-  @Post('sheets-to-wordpress')
-  syncSheetsToWordpress() {
-    return this.sheetsWpSync.syncSheetRowsToWordpress();
-  }
-
-  @Get('health')
-  health() {
-    return { ok: true, service: 'nurturing-sync' };
-  }
-}
+import { Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { NurturingApiKeyGuard } from '../guards/nurturing-api-key.guard';
+import { SheetsLeadSyncService } from './sheets-lead-sync.service';
+import { SheetsReviewedSyncService } from './sheets-reviewed-sync.service';
+
+@Controller('nurturing/sync')
+@UseGuards(NurturingApiKeyGuard)
+export class SyncController {
+  constructor(
+    private readonly sheetsSync: SheetsLeadSyncService,
+    private readonly sheetsReviewedSync: SheetsReviewedSyncService,
+  ) {}
+
+  @Post('sheets')
+  ingestFromSheets() {
+    return this.sheetsSync.ingestFromSheets();
+  }
+
+  /**
+   * @deprecated Usar POST /nurturing/sync/reviewed-to-wordpress
+   * (SheetsWordpressSyncService desactivado — única vía: Anuncio Revisado? = SI).
+   */
+  @Post('sheets-to-wordpress')
+  syncSheetsToWordpress(@Query('row') row?: string) {
+    const rowNumber = row ? Number.parseInt(row, 10) : undefined;
+    return this.sheetsReviewedSync.syncReviewedRowsToWordpress(
+      Number.isFinite(rowNumber) ? rowNumber : undefined,
+    );
+  }
+
+  /**
+   * Anuncio Revisado? = SI → crear/actualizar estate_property en WordPress.
+   * Query opcional: ?row=42 (número de fila del Sheet, 1-based con cabecera en fila 1).
+   */
+  @Post('reviewed-to-wordpress')
+  syncReviewedToWordpress(@Query('row') row?: string) {
+    const rowNumber = row ? Number.parseInt(row, 10) : undefined;
+    return this.sheetsReviewedSync.syncReviewedRowsToWordpress(
+      Number.isFinite(rowNumber) ? rowNumber : undefined,
+    );
+  }
+
+  @Get('health')
+  health() {
+    return { ok: true, service: 'nurturing-sync' };
+  }
+}
+

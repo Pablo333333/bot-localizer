@@ -11,6 +11,7 @@ import {
   buildCadPropertyUpdates,
   shouldWriteCell,
 } from './sheets-cad-updates';
+import { buildWpPublishWritebackFields } from './wp-publish-writeback';
 
 @Injectable()
 export class SheetsService implements OnModuleInit {
@@ -283,6 +284,24 @@ export class SheetsService implements OnModuleInit {
   }
 
   /**
+   * Write-back tras publicar en WordPress (reviewed sync).
+   * Escribe ID_WP, WP Post ID, Referencia, Publicado Popalicer?=SI y columna D.
+   */
+  async writeWordPressPublishWriteback(
+    sheet: GoogleSpreadsheetWorksheet,
+    rowNumber: number,
+    postId: number | string,
+    publicadoValue: string,
+  ): Promise<void> {
+    const fields = buildWpPublishWritebackFields(postId, publicadoValue);
+    await this.updateTrackingCells(sheet, rowNumber, fields);
+    await this.writeWpPostIdColumnD(sheet, rowNumber, postId);
+    this.logger.log(
+      `[writeWordPressPublishWriteback] Fila ${rowNumber} post_id=${postId} Publicado Popalicer?="${publicadoValue}"`,
+    );
+  }
+
+  /**
    * Tras llamada Retell: tracking + solo celdas de inmueble que Retell
    * extraiga con valor nuevo no vacío (precio, superficie, estado, …).
    */
@@ -361,7 +380,6 @@ export class SheetsService implements OnModuleInit {
     const propertyUpdates = buildCadPropertyUpdates(
       data.call_analysis?.custom_analysis_data,
       (header) => row.get(header),
-      { callSummary: data.call_analysis?.call_summary },
     );
 
     this.logger.log(

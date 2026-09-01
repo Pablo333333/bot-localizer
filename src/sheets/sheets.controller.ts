@@ -129,8 +129,7 @@ export class SheetsController {
     const callId = callData.call_id;
 
     const TARGET_AGENT_ID =
-      this.configService.get<string>('RETELL_OUTBOUND_AGENT_ID') ||
-      'agent_b8abf941c156192b1995f36c5d';
+      this.configService.getOrThrow<string>('RETELL_OUTBOUND_AGENT_ID');
     const INBOUND_AGENT_ID = this.configService.get<string>(
       'RETELL_INBOUND_AGENT_ID',
     );

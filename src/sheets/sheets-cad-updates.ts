@@ -139,7 +139,6 @@ function pickIfChanged(
 export function buildCadPropertyUpdates(
   cad: CadLike,
   getExisting: (header: string) => unknown,
-  extras?: { callSummary?: string },
 ): Record<string, string> {
   const out: Record<string, string> = {};
   if (!cad) return out;
@@ -157,7 +156,7 @@ export function buildCadPropertyUpdates(
   pickIfChanged(
     out,
     'Información adicional',
-    val(extras?.callSummary || cad.informacion_adicional),
+    val(cad.informacion_adicional || cad.info_adicional),
     getExisting,
   );
   pickIfChanged(out, 'Superficie Total', val(cad.superficie_total, true), getExisting);

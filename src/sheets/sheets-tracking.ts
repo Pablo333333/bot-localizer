@@ -12,6 +12,7 @@ export const BOT_TRACKING_HEADERS = [
   'Publicado Popalicer?',
   'WP Post ID',
   'Wp Post ID',
+  'ID_WP',
   'Referencia',
   'Referencia / WP Post ID',
   'Notas de Error',

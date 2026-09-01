@@ -70,12 +70,71 @@ export class WordpressService {
   }
 
   /**
+   * Crea o actualiza un estate_property desde datos de llamada/CAD (Retell o Sheet).
+   */
+  async upsertPropertyFromCallData(
+    callData: Parameters<typeof buildEstatePropertyPayload>[0],
+    options: {
+      postId?: number;
+      featuredMediaId?: number;
+      status?: string;
+    } = {},
+  ): Promise<{ id: number; created: boolean }> {
+    const status =
+      options.status ||
+      this.configService.get<string>('WP_POST_STATUS') ||
+      'draft';
+
+    const payload = buildEstatePropertyPayload(callData, {
+      status,
+      featuredMediaId: options.featuredMediaId,
+    });
+    const body = toWordpressRequestBody(payload);
+
+    if (options.postId) {
+      try {
+        this.logger.log(
+          `Actualizando estate_property ${options.postId}: "${payload.title}"`,
+        );
+        const response = await lastValueFrom(
+          this.httpService.post(
+            `${this.apiUrl}/wp/v2/estate_property/${options.postId}`,
+            body,
+            { headers: this.getAuthHeaders() },
+          ),
+        );
+        return { id: response.data.id ?? options.postId, created: false };
+      } catch (error: any) {
+        this.logger.error(
+          `Error al actualizar estate_property ${options.postId}: ${
+            error.response?.data?.message || error.message
+          }`,
+        );
+        throw error;
+      }
+    }
+
+    const created = await this.createPropertyPost(
+      callData,
+      options.featuredMediaId,
+      status,
+    );
+    return { id: created.id, created: true };
+  }
+
+  /**
    * Crea un inmueble como CPT `estate_property` (WP Residence)
    * vía POST /wp/v2/estate_property con meta nativa.
    */
-  async createPropertyPost(data: any, featuredMediaId?: number): Promise<any> {
+  async createPropertyPost(
+    data: any,
+    featuredMediaId?: number,
+    statusOverride?: string,
+  ): Promise<any> {
     const status =
-      this.configService.get<string>('WP_POST_STATUS') || 'draft';
+      statusOverride ||
+      this.configService.get<string>('WP_POST_STATUS') ||
+      'draft';
 
     const payload = buildEstatePropertyPayload(data, {
       status,

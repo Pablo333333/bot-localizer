@@ -62,17 +62,29 @@ describe('buildCadPropertyUpdates', () => {
     expect(updates).not.toHaveProperty('Tipo de inmueble');
   });
 
-  it('no aplica defaults (Buen estado / No consta) si CAD viene vacío', () => {
+  it('no sobrescribe Información adicional con call_summary genérico', () => {
     const updates = buildCadPropertyUpdates(
       {
-        estado: '',
-        certificacion: '',
-        vado: '',
-        precio_alquiler: '',
+        informacion_adicional: '',
+        info_adicional: '',
       },
-      getExisting,
+      (h) =>
+        h === 'Información adicional'
+          ? 'Datos previos del cartel'
+          : undefined,
     );
 
     expect(updates).toEqual({});
+  });
+
+  it('actualiza Información adicional solo con dato explícito del CAD', () => {
+    const updates = buildCadPropertyUpdates(
+      { informacion_adicional: 'Tiene terraza trasera' },
+      (h) => (h === 'Información adicional' ? 'Datos previos' : undefined),
+    );
+
+    expect(updates).toEqual({
+      'Información adicional': 'Tiene terraza trasera',
+    });
   });
 });

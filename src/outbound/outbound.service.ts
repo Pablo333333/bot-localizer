@@ -13,7 +13,7 @@ import {
   isPublicacionAutorizadaSi,
   readPublicacionAutorizadaRaw,
 } from './publicacion-autorizada';
-import { buildRetellDynamicVariables } from './retell-dynamic-variables';
+import { buildRetellDynamicVariables, RETELL_OUTBOUND_VARIABLE_KEYS } from './retell-dynamic-variables';
 import {
   OUTBOUND_HOURS_DESCRIPTION,
   OUTBOUND_TIMEZONE,
@@ -64,6 +64,9 @@ export class OutboundService {
       apiKey: this.configService.getOrThrow<string>('RETELL_API_KEY'),
     });
     this.agentId = this.configService.getOrThrow<string>('RETELL_OUTBOUND_AGENT_ID');
+    this.logger.log(
+      `[OutboundService] Agente outbound Retell activo: ${this.agentId} (RETELL_OUTBOUND_AGENT_ID)`,
+    );
     this.fromNumber = resolveRetellFromNumber(
       this.configService.get<string>('RETELL_FROM_NUMBER'),
     );
@@ -152,7 +155,14 @@ export class OutboundService {
     let remainingToday = this.maxDailyCalls - attemptsToday;
 
     // Clasificar filas con motivo explícito de descarte
-    type Candidate = { row: any; rowNumber: number; phone: string; phoneKey: string; marcaTs: number };
+    type Candidate = {
+      row: any;
+      rowNumber: number;
+      phone: string;
+      phoneKey: string;
+      contactIndex?: 1 | 2 | 3;
+      marcaTs: number;
+    };
     const candidates: Candidate[] = [];
     let discardedCount = 0;
 
@@ -171,11 +181,13 @@ export class OutboundService {
 
       const rawPhone = this.getBestPhone(row)!;
       const phone = this.formatE164Spain(rawPhone);
+      const phonePick = this.getBestPhoneWithReason(row);
       candidates.push({
         row,
         rowNumber,
         phone,
         phoneKey: this.normalizePhoneKey(phone),
+        contactIndex: phonePick.contactIndex,
         marcaTs: this.parseMarcaTemporal(row.get(COL_MARCA_TEMPORAL)?.toString()),
       });
     }
@@ -203,7 +215,7 @@ export class OutboundService {
         break;
       }
 
-      const { row, rowNumber, phone, phoneKey } = candidate;
+      const { row, rowNumber, phone, phoneKey, contactIndex } = candidate;
 
       // Re-check memoria (por si otra fila del mismo lote ya usó el número)
       if (this.attemptedPhonesToday.has(phoneKey)) {
@@ -221,7 +233,13 @@ export class OutboundService {
         continue;
       }
 
-      const dynamicVars = buildRetellDynamicVariables(row);
+      const { variables: dynamicVars, missing: missingDynamicVars } =
+        buildRetellDynamicVariables(row, { phoneE164: phone, contactIndex });
+      for (const varName of missingDynamicVars) {
+        this.logger.warn(
+          `[WARN] Variable Retell "${varName}" vacía o ausente — fila ${rowNumber}, teléfono ${phone}`,
+        );
+      }
       const nowLabel = this.formatMadridDateTime(new Date());
 
       try {
@@ -240,7 +258,7 @@ export class OutboundService {
         }
 
         this.logger.log(
-          `[OutboundService] Fila ${rowNumber} ACEPTADA → marcando Llamado=SI y disparando Retell (${phone}) | municipio="${dynamicVars.municipio}"`,
+          `[OutboundService] Fila ${rowNumber} ACEPTADA → marcando Llamado=SI y disparando Retell (${phone}) | municipio="${dynamicVars.municipio || '(vacío)'}"`,
         );
 
         // Marcar ANTES de Retell — solo celdas de tracking (nunca row.save() de fila completa)
@@ -253,6 +271,10 @@ export class OutboundService {
         this.dailyAttemptCount++;
         remainingToday--;
         callsLaunchedThisRun++;
+
+        this.logger.log(
+          `[OutboundService] createPhoneCall agent=${this.agentId} fila=${rowNumber} tel=${phone} retell_llm_dynamic_variables (${Object.keys(dynamicVars).length}/${RETELL_OUTBOUND_VARIABLE_KEYS.length}): ${JSON.stringify(dynamicVars)}`,
+        );
 
         const call = await this.retell.call.createPhoneCall({
           from_number: this.fromNumber,
@@ -338,19 +360,31 @@ export class OutboundService {
     return null;
   }
 
-  private getBestPhoneWithReason(row: any): { phone: string | null; reason?: string } {
-    const contacts = [
+  private getBestPhoneWithReason(row: any): {
+    phone: string | null;
+    contactIndex?: 1 | 2 | 3;
+    reason?: string;
+  } {
+    const contacts: Array<{
+      index: 1 | 2 | 3;
+      label: string;
+      role: string | undefined;
+      phone: string | undefined;
+    }> = [
       {
+        index: 1,
         label: 'Telefono1/Contacto1 por',
         role: row.get(COL_C1_ROL)?.toString().trim(),
         phone: row.get(COL_C1_TEL)?.toString().trim(),
       },
       {
+        index: 2,
         label: 'Telefono2/Contacto2 por',
         role: row.get(COL_C2_ROL)?.toString().trim(),
         phone: row.get(COL_C2_TEL)?.toString().trim(),
       },
       {
+        index: 3,
         label: 'Telefono3/Contacto3 por',
         role: row.get(COL_C3_ROL)?.toString().trim(),
         phone: row.get(COL_C3_TEL)?.toString().trim(),
@@ -366,13 +400,17 @@ export class OutboundService {
     const particular = validContacts.find(
       (c) => (c.role || '').toLowerCase() === 'particular',
     );
-    if (particular) return { phone: particular.phone };
+    if (particular) {
+      return { phone: particular.phone!, contactIndex: particular.index };
+    }
 
     const indeterminado = validContacts.find((c) => {
       const role = (c.role || '').trim().toLowerCase();
       return !role || role === 'indeterminado';
     });
-    if (indeterminado) return { phone: indeterminado.phone };
+    if (indeterminado) {
+      return { phone: indeterminado.phone!, contactIndex: indeterminado.index };
+    }
 
     if (
       validContacts.every(
@@ -387,7 +425,10 @@ export class OutboundService {
       };
     }
 
-    return { phone: validContacts[0].phone };
+    return {
+      phone: validContacts[0].phone!,
+      contactIndex: validContacts[0].index,
+    };
   }
 
   private rememberAttempt(phoneKey: string): void {

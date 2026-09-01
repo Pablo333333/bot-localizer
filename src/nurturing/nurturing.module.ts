@@ -1,4 +1,5 @@
 import { Module, forwardRef } from '@nestjs/common';
+import { GoogleModule } from '../google/google.module';
 import { SheetsModule } from '../sheets/sheets.module';
 import { WordpressModule } from '../wordpress/wordpress.module';
 import { CallChannel } from './channels/call.channel';
@@ -19,11 +20,11 @@ import { MetricsService } from './metrics/metrics.service';
 import { SequencesController } from './sequences/sequences.controller';
 import { SequencesService } from './sequences/sequences.service';
 import { SheetsLeadSyncService } from './sync/sheets-lead-sync.service';
-import { SheetsWordpressSyncService } from './sync/sheets-wordpress-sync.service';
+import { SheetsReviewedSyncService } from './sync/sheets-reviewed-sync.service';
 import { SyncController } from './sync/sync.controller';
 
 @Module({
-  imports: [forwardRef(() => SheetsModule), WordpressModule],
+  imports: [forwardRef(() => SheetsModule), WordpressModule, GoogleModule],
   controllers: [
     LeadsController,
     SequencesController,
@@ -39,7 +40,7 @@ import { SyncController } from './sync/sync.controller';
     SequenceScheduler,
     SequenceProcessor,
     SheetsLeadSyncService,
-    SheetsWordpressSyncService,
+    SheetsReviewedSyncService,
     CallOutcomeClassifier,
     NoAnswerFollowupService,
     ChannelRegistry,
