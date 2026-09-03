@@ -1,23 +1,21 @@
 import {
+  COL_PROPIETARIO_CONTACTADO,
+  WP_PUBLISH_CONTACTED_VALUE,
   buildWpPublishWritebackFields,
-  resolvePublicadoPopalicerWriteValue,
 } from './wp-publish-writeback';
 
 describe('wp-publish-writeback', () => {
-  it('marca Publicado Popalicer? como SI por defecto', () => {
-    expect(resolvePublicadoPopalicerWriteValue()).toBe('SI');
-    expect(resolvePublicadoPopalicerWriteValue('si')).toBe('SI');
-    expect(resolvePublicadoPopalicerWriteValue('PUBLICADO')).toBe('PUBLICADO');
-  });
-
-  it('incluye IDs y Publicado Popalicer? en el write-back', () => {
-    expect(buildWpPublishWritebackFields(4242, 'SI')).toEqual({
+  it('marca Propietario contactado? como SI y no toca Publicado Popalicer?', () => {
+    expect(buildWpPublishWritebackFields(4242)).toEqual({
       ID_WP: 4242,
       'WP Post ID': 4242,
       'Wp Post ID': 4242,
       Referencia: 4242,
       'Referencia / WP Post ID': 4242,
-      'Publicado Popalicer?': 'SI',
+      [COL_PROPIETARIO_CONTACTADO]: WP_PUBLISH_CONTACTED_VALUE,
     });
+    expect(JSON.stringify(buildWpPublishWritebackFields(4242))).not.toMatch(
+      /Publicado Popalicer/i,
+    );
   });
 });

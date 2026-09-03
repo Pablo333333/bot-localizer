@@ -11,7 +11,10 @@ import {
   buildCadPropertyUpdates,
   shouldWriteCell,
 } from './sheets-cad-updates';
-import { buildWpPublishWritebackFields } from './wp-publish-writeback';
+import {
+  WP_PUBLISH_CONTACTED_VALUE,
+  buildWpPublishWritebackFields,
+} from './wp-publish-writeback';
 
 @Injectable()
 export class SheetsService implements OnModuleInit {
@@ -285,19 +288,19 @@ export class SheetsService implements OnModuleInit {
 
   /**
    * Write-back tras publicar en WordPress (reviewed sync).
-   * Escribe ID_WP, WP Post ID, Referencia, Publicado Popalicer?=SI y columna D.
+   * Escribe ID_WP, WP Post ID, Referencia, Propietario contactado?=SI (columna K) y columna D.
    */
   async writeWordPressPublishWriteback(
     sheet: GoogleSpreadsheetWorksheet,
     rowNumber: number,
     postId: number | string,
-    publicadoValue: string,
   ): Promise<void> {
-    const fields = buildWpPublishWritebackFields(postId, publicadoValue);
+    const fields = buildWpPublishWritebackFields(postId);
     await this.updateTrackingCells(sheet, rowNumber, fields);
     await this.writeWpPostIdColumnD(sheet, rowNumber, postId);
+    await this.writePropietarioContactadoColumnK(sheet, rowNumber);
     this.logger.log(
-      `[writeWordPressPublishWriteback] Fila ${rowNumber} post_id=${postId} Publicado Popalicer?="${publicadoValue}"`,
+      `[writeWordPressPublishWriteback] Fila ${rowNumber} post_id=${postId} Propietario contactado?="${WP_PUBLISH_CONTACTED_VALUE}"`,
     );
   }
 
@@ -414,6 +417,23 @@ export class SheetsService implements OnModuleInit {
     cell.value = next;
     await sheet.saveUpdatedCells();
     this.logger.log(`[WP Post ID] ${a1} ← ${next}`);
+  }
+
+  /** Columna K = Propietario contactado?. Escritura A1 puntual. */
+  async writePropietarioContactadoColumnK(
+    sheet: GoogleSpreadsheetWorksheet,
+    rowNumber: number,
+  ): Promise<void> {
+    const a1 = `K${rowNumber}`;
+    await sheet.loadCells(a1);
+    const cell = sheet.getCellByA1(a1);
+    const next = WP_PUBLISH_CONTACTED_VALUE;
+    if (String(cell.value ?? '').trim() === next) {
+      return;
+    }
+    cell.value = next;
+    await sheet.saveUpdatedCells();
+    this.logger.log(`[Propietario contactado?] ${a1} ← ${next}`);
   }
 
   async testUpdateAsNewRow(data: RetellPayload, publicadoWP: string = 'NO'): Promise<void> {

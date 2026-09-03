@@ -14,7 +14,6 @@ import {
   findAnuncioRevisadoHeader,
   isAnuncioRevisadoSi,
 } from './anuncio-revisado';
-import { resolvePublicadoPopalicerWriteValue } from '../../sheets/wp-publish-writeback';
 
 const SHEET_NAME = 'Localizados';
 
@@ -184,13 +183,10 @@ export class SheetsReviewedSyncService {
       sheet,
       row.rowNumber,
       postId,
-      resolvePublicadoPopalicerWriteValue(
-        this.config.get<string>('WP_PUBLISHED_SHEET_VALUE'),
-      ),
     );
 
     this.logger.log(
-      `Fila ${row.rowNumber} Reviewed→WP ${created ? 'CREADO' : 'ACTUALIZADO'} post_id=${postId} | Publicado Popalicer?=SI`,
+      `Fila ${row.rowNumber} Reviewed→WP ${created ? 'CREADO' : 'ACTUALIZADO'} post_id=${postId} | Propietario contactado?=SI`,
     );
     return created ? 'created' : 'updated';
   }

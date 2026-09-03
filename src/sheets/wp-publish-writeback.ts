@@ -1,27 +1,13 @@
-/** Valor escrito en "Publicado Popalicer?" tras publicar en WordPress. */
-export const COL_PUBLICADO_POPALICER = 'Publicado Popalicer?';
+/** Columna K (1-based) = índice 0-based 10. */
+export const COL_PROPIETARIO_CONTACTADO_INDEX0 = 10;
 
-const PUBLICADO_ALIASES = new Set(['si', 'sí', 'publicado', 'yes', 'true', '1']);
+/** Valor escrito en "Propietario contactado?" (columna K) tras publicar en WordPress. */
+export const COL_PROPIETARIO_CONTACTADO = 'Propietario contactado?';
 
-/**
- * Normaliza el valor de write-back (env o default SI).
- * Acepta SI, PUBLICADO, Si (dropdown del Sheet), etc.
- */
-export function resolvePublicadoPopalicerWriteValue(
-  raw?: string | null,
-): string {
-  const value = String(raw ?? 'SI').trim();
-  if (!value) return 'SI';
-  const lower = value.toLowerCase();
-  if (lower === 'si' || lower === 'sí') return 'SI';
-  if (lower === 'publicado') return 'PUBLICADO';
-  if (PUBLICADO_ALIASES.has(lower)) return value.toUpperCase();
-  return value;
-}
+export const WP_PUBLISH_CONTACTED_VALUE = 'SI';
 
 export function buildWpPublishWritebackFields(
   postId: number | string,
-  publicadoValue: string,
 ): Record<string, string | number> {
   return {
     ID_WP: postId,
@@ -29,6 +15,6 @@ export function buildWpPublishWritebackFields(
     'Wp Post ID': postId,
     Referencia: postId,
     'Referencia / WP Post ID': postId,
-    [COL_PUBLICADO_POPALICER]: publicadoValue,
+    [COL_PROPIETARIO_CONTACTADO]: WP_PUBLISH_CONTACTED_VALUE,
   };
 }
