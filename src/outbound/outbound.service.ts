@@ -133,8 +133,7 @@ export class OutboundService {
 
     this.rotateDailyCountersIfNeeded();
 
-    const doc = this.sheetsService.getDoc();
-    const sheet = doc.sheetsByTitle[SHEET_NAME];
+    const { sheet, rows } = await this.sheetsService.getAllRows(SHEET_NAME);
 
     if (!sheet) {
       this.logger.error(
@@ -143,15 +142,15 @@ export class OutboundService {
       return;
     }
 
-    await sheet.loadHeaderRow();
     const headers = sheet.headerValues || [];
     const pubHeader = findPublicacionAutorizadaHeader(headers);
     this.logger.log(
       `[OutboundService] Cabeceras clave → Publicacion Autorizada?: ${pubHeader ? `OK ("${pubHeader}" idx=${headers.indexOf(pubHeader)})` : 'FALTA'} | Llamado: ${headers.includes(COL_LLAMADO) ? 'OK' : 'FALTA'} | Telefono1: ${headers.includes(COL_C1_TEL) ? 'OK' : 'FALTA'} | Contacto1 por: ${headers.includes(COL_C1_ROL) ? 'OK' : 'FALTA'} | Call ID: ${headers.includes(COL_CALL_ID) ? 'OK' : 'FALTA'} | Marca temporal: ${headers.includes(COL_MARCA_TEMPORAL) ? 'OK' : 'FALTA'}`,
     );
 
-    const rows = await sheet.getRows();
-    this.logger.log(`[OutboundService] Filas leídas en "${SHEET_NAME}": ${rows.length}`);
+    this.logger.log(
+      `[OutboundService] Filas leídas en "${SHEET_NAME}": ${rows.length} (grid rowCount=${sheet.rowCount})`,
+    );
 
     // Límite diario: SOLO memoria (no bloquear por formatos raros de Fecha actualización)
     const attemptsToday = this.dailyAttemptCount;
@@ -182,7 +181,7 @@ export class OutboundService {
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
-      const rowNumber = i + 2; // fila 1 = headers
+      const rowNumber = row.rowNumber; // 1-based real del Sheet (headers = 1)
       const reason = this.getDiscardReason(row, rowNumber, headers);
 
       if (reason) {

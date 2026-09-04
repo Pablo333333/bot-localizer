@@ -73,6 +73,70 @@ export class SheetsService implements OnModuleInit {
     return this.doc;
   }
 
+  /**
+   * Recarga metadatos del doc (rowCount puede crecer tras el arranque) y lee
+   * todas las filas de datos en páginas. Evita el tope silencioso de
+   * `getRows()` sin opciones (= rowCount cacheado en loadInfo inicial).
+   */
+  async getAllRows(
+    sheetNameOrSheet: string | GoogleSpreadsheetWorksheet,
+    options?: { pageSize?: number },
+  ): Promise<{
+    sheet: GoogleSpreadsheetWorksheet;
+    rows: Awaited<ReturnType<GoogleSpreadsheetWorksheet['getRows']>>;
+  }> {
+    const pageSize = Math.max(100, options?.pageSize ?? 500);
+
+    await this.doc.loadInfo();
+
+    const sheet =
+      typeof sheetNameOrSheet === 'string'
+        ? this.doc.sheetsByTitle[sheetNameOrSheet] || this.doc.sheetsByIndex[0]
+        : sheetNameOrSheet;
+
+    if (!sheet) {
+      throw new Error(
+        `Hoja no encontrada: ${
+          typeof sheetNameOrSheet === 'string' ? sheetNameOrSheet : '(objeto)'
+        }`,
+      );
+    }
+
+    await sheet.loadHeaderRow();
+
+    const gridRows = sheet.rowCount;
+    this.logger.log(
+      `[getAllRows] "${sheet.title}" grid rowCount=${gridRows} → paginando de ${pageSize}`,
+    );
+
+    const allRows: Awaited<ReturnType<GoogleSpreadsheetWorksheet['getRows']>> =
+      [];
+    let offset = 0;
+
+    while (true) {
+      const batch = await sheet.getRows({ offset, limit: pageSize });
+      if (batch.length === 0) {
+        break;
+      }
+      allRows.push(...batch);
+      this.logger.debug(
+        `[getAllRows] offset=${offset} batch=${batch.length} acumulado=${allRows.length}`,
+      );
+      if (batch.length < pageSize) {
+        break;
+      }
+      offset += batch.length;
+    }
+
+    const lastRowNumber =
+      allRows.length > 0 ? allRows[allRows.length - 1].rowNumber : 1;
+    this.logger.log(
+      `[getAllRows] "${sheet.title}" total filas de datos=${allRows.length} (última sheet row=${lastRowNumber})`,
+    );
+
+    return { sheet, rows: allRows };
+  }
+
   async addLead(data: {
     from: string;
     entities: any;
@@ -314,14 +378,7 @@ export class SheetsService implements OnModuleInit {
     publicadoWP?: string,
     wpPostId?: number | string,
   ): Promise<void> {
-    const sheet = this.doc.sheetsByTitle['Localizados'];
-    if (!sheet) {
-      this.logger.error('[updateRowByPhone] Pestaña "Localizados" no encontrada.');
-      return;
-    }
-
-    await sheet.loadHeaderRow();
-    const rows = await sheet.getRows();
+    const { sheet, rows } = await this.getAllRows('Localizados');
 
     const normalizePhone = (p: any): string =>
       String(p || '').replace(/\D/g, '').replace(/^34/, '');

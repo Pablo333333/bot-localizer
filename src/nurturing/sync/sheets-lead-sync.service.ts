@@ -70,9 +70,7 @@ export class SheetsLeadSyncService {
     let skipped = 0;
 
     try {
-      const sheet = this.getLocalizadosSheet();
-      await sheet.loadHeaderRow();
-      const rows = await sheet.getRows();
+      const { sheet, rows } = await this.sheetsService.getAllRows(SHEET_NAME);
 
       const existingLeads = await this.prisma.lead.findMany({
         select: {
@@ -201,8 +199,7 @@ export class SheetsLeadSyncService {
     status: string,
     sheetsRowNumber?: number | null,
   ): Promise<void> {
-    const sheet = this.getLocalizadosSheet();
-    await sheet.loadHeaderRow();
+    const { sheet, rows } = await this.sheetsService.getAllRows(SHEET_NAME);
     const headers = new Set(sheet.headerValues || []);
     if (!headers.has(COL_ESTADO)) {
       this.logger.warn(
@@ -211,7 +208,6 @@ export class SheetsLeadSyncService {
       return;
     }
 
-    const rows = await sheet.getRows();
     let row: GoogleSpreadsheetRow | undefined;
 
     if (sheetsRowNumber != null) {

@@ -94,9 +94,7 @@ export class SheetsReviewedSyncService {
     };
 
     try {
-      const doc = this.sheetsService.getDoc();
-      const sheet = doc.sheetsByTitle[SHEET_NAME] || doc.sheetsByIndex[0];
-      await sheet.loadHeaderRow();
+      const { sheet, rows } = await this.sheetsService.getAllRows(SHEET_NAME);
       const headers = sheet.headerValues || [];
       const reviewHeader = findAnuncioRevisadoHeader(headers);
 
@@ -107,7 +105,6 @@ export class SheetsReviewedSyncService {
         return stats;
       }
 
-      const rows = await sheet.getRows();
       stats.scanned = rows.length;
 
       for (const row of rows) {
