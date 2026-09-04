@@ -100,4 +100,90 @@ export class SequenceScheduler {
     }
     return cancelled;
   }
+
+  /**
+   * Inspección rápida post-llamada: delayed jobs en BullMQ + stepRuns en Prisma.
+   * Opcional: filtrar por teléfono del lead.
+   */
+  async inspectScheduledJobs(phone?: string): Promise<{
+    queue: string;
+    delayedCount: number;
+    delayedJobs: Array<{
+      jobId: string | undefined;
+      name: string | undefined;
+      delayMs: number | undefined;
+      processAt: string | null;
+      data: NurturingStepJobData;
+      state: string;
+    }>;
+    stepRuns: Array<{
+      id: string;
+      status: string;
+      scheduledFor: Date;
+      jobId: string | null;
+      templateKey: string;
+      delayMinutes: number;
+      leadId: string;
+      leadPhone: string;
+    }>;
+  }> {
+    const delayed = await this.queue.getJobs(['delayed'], 0, 49);
+    const delayedJobs = await Promise.all(
+      delayed.map(async (job) => {
+        const state = await job.getState();
+        const delayMs = job.opts.delay;
+        const processAt =
+          delayMs != null
+            ? new Date((job.timestamp || Date.now()) + delayMs).toISOString()
+            : null;
+        return {
+          jobId: job.id,
+          name: job.name,
+          delayMs,
+          processAt,
+          data: job.data,
+          state,
+        };
+      }),
+    );
+
+    const stepRuns = await this.prisma.sequenceStepRun.findMany({
+      where: {
+        status: { in: [StepRunStatus.scheduled, StepRunStatus.pending] },
+        ...(phone?.trim()
+          ? {
+              enrollment: {
+                lead: {
+                  phone: {
+                    contains: phone.replace(/\D/g, '').slice(-9),
+                  },
+                },
+              },
+            }
+          : {}),
+      },
+      include: {
+        step: true,
+        enrollment: { include: { lead: true } },
+      },
+      orderBy: { scheduledFor: 'asc' },
+      take: 50,
+    });
+
+    return {
+      queue: NURTURING_STEPS_QUEUE,
+      delayedCount: delayedJobs.length,
+      delayedJobs,
+      stepRuns: stepRuns.map((r) => ({
+        id: r.id,
+        status: r.status,
+        scheduledFor: r.scheduledFor,
+        jobId: r.jobId,
+        templateKey: r.step.templateKey,
+        delayMinutes: r.step.delayMinutes,
+        leadId: r.enrollment.leadId,
+        leadPhone: r.enrollment.lead.phone,
+      })),
+    };
+  }
 }

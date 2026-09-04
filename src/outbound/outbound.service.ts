@@ -20,6 +20,10 @@ import {
   isWithinOutboundCallHours,
   resolveMaxDailyCalls,
 } from './outbound-schedule';
+import {
+  matchesOutboundTestPhone,
+  resolveOutboundTestPhoneOnly,
+} from './outbound-test-phone';
 
 const SHEET_NAME = 'Localizados';
 const COL_LLAMADO = 'Llamado';
@@ -48,6 +52,8 @@ export class OutboundService {
   private readonly agentId: string;
   private readonly fromNumber: string;
   private readonly maxDailyCalls: number;
+  /** Si está definido, solo se llaman filas con ese teléfono (prueba Toni). */
+  private readonly testPhoneOnly: string | null;
   private isRunning = false;
 
   /** Fuente de verdad del límite diario: intentos de esta sesión/día Madrid. */
@@ -73,6 +79,14 @@ export class OutboundService {
     this.maxDailyCalls = resolveMaxDailyCalls(
       this.configService.get('MAX_DAILY_CALLS'),
     );
+    this.testPhoneOnly = resolveOutboundTestPhoneOnly(
+      this.configService.get('OUTBOUND_TEST_PHONE_ONLY'),
+    );
+    if (this.testPhoneOnly) {
+      this.logger.warn(
+        `[Outbound TEST FILTER] ACTIVO — solo se llamará a ${this.testPhoneOnly} (OUTBOUND_TEST_PHONE_ONLY)`,
+      );
+    }
   }
 
   @Cron(CronExpression.EVERY_5_MINUTES)
@@ -181,6 +195,18 @@ export class OutboundService {
 
       const rawPhone = this.getBestPhone(row)!;
       const phone = this.formatE164Spain(rawPhone);
+
+      if (
+        this.testPhoneOnly &&
+        !matchesOutboundTestPhone(phone, this.testPhoneOnly)
+      ) {
+        discardedCount++;
+        this.logger.log(
+          `[Outbound TEST FILTER] Saltando lead fila ${rowNumber} (${phone}) por no coincidir con ${this.testPhoneOnly}`,
+        );
+        continue;
+      }
+
       const phonePick = this.getBestPhoneWithReason(row);
       candidates.push({
         row,
