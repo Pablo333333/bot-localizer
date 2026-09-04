@@ -263,6 +263,16 @@ export class NoAnswerFollowupService {
       smsSent = sent.smsSent;
     }
 
+    if (noContact && !plan.markIlocalizable) {
+      await this.leads.updateStatus(lead.id, {
+        status: LeadStatus.PENDIENTE,
+        reason: `no_contact:${outcome}`,
+      });
+      this.logger.log(
+        `Lead ${lead.id} → PENDIENTE (outcome=${outcome} phase=${phase})`,
+      );
+    }
+
     if (plan.enroll) {
       try {
         await this.enrollments.enrollLead(lead.id);

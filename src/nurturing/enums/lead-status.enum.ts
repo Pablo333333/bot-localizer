@@ -1,5 +1,7 @@
 export enum LeadStatus {
   NUEVO = 'nuevo',
+  /** Tras hangup / no_answer: en secuencia de reintento (T+7 / T+10). */
+  PENDIENTE = 'pendiente',
   INTERESADO = 'interesado',
   /** Estado Toni: cita agendada — detiene secuencias activas */
   CITA_PROGRAMADA = 'cita_programada',

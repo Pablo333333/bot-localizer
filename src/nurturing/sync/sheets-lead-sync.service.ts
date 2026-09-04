@@ -311,6 +311,15 @@ export class SheetsLeadSyncService {
       return PrismaLeadStatus.ilocalizable;
     }
     if (
+      s.includes('pendiente') ||
+      s.includes('no contesta') ||
+      s.includes('no_answer') ||
+      s.includes('hangup') ||
+      s.includes('reintento')
+    ) {
+      return PrismaLeadStatus.pendiente;
+    }
+    if (
       s.includes('cerrad') ||
       s.includes('no interesa') ||
       s.includes('descart')

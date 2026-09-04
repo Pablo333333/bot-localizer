@@ -81,4 +81,9 @@ describe('Toni Fase 3 constants', () => {
     expect(LeadStatus.ILOCALIZABLE).toBe('ilocalizable');
     expect(TERMINAL_LEAD_STATUSES.has(LeadStatus.ILOCALIZABLE)).toBe(true);
   });
+
+  it('PENDIENTE no es terminal (permite T+7/T+10)', () => {
+    expect(LeadStatus.PENDIENTE).toBe('pendiente');
+    expect(TERMINAL_LEAD_STATUSES.has(LeadStatus.PENDIENTE)).toBe(false);
+  });
 });
