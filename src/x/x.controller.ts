@@ -23,7 +23,7 @@ export class XController {
   ) {}
 
   /**
-   * Stub de verificación CRC / challenge (Account Activity API).
+   * Verificación CRC Account Activity API.
    * GET /x/webhook?crc_token=...
    */
   @Get('webhook')
@@ -31,25 +31,34 @@ export class XController {
     @Query('crc_token') crcToken: string,
     @Res() res: Response,
   ) {
-    const consumerSecret = this.config.get<string>('X_CONSUMER_SECRET');
-    if (!crcToken || !consumerSecret) {
-      this.logger.warn('X webhook verify: falta crc_token o X_CONSUMER_SECRET');
+    const responseToken = this.xService.verifyCrc(crcToken);
+    if (!responseToken) {
+      this.logger.warn(
+        'X webhook CRC: falta crc_token o X_API_SECRET / X_CONSUMER_SECRET',
+      );
       return res.status(HttpStatus.FORBIDDEN).send('Forbidden');
     }
 
-    // Stub: devolver eco del token (firma HMAC real pendiente)
-    this.logger.log('[STUB X] webhook CRC verification passthrough');
-    return res.status(HttpStatus.OK).json({
-      response_token: `sha256=STUB_${crcToken}`,
-      stub: true,
-    });
+    this.logger.log('X webhook CRC verificado OK');
+    return res.status(HttpStatus.OK).json({ response_token: responseToken });
   }
 
-  /** Recibe eventos DM; ack 200 sin auto-reply. */
+  /**
+   * Eventos Account Activity (DMs). Ack 200; auto-reply Localisto si está activo.
+   * No procesa tweets ni menciones públicas.
+   */
   @Post('webhook')
   @HttpCode(HttpStatus.OK)
   async handleWebhook(@Body() body: Record<string, unknown>) {
-    this.logger.log('X webhook event received (stub, no auto-reply)');
+    const dmCount = Array.isArray(body?.direct_message_events)
+      ? body.direct_message_events.length
+      : Array.isArray(body?.dm_events)
+        ? body.dm_events.length
+        : 0;
+
+    this.logger.log(`X webhook event dmEvents=${dmCount}`);
+    this.logger.debug(`X webhook payload keys=${Object.keys(body || {}).join(',')}`);
+
     try {
       await this.xService.handleIncomingDm(body);
     } catch (err) {
@@ -57,6 +66,21 @@ export class XController {
         `X webhook error: ${err instanceof Error ? err.message : err}`,
       );
     }
-    return { status: 'ok', stub: true };
+
+    return { status: 'ok' };
+  }
+
+  /** Health / diagnóstico de credenciales (sin secretos). */
+  @Get('health')
+  health() {
+    const creds = this.xService.getCredentials();
+    return {
+      ok: true,
+      service: 'x-dm',
+      credentialsConfigured: Boolean(creds),
+      agentIdConfigured: Boolean(
+        this.config.get<string>('X_AGENT_ID')?.trim(),
+      ),
+    };
   }
 }
