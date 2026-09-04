@@ -74,13 +74,16 @@ export class XChatService {
       content: text,
     });
 
-    const agentMessages = (completion.messages || []).filter(
-      (m): m is { role: 'agent'; content: string } =>
-        m.role === 'agent' &&
-        typeof (m as { content?: string }).content === 'string',
-    );
+    const reply = (completion.messages || [])
+      .filter((m) => m.role === 'agent' && 'content' in m)
+      .map((m) => {
+        const content = (m as { content?: unknown }).content;
+        return typeof content === 'string' ? content : '';
+      })
+      .filter((text) => text.trim().length > 0)
+      .join('\n')
+      .trim();
 
-    const reply = agentMessages.map((m) => m.content).join('\n').trim();
     if (!reply) {
       throw new Error('Retell chat completion sin mensaje de agente');
     }
