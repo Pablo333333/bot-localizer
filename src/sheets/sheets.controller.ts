@@ -117,9 +117,11 @@ export class SheetsController {
 
     const eventType = body.event_type || body.event;
 
-    if (eventType !== 'call_analyzed') {
+    // call_analyzed: flujo completo (CAD + WP + nurturing).
+    // call_ended: nurturing temprano si no-contesta/busy/hangup (Retell a veces tarda el analyzed).
+    if (eventType !== 'call_analyzed' && eventType !== 'call_ended') {
       this.logger.log(
-        `Ignorando evento de tipo: ${eventType}. Solo se procesa 'call_analyzed'.`,
+        `Ignorando evento de tipo: ${eventType}. Solo se procesan 'call_analyzed' y 'call_ended'.`,
       );
       return;
     }
@@ -144,6 +146,32 @@ export class SheetsController {
     ) {
       this.logger.warn(
         `Ignorando webhook: Agent ID ${agentId} no coincide con objetivos.`,
+      );
+      return;
+    }
+
+    // Nurturing en call_ended y call_analyzed (idempotente por call_id).
+    if (agentId === TARGET_AGENT_ID || agentId === FOLLOWUP_AGENT_ID) {
+      try {
+        const followup =
+          await this.noAnswerFollowup.handleOutboundCallAnalyzed(callData, {
+            eventType: String(eventType),
+          });
+        this.logger.log(
+          `Nurturing follow-up (${eventType}): phase=${followup.phase} outcome=${followup.outcome} wa=${followup.whatsappSent} sms=${followup.smsSent} enroll=${followup.enrolled} ilocalizable=${followup.markedIlocalizable} lead=${followup.leadId}`,
+        );
+      } catch (followErr: any) {
+        this.logger.error(
+          `Nurturing follow-up error: ${followErr.message}`,
+          followErr.stack,
+        );
+      }
+    }
+
+    // Sheets / WordPress solo con análisis completo
+    if (eventType !== 'call_analyzed') {
+      this.logger.log(
+        `Evento ${eventType} — nurturing aplicado; se omite sync Sheets/WP hasta call_analyzed.`,
       );
       return;
     }
@@ -187,21 +215,6 @@ export class SheetsController {
     );
 
     try {
-      if (agentId === TARGET_AGENT_ID || agentId === FOLLOWUP_AGENT_ID) {
-        try {
-          const followup =
-            await this.noAnswerFollowup.handleOutboundCallAnalyzed(callData);
-          this.logger.log(
-            `Nurturing follow-up: phase=${followup.phase} outcome=${followup.outcome} wa=${followup.whatsappSent} sms=${followup.smsSent} enroll=${followup.enrolled} ilocalizable=${followup.markedIlocalizable} lead=${followup.leadId}`,
-          );
-        } catch (followErr: any) {
-          this.logger.error(
-            `Nurturing follow-up error: ${followErr.message}`,
-            followErr.stack,
-          );
-        }
-      }
-
       let publicadoWordpress: string | undefined;
       let wpPostId: number | string | undefined;
 

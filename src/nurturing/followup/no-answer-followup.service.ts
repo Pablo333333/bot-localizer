@@ -46,7 +46,10 @@ export class NoAnswerFollowupService {
     private readonly config: ConfigService,
   ) {}
 
-  async handleOutboundCallAnalyzed(callData: Record<string, any>): Promise<{
+  async handleOutboundCallAnalyzed(
+    callData: Record<string, any>,
+    options?: { eventType?: string },
+  ): Promise<{
     outcome: CallOutcome;
     phase: NurturingCallPhase;
     whatsappSent: boolean;
@@ -59,6 +62,24 @@ export class NoAnswerFollowupService {
       !isNurturingPhase3Enabled(this.config.get('NURTURING_PHASE3_ENABLED'))
     ) {
       this.logger.log(NURTURING_PHASE3_DISABLED_LOG);
+      return {
+        outcome: CallOutcome.UNKNOWN,
+        phase: 'unknown',
+        whatsappSent: false,
+        smsSent: false,
+        enrolled: false,
+        markedIlocalizable: false,
+      };
+    }
+
+    // call_ended prematuro: solo si no-conexión clara (no user_hangup de llamada OK)
+    if (
+      options?.eventType === 'call_ended' &&
+      !this.classifier.isClearNoContactBeforeAnalysis(callData)
+    ) {
+      this.logger.log(
+        `call_ended sin no-contacto claro (reason=${callData.disconnection_reason || callData.call_status || '?'}) — se espera call_analyzed`,
+      );
       return {
         outcome: CallOutcome.UNKNOWN,
         phase: 'unknown',
@@ -103,6 +124,37 @@ export class NoAnswerFollowupService {
       });
     }
 
+    // Idempotencia: call_ended + call_analyzed del mismo call_id no deben
+    // reenviar WhatsApp ni re-enrollar.
+    const meta = (lead.metadata as Record<string, unknown>) || {};
+    if (
+      callData.call_id &&
+      meta.nurturing_handled_call_id === String(callData.call_id)
+    ) {
+      this.logger.log(
+        `Follow-up ya aplicado para call_id=${callData.call_id} lead=${lead.id} — skip`,
+      );
+      return {
+        outcome,
+        phase: resolveCallPhase({
+          agentId: callData.agent_id,
+          templateKey: await this.resolveTemplateKey(callData),
+          nurturingPhase: meta.last_phase
+            ? String(meta.last_phase)
+            : null,
+          outboundAgentId: this.config.get<string>('RETELL_OUTBOUND_AGENT_ID'),
+          followupAgentId: resolveRetellFollowupAgentId(
+            this.config.get<string>('RETELL_AGENT_ID_FOLLOWUP'),
+          ),
+        }),
+        whatsappSent: false,
+        smsSent: false,
+        enrolled: false,
+        markedIlocalizable: false,
+        leadId: lead.id,
+      };
+    }
+
     const templateKey = await this.resolveTemplateKey(callData);
     const nurturingPhase =
       callData.retell_llm_dynamic_variables?.nurturing_phase ||
@@ -123,6 +175,20 @@ export class NoAnswerFollowupService {
         status: LeadStatus.CERRADO,
         reason: 'explicit_rejection',
       });
+      if (callData.call_id) {
+        await this.prisma.lead.update({
+          where: { id: lead.id },
+          data: {
+            metadata: {
+              ...((lead.metadata as object) || {}),
+              last_call_id: callData.call_id,
+              last_outcome: outcome,
+              last_phase: phase,
+              nurturing_handled_call_id: String(callData.call_id),
+            },
+          },
+        });
+      }
       this.logger.log(
         `Lead ${lead.id} cerrado por rechazo explícito (outcome=${outcome} phase=${phase})`,
       );
@@ -147,6 +213,9 @@ export class NoAnswerFollowupService {
             last_call_id: callData.call_id,
             last_outcome: outcome,
             last_phase: phase,
+            ...(callData.call_id
+              ? { nurturing_handled_call_id: String(callData.call_id) }
+              : {}),
           },
         },
       });
@@ -214,6 +283,9 @@ export class NoAnswerFollowupService {
           last_call_id: callData.call_id,
           last_outcome: outcome,
           last_phase: phase,
+          ...(callData.call_id
+            ? { nurturing_handled_call_id: String(callData.call_id) }
+            : {}),
         },
       },
     });
