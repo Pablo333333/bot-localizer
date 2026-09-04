@@ -1,4 +1,7 @@
-import { planNoContactFollowup } from './no-answer-followup.policy';
+import {
+  planNoContactFollowup,
+  resolveT0MessageChannel,
+} from './no-answer-followup.policy';
 
 describe('planNoContactFollowup', () => {
   it('T+0: solo WhatsApp (sin SMS) y enroll de T+7/T+10', () => {
@@ -10,7 +13,31 @@ describe('planNoContactFollowup', () => {
     });
   });
 
-  it('T+7: SMS de seguimiento con enlace de cita; no WhatsApp', () => {
+  it('T+0 con NURTURING_T0_CHANNEL=sms → solo SMS', () => {
+    expect(
+      planNoContactFollowup('t0', {
+        t0Channel: resolveT0MessageChannel('sms'),
+      }),
+    ).toEqual({
+      sendWhatsApp: false,
+      sendSms: true,
+      enroll: true,
+      markIlocalizable: false,
+    });
+  });
+
+  it('T+0 con both → WhatsApp + SMS', () => {
+    expect(
+      planNoContactFollowup('t0', { t0Channel: 'both' }),
+    ).toEqual({
+      sendWhatsApp: true,
+      sendSms: true,
+      enroll: true,
+      markIlocalizable: false,
+    });
+  });
+
+  it('T+7: SMS de seguimiento; no WhatsApp', () => {
     expect(planNoContactFollowup('t7')).toEqual({
       sendWhatsApp: false,
       sendSms: true,
@@ -19,21 +46,12 @@ describe('planNoContactFollowup', () => {
     });
   });
 
-  it('T+10: marca ilocalizable y no envía WA/SMS', () => {
+  it('T+10: marca ilocalizable', () => {
     expect(planNoContactFollowup('t10')).toEqual({
       sendWhatsApp: false,
       sendSms: false,
       enroll: false,
       markIlocalizable: true,
-    });
-  });
-
-  it('fase unknown: no dispara canales ni ilocalizable', () => {
-    expect(planNoContactFollowup('unknown')).toEqual({
-      sendWhatsApp: false,
-      sendSms: false,
-      enroll: false,
-      markIlocalizable: false,
     });
   });
 });

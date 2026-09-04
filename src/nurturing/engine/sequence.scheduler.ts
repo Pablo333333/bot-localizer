@@ -107,11 +107,19 @@ export class SequenceScheduler {
    */
   async inspectScheduledJobs(phone?: string): Promise<{
     queue: string;
+    phoneFilter: string | null;
+    lead: {
+      id: string;
+      phone: string;
+      status: string;
+      metadata: unknown;
+    } | null;
     delayedCount: number;
     delayedJobs: Array<{
       jobId: string | undefined;
       name: string | undefined;
       delayMs: number | undefined;
+      delayDays: number | null;
       processAt: string | null;
       data: NurturingStepJobData;
       state: string;
@@ -120,15 +128,20 @@ export class SequenceScheduler {
       id: string;
       status: string;
       scheduledFor: Date;
+      scheduledForIso: string;
+      delayMinutes: number;
+      delayDays: number;
       jobId: string | null;
       templateKey: string;
-      delayMinutes: number;
+      label: string;
       leadId: string;
       leadPhone: string;
     }>;
   }> {
+    const digits = phone?.replace(/\D/g, '').slice(-9) || null;
+
     const delayed = await this.queue.getJobs(['delayed'], 0, 49);
-    const delayedJobs = await Promise.all(
+    let delayedJobs = await Promise.all(
       delayed.map(async (job) => {
         const state = await job.getState();
         const delayMs = job.opts.delay;
@@ -140,6 +153,10 @@ export class SequenceScheduler {
           jobId: job.id,
           name: job.name,
           delayMs,
+          delayDays:
+            delayMs != null
+              ? Math.round(delayMs / (24 * 60 * 60_000) * 10) / 10
+              : null,
           processAt,
           data: job.data,
           state,
@@ -147,17 +164,24 @@ export class SequenceScheduler {
       }),
     );
 
+    const lead = digits
+      ? await this.prisma.lead.findFirst({
+          where: { phone: { contains: digits } },
+          orderBy: { updatedAt: 'desc' },
+        })
+      : null;
+
+    if (lead) {
+      delayedJobs = delayedJobs.filter((j) => j.data.leadId === lead.id);
+    }
+
     const stepRuns = await this.prisma.sequenceStepRun.findMany({
       where: {
         status: { in: [StepRunStatus.scheduled, StepRunStatus.pending] },
-        ...(phone?.trim()
+        ...(digits
           ? {
               enrollment: {
-                lead: {
-                  phone: {
-                    contains: phone.replace(/\D/g, '').slice(-9),
-                  },
-                },
+                lead: { phone: { contains: digits } },
               },
             }
           : {}),
@@ -172,18 +196,40 @@ export class SequenceScheduler {
 
     return {
       queue: NURTURING_STEPS_QUEUE,
+      phoneFilter: phone?.trim() || null,
+      lead: lead
+        ? {
+            id: lead.id,
+            phone: lead.phone,
+            status: lead.status,
+            metadata: lead.metadata,
+          }
+        : null,
       delayedCount: delayedJobs.length,
       delayedJobs,
-      stepRuns: stepRuns.map((r) => ({
-        id: r.id,
-        status: r.status,
-        scheduledFor: r.scheduledFor,
-        jobId: r.jobId,
-        templateKey: r.step.templateKey,
-        delayMinutes: r.step.delayMinutes,
-        leadId: r.enrollment.leadId,
-        leadPhone: r.enrollment.lead.phone,
-      })),
+      stepRuns: stepRuns.map((r) => {
+        const days = Math.round((r.step.delayMinutes / (24 * 60)) * 10) / 10;
+        const label =
+          r.step.templateKey.includes('d7') || r.step.delayMinutes === 10_080
+            ? 'T+7'
+            : r.step.templateKey.includes('d10') ||
+                r.step.delayMinutes === 14_400
+              ? 'T+10'
+              : `T+${days}d`;
+        return {
+          id: r.id,
+          status: r.status,
+          scheduledFor: r.scheduledFor,
+          scheduledForIso: r.scheduledFor.toISOString(),
+          delayMinutes: r.step.delayMinutes,
+          delayDays: days,
+          jobId: r.jobId,
+          templateKey: r.step.templateKey,
+          label,
+          leadId: r.enrollment.leadId,
+          leadPhone: r.enrollment.lead.phone,
+        };
+      }),
     };
   }
 }

@@ -60,17 +60,26 @@ export class SmsChannel implements NurturingChannel {
       return { success: true, providerRef: mockId };
     }
 
+    const to = formatE164Spain(payload.phone);
+    this.logger.log(
+      `[SmsService] Intentando SMS to=${to} from=${this.fromNumber} lead=${payload.leadId} stepRun=${payload.stepRunId}`,
+    );
+
     try {
       const message = await this.client.messages.create({
         from: this.fromNumber,
-        to: formatE164Spain(payload.phone),
+        to,
         body,
       });
-      this.logger.log(`SMS sent lead=${payload.leadId} sid=${message.sid}`);
+      this.logger.log(
+        `[SmsService] OK sid=${message.sid} to=${to} status=${message.status} lead=${payload.leadId}`,
+      );
       return { success: true, providerRef: message.sid };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`SMS send failed lead=${payload.leadId}: ${message}`);
+      this.logger.error(
+        `[SmsService] ERROR to=${to} lead=${payload.leadId}: ${message}`,
+      );
       return { success: false, error: message };
     }
   }

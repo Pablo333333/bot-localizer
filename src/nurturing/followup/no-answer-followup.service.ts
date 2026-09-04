@@ -24,7 +24,7 @@ import {
 } from '../phase3-enabled';
 import { normalizePhone } from '../utils/phone.util';
 import { CallOutcomeClassifier } from './call-outcome.classifier';
-import { planNoContactFollowup } from './no-answer-followup.policy';
+import { planNoContactFollowup, resolveT0MessageChannel } from './no-answer-followup.policy';
 
 /**
  * T+0: NO_ANSWER/HANGUP → solo WhatsApp (plantilla Localisto + enlace cita) + enroll T+7/T+10.
@@ -238,16 +238,25 @@ export class NoAnswerFollowupService {
     let smsSent = false;
     let enrolled = false;
     let markedIlocalizable = false;
+    const t0Channel = resolveT0MessageChannel(
+      this.config.get('NURTURING_T0_CHANNEL'),
+    );
     const plan = noContact
-      ? planNoContactFollowup(phase)
+      ? planNoContactFollowup(phase, { t0Channel })
       : planNoContactFollowup('unknown');
+
+    if (phase === 't0' && noContact) {
+      this.logger.log(
+        `[Followup] T+0 channel mode=${t0Channel} → WA=${plan.sendWhatsApp} SMS=${plan.sendSms}`,
+      );
+    }
 
     if (plan.sendWhatsApp || plan.sendSms) {
       const sent = await this.sendToniBookingMessages(lead, callData.call_id, {
         whatsapp: plan.sendWhatsApp,
         sms: plan.sendSms,
         waKey: TEMPLATE_WA_T0,
-        smsKey: TEMPLATE_SMS_T7,
+        smsKey: plan.sendSms && phase === 't0' ? TEMPLATE_SMS_T0 : TEMPLATE_SMS_T7,
         summaryPrefix: `${phase}_no_answer:${outcome}`,
       });
       whatsappSent = sent.whatsappSent;
