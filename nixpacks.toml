@@ -1,0 +1,6 @@
+# Railway / Nixpacks: asegurar build Nest + start con migraciones
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npm run start:prod"

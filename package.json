@@ -11,8 +11,8 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
-    "start:prod": "prisma migrate deploy && node dist/main",
-    "start:prod:safe": "prisma migrate deploy && node --max-old-space-size=4096 dist/main",
+    "start:prod": "prisma migrate deploy && node dist/main.js",
+    "start:prod:safe": "prisma migrate deploy && node --max-old-space-size=4096 dist/main.js",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
     "test:watch": "jest --watch",
@@ -27,6 +27,9 @@
     "prisma:seed": "prisma db seed",
     "test:nurturing": "ts-node -r tsconfig-paths/register scripts/test-nurturing-flow.ts"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "prisma": {
     "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"
   },
@@ -35,6 +38,7 @@
     "@googleapis/drive": "^21.0.0",
     "@nestjs/axios": "^4.0.1",
     "@nestjs/bullmq": "^11.0.2",
+    "@nestjs/cli": "^11.0.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.3",
     "@nestjs/core": "^11.0.1",
@@ -50,16 +54,17 @@
     "google-spreadsheet": "^5.2.0",
     "ioredis": "^5.7.0",
     "openai": "^6.34.0",
+    "prisma": "^6.14.0",
     "reflect-metadata": "^0.2.2",
     "retell-sdk": "^5.10.1",
     "rxjs": "^7.8.1",
     "stripe": "^22.4.0",
-    "twilio": "^6.0.0"
+    "twilio": "^6.0.0",
+    "typescript": "^5.7.3"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
     "@eslint/js": "^9.18.0",
-    "@nestjs/cli": "^11.0.0",
     "@nestjs/schematics": "^11.0.0",
     "@nestjs/testing": "^11.0.1",
     "@types/express": "^5.0.0",
@@ -72,14 +77,12 @@
     "globals": "^16.0.0",
     "jest": "^30.0.0",
     "prettier": "^3.4.2",
-    "prisma": "^6.14.0",
     "source-map-support": "^0.5.21",
     "supertest": "^7.0.0",
     "ts-jest": "^29.2.5",
     "ts-loader": "^9.5.2",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.7.3",
     "typescript-eslint": "^8.20.0"
   },
   "jest": {
