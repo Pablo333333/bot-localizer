@@ -4,6 +4,8 @@ import { CallOutcome } from '../enums';
 /**
  * Clasifica el resultado de una llamada Retell.
  * Importante Toni: "no contesta" / colgado / busy / declined ≠ cerrado.
+ * Retell "call_successful" / Session Outcome Successful ≠ contacto comercial útil:
+ * un user_hangup sigue disparando WhatsApp de seguimiento + enroll T+7.
  *
  * @see https://docs.retellai.com/reliability/debug-call-disconnect
  */
@@ -19,12 +21,13 @@ export class CallOutcomeClassifier {
     ).toLowerCase();
     const cad = callData.call_analysis?.custom_analysis_data || {};
     const estado = String(cad.estado || cad.resultado || '').toLowerCase();
+    const duration = this.resolveDurationMs(callData);
 
     this.logger.log(
-      `Clasificando call=${callData.call_id || '?'} reason="${reason}" status="${callStatus}" successful=${callData.call_analysis?.call_successful}`,
+      `Clasificando call=${callData.call_id || '?'} reason="${reason}" status="${callStatus}" successful=${callData.call_analysis?.call_successful} duration_ms=${duration}`,
     );
 
-    // Rechazo explícito en conversación (sí → cerrado). No confundir con user_declined (rechazó la llamada).
+    // Rechazo explícito en conversación (sí → cerrado). No confundir con user_declined.
     const rejectionHints = [
       'no le interesa',
       'no interesa',
@@ -41,6 +44,15 @@ export class CallOutcomeClassifier {
       return CallOutcome.EXPLICIT_REJECTION;
     }
 
+    // user_hangup / user_hung_up → SIEMPRE seguimiento (WA + T+7).
+    // Retell marca Session Outcome Successful si hubo audio; eso NO bloquea el WA.
+    if (this.isUserHangupReason(reason)) {
+      this.logger.log(
+        `user_hangup → HANGUP (WA+enroll). call_successful=${callData.call_analysis?.call_successful} no bloquea.`,
+      );
+      return CallOutcome.HANGUP;
+    }
+
     // --- No conectó / no contactó (siempre nurturing) ---
     if (this.isNoAnswerReason(reason) || callStatus === 'not_connected') {
       if (this.isBusyReason(reason)) return CallOutcome.BUSY;
@@ -55,27 +67,16 @@ export class CallOutcomeClassifier {
     if (this.isVoicemailReason(reason)) {
       return CallOutcome.VOICEMAIL;
     }
-    if (this.isNoAnswerReason(reason)) {
+    if (this.isNoAnswerReason(reason) || this.isCanceledReason(reason)) {
       return CallOutcome.NO_ANSWER;
     }
 
-    // user_hangup / agent_hangup / canceled: sin éxito de análisis → seguimiento
-    if (this.isHangupReason(reason) || this.isCanceledReason(reason)) {
-      if (callData.call_analysis?.call_successful === true) {
-        // Colgó tras conversación útil
+    // agent_hangup / manual_stopped: sin éxito de negocio → HANGUP; con éxito → OK
+    if (this.isHangupReason(reason)) {
+      if (callData.call_analysis?.call_successful === true && duration >= 15_000) {
         return CallOutcome.ANSWERED_SUCCESS;
       }
-      const duration = this.resolveDurationMs(callData);
-      // Duración 0 / corta / sin éxito → tratar como no-contacto (WA + enroll)
-      if (
-        !Number.isFinite(duration) ||
-        duration <= 0 ||
-        duration < 15_000 ||
-        callData.call_analysis?.call_successful === false ||
-        callData.call_analysis?.call_successful == null
-      ) {
-        return CallOutcome.HANGUP;
-      }
+      return CallOutcome.HANGUP;
     }
 
     if (callData.call_analysis?.call_successful === true) {
@@ -89,7 +90,6 @@ export class CallOutcomeClassifier {
       return CallOutcome.NO_ANSWER;
     }
 
-    // call_status ended sin success ni reason claro → no forzar WA
     return CallOutcome.UNKNOWN;
   }
 
@@ -103,14 +103,14 @@ export class CallOutcomeClassifier {
     );
   }
 
-  /** Solo rechazo explícito en conversación → cerrado. Nunca no-contesta/busy/hangup. */
+  /** Solo rechazo explícito en conversación → cerrado. */
   shouldMarkClosed(outcome: CallOutcome): boolean {
     return outcome === CallOutcome.EXPLICIT_REJECTION;
   }
 
   /**
-   * En call_ended (antes del análisis): solo nurturing si está claro que no hubo
-   * conversación. Evita WA prematuro en user_hangup de llamadas exitosas.
+   * En call_ended: nurturing temprano si no-conexión o user_hangup
+   * (no esperar call_analyzed para enviar WA).
    */
   isClearNoContactBeforeAnalysis(callData: Record<string, any>): boolean {
     const reason = this.resolveDisconnectionReason(callData);
@@ -119,6 +119,9 @@ export class CallOutcomeClassifier {
     if (this.isBusyReason(reason)) return true;
     if (this.isVoicemailReason(reason)) return true;
     if (this.isNoAnswerReason(reason)) return true;
+    if (this.isCanceledReason(reason)) return true;
+    // user_hangup: enviar WA ya en call_ended (caso Toni / prueba)
+    if (this.isUserHangupReason(reason)) return true;
     return false;
   }
 
@@ -130,7 +133,8 @@ export class CallOutcomeClassifier {
         '',
     )
       .toLowerCase()
-      .trim();
+      .trim()
+      .replace(/\s+/g, '_');
   }
 
   private resolveCallStatus(callData: Record<string, any>): string {
@@ -175,10 +179,19 @@ export class CallOutcomeClassifier {
     return reason.includes('voicemail');
   }
 
-  private isHangupReason(reason: string): boolean {
+  /** Solo colgado por el usuario (no agent_hangup). */
+  private isUserHangupReason(reason: string): boolean {
     return (
       reason.includes('user_hangup') ||
       reason.includes('user_hung_up') ||
+      reason === 'user hangup' ||
+      reason.replace(/_/g, ' ').includes('user hangup')
+    );
+  }
+
+  private isHangupReason(reason: string): boolean {
+    return (
+      this.isUserHangupReason(reason) ||
       reason.includes('agent_hangup') ||
       reason === 'hangup' ||
       reason.includes('manual_stopped')

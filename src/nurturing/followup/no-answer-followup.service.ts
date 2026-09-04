@@ -72,13 +72,13 @@ export class NoAnswerFollowupService {
       };
     }
 
-    // call_ended prematuro: solo si no-conexión clara (no user_hangup de llamada OK)
+    // call_ended prematuro: nurturing si no-conexión clara O user_hangup
     if (
       options?.eventType === 'call_ended' &&
       !this.classifier.isClearNoContactBeforeAnalysis(callData)
     ) {
       this.logger.log(
-        `call_ended sin no-contacto claro (reason=${callData.disconnection_reason || callData.call_status || '?'}) — se espera call_analyzed`,
+        `call_ended sin no-contacto/hangup claro (reason=${callData.disconnection_reason || callData.call_status || '?'}) — se espera call_analyzed`,
       );
       return {
         outcome: CallOutcome.UNKNOWN,
@@ -91,6 +91,9 @@ export class NoAnswerFollowupService {
     }
 
     const outcome = this.classifier.classify(callData);
+    this.logger.log(
+      `[Followup] outcome=${outcome} sendWA=${this.classifier.shouldSendBookingWhatsApp(outcome)} call=${callData.call_id}`,
+    );
     const phoneRaw = callData.to_number || '';
     if (!phoneRaw) {
       this.logger.warn('No to_number on call — skip follow-up');
@@ -358,6 +361,9 @@ export class NoAnswerFollowupService {
     let smsSent = false;
 
     if (opts.whatsapp) {
+      this.logger.log(
+        `[Followup] Disparando WhatsApp T+0 lead=${lead.id} phone=${lead.phone} call=${callId}`,
+      );
       const result = await this.whatsapp.send({
         leadId: lead.id,
         phone: lead.phone,
@@ -368,6 +374,11 @@ export class NoAnswerFollowupService {
         stepRunId,
       });
       whatsappSent = result.success;
+      if (!result.success) {
+        this.logger.error(
+          `[Followup] WhatsApp T+0 FALLÓ lead=${lead.id} phone=${lead.phone}: ${result.error}`,
+        );
+      }
       if (result.success) {
         await this.prisma.communicationLog.create({
           data: {

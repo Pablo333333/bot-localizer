@@ -2,7 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import twilio, { Twilio } from 'twilio';
 import { Channel } from '../enums';
-import { renderTemplate, toWhatsAppAddress } from '../utils/phone.util';
+import {
+  formatE164Spain,
+  renderTemplate,
+  toWhatsAppAddress,
+} from '../utils/phone.util';
 import {
   ChannelSendPayload,
   ChannelSendResult,
@@ -27,6 +31,7 @@ export class WhatsappChannel implements NurturingChannel {
     const bookingLink =
       (payload.templatePayload?.booking_link as string | undefined) ||
       this.config.get<string>('BOOKING_LINK') ||
+      this.config.get<string>('BOOKING_LINK_CALL') ||
       this.config.get<string>('CALENDAR_BOOKING_URL') ||
       'https://www.localicer.com/agendar';
 
@@ -41,25 +46,33 @@ export class WhatsappChannel implements NurturingChannel {
       booking_link: bookingLink,
     });
 
+    const e164 = formatE164Spain(payload.phone);
+    const to = toWhatsAppAddress(payload.phone);
+
+    this.logger.log(
+      `[WhatsAppService] Intentando enviar mensaje a ${e164} (Twilio to=${to}) lead=${payload.leadId} stepRun=${payload.stepRunId}`,
+    );
+    this.logger.log(
+      `[WhatsAppService] from=${this.fromNumber || '(no configurado)'} bodyChars=${body.length}`,
+    );
+
     const forceMock =
       this.config.get<string>('NURTURING_MOCK_CHANNELS') === 'true';
 
     if (forceMock || !this.client || !this.fromNumber) {
-      const to = toWhatsAppAddress(payload.phone);
       const mockId = `mock_wa_${Date.now()}`;
       this.logger.warn(
-        `[MOCK WhatsApp] ${forceMock ? 'NURTURING_MOCK_CHANNELS=true' : 'Twilio no configurado'} — simulado OK\n` +
+        `[WhatsAppService] MOCK — ${forceMock ? 'NURTURING_MOCK_CHANNELS=true' : 'Twilio no configurado (falta SID/TOKEN o TWILIO_WHATSAPP_NUMBER)'}\n` +
           `  to: ${to}\n` +
+          `  e164: ${e164}\n` +
           `  body: ${body}\n` +
           `  leadId: ${payload.leadId}\n` +
-          `  stepRunId: ${payload.stepRunId}\n` +
           `  providerRef: ${mockId}`,
       );
       return { success: true, providerRef: mockId };
     }
 
     try {
-      const to = toWhatsAppAddress(payload.phone);
       const message = await this.client.messages.create({
         from: this.fromNumber,
         to,
@@ -67,12 +80,23 @@ export class WhatsappChannel implements NurturingChannel {
       });
 
       this.logger.log(
-        `WhatsApp sent lead=${payload.leadId} sid=${message.sid} to=${to}`,
+        `[WhatsAppService] OK sid=${message.sid} to=${to} e164=${e164} status=${message.status}`,
       );
       return { success: true, providerRef: message.sid };
-    } catch (error) {
+    } catch (error: any) {
+      const twilioCode = error?.code ?? error?.status;
+      const twilioMore = error?.moreInfo;
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`WhatsApp send failed lead=${payload.leadId}: ${message}`);
+      this.logger.error(
+        `[WhatsAppService] ERROR enviando a ${e164} (to=${to}): ${message}` +
+          (twilioCode != null ? ` | code=${twilioCode}` : '') +
+          (twilioMore ? ` | moreInfo=${twilioMore}` : ''),
+      );
+      if (error?.response?.data || error?.details) {
+        this.logger.error(
+          `[WhatsAppService] Detalle Twilio: ${JSON.stringify(error.response?.data || error.details)}`,
+        );
+      }
       return { success: false, error: message };
     }
   }
