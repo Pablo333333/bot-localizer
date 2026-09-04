@@ -104,10 +104,16 @@ export class SequenceScheduler {
   /**
    * Inspección rápida post-llamada: delayed jobs en BullMQ + stepRuns en Prisma.
    * Opcional: filtrar por teléfono del lead.
+   *
+   * No depende de NURTURING_PHASE3_ENABLED ni de Google Sheets.
+   * Errores de Redis/Prisma se capturan y se devuelven en `errors` (HTTP 200)
+   * para no ocultar la causa detrás de un 500 genérico.
    */
   async inspectScheduledJobs(phone?: string): Promise<{
     queue: string;
     phoneFilter: string | null;
+    digits: string | null;
+    phase3Enabled: boolean;
     lead: {
       id: string;
       phone: string;
@@ -137,77 +143,129 @@ export class SequenceScheduler {
       leadId: string;
       leadPhone: string;
     }>;
+    errors: {
+      redis?: string;
+      prismaLead?: string;
+      prismaStepRuns?: string;
+    };
   }> {
     const digits = phone?.replace(/\D/g, '').slice(-9) || null;
+    const errors: {
+      redis?: string;
+      prismaLead?: string;
+      prismaStepRuns?: string;
+    } = {};
+    let delayedJobs: Array<{
+      jobId: string | undefined;
+      name: string | undefined;
+      delayMs: number | undefined;
+      delayDays: number | null;
+      processAt: string | null;
+      data: NurturingStepJobData;
+      state: string;
+    }> = [];
+    let lead: {
+      id: string;
+      phone: string;
+      status: string;
+      metadata: unknown;
+    } | null = null;
+    let stepRunsMapped: Array<{
+      id: string;
+      status: string;
+      scheduledFor: Date;
+      scheduledForIso: string;
+      delayMinutes: number;
+      delayDays: number;
+      jobId: string | null;
+      templateKey: string;
+      label: string;
+      leadId: string;
+      leadPhone: string;
+    }> = [];
 
-    const delayed = await this.queue.getJobs(['delayed'], 0, 49);
-    let delayedJobs = await Promise.all(
-      delayed.map(async (job) => {
-        const state = await job.getState();
-        const delayMs = job.opts.delay;
-        const processAt =
-          delayMs != null
-            ? new Date((job.timestamp || Date.now()) + delayMs).toISOString()
-            : null;
-        return {
-          jobId: job.id,
-          name: job.name,
-          delayMs,
-          delayDays:
+    // 1) BullMQ / Redis — causa más frecuente de 500 si REDIS_URL falla en runtime
+    try {
+      const delayed = await this.queue.getJobs(['delayed'], 0, 49);
+      delayedJobs = await Promise.all(
+        delayed.map(async (job) => {
+          const state = await job.getState();
+          const delayMs = job.opts.delay;
+          const processAt =
             delayMs != null
-              ? Math.round(delayMs / (24 * 60 * 60_000) * 10) / 10
-              : null,
-          processAt,
-          data: job.data,
-          state,
-        };
-      }),
-    );
-
-    const lead = digits
-      ? await this.prisma.lead.findFirst({
-          where: { phone: { contains: digits } },
-          orderBy: { updatedAt: 'desc' },
-        })
-      : null;
-
-    if (lead) {
-      delayedJobs = delayedJobs.filter((j) => j.data.leadId === lead.id);
+              ? new Date((job.timestamp || Date.now()) + delayMs).toISOString()
+              : null;
+          return {
+            jobId: job.id,
+            name: job.name,
+            delayMs,
+            delayDays:
+              delayMs != null
+                ? Math.round(delayMs / (24 * 60 * 60_000) * 10) / 10
+                : null,
+            processAt,
+            data: job.data,
+            state,
+          };
+        }),
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.redis = msg;
+      this.logger.error(
+        `inspectScheduledJobs Redis/BullMQ failed: ${msg}`,
+        err instanceof Error ? err.stack : undefined,
+      );
     }
 
-    const stepRuns = await this.prisma.sequenceStepRun.findMany({
-      where: {
-        status: { in: [StepRunStatus.scheduled, StepRunStatus.pending] },
-        ...(digits
-          ? {
-              enrollment: {
-                lead: { phone: { contains: digits } },
-              },
-            }
-          : {}),
-      },
-      include: {
-        step: true,
-        enrollment: { include: { lead: true } },
-      },
-      orderBy: { scheduledFor: 'asc' },
-      take: 50,
-    });
+    // 2) Lead en Postgres (no Sheets)
+    if (digits) {
+      try {
+        const row = await this.prisma.lead.findFirst({
+          where: { phone: { contains: digits } },
+          orderBy: { updatedAt: 'desc' },
+        });
+        if (row) {
+          lead = {
+            id: row.id,
+            phone: row.phone,
+            status: row.status,
+            metadata: row.metadata,
+          };
+          delayedJobs = delayedJobs.filter((j) => j.data?.leadId === row.id);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.prismaLead = msg;
+        this.logger.error(
+          `inspectScheduledJobs prisma.lead failed: ${msg}`,
+          err instanceof Error ? err.stack : undefined,
+        );
+      }
+    }
 
-    return {
-      queue: NURTURING_STEPS_QUEUE,
-      phoneFilter: phone?.trim() || null,
-      lead: lead
-        ? {
-            id: lead.id,
-            phone: lead.phone,
-            status: lead.status,
-            metadata: lead.metadata,
-          }
-        : null,
-      delayedCount: delayedJobs.length,
-      delayedJobs,
-      stepRuns: stepRuns.map((r) => {
+    // 3) StepRuns programados
+    try {
+      const stepRuns = await this.prisma.sequenceStepRun.findMany({
+        where: {
+          status: { in: [StepRunStatus.scheduled, StepRunStatus.pending] },
+          ...(digits
+            ? {
+                enrollment: {
+                  lead: { phone: { contains: digits } },
+                },
+              }
+            : {}),
+        },
+        include: {
+          step: true,
+          enrollment: { include: { lead: true } },
+        },
+        orderBy: { scheduledFor: 'asc' },
+        take: 50,
+      });
+
+      stepRunsMapped = stepRuns.map((r) => {
         const days = Math.round((r.step.delayMinutes / (24 * 60)) * 10) / 10;
         const label =
           r.step.templateKey.includes('d7') || r.step.delayMinutes === 10_080
@@ -229,7 +287,28 @@ export class SequenceScheduler {
           leadId: r.enrollment.leadId,
           leadPhone: r.enrollment.lead.phone,
         };
-      }),
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.prismaStepRuns = msg;
+      this.logger.error(
+        `inspectScheduledJobs prisma.sequenceStepRun failed: ${msg}`,
+        err instanceof Error ? err.stack : undefined,
+      );
+    }
+
+    return {
+      queue: NURTURING_STEPS_QUEUE,
+      phoneFilter: phone?.trim() || null,
+      digits,
+      phase3Enabled: isNurturingPhase3Enabled(
+        this.config.get('NURTURING_PHASE3_ENABLED'),
+      ),
+      lead,
+      delayedCount: delayedJobs.length,
+      delayedJobs,
+      stepRuns: stepRunsMapped,
+      errors,
     };
   }
 }
