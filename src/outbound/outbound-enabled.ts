@@ -1,9 +1,21 @@
 /**
- * Outbound T+0 (llamadas Retell desde pestaña Localizados).
- * OUTBOUND_CALLS_ENABLED tiene prioridad; si no está, hereda NURTURING_PHASE3_ENABLED.
+ * Fase 1 — Outbound T+0 (llamadas Retell desde pestaña Localizados).
+ * Independiente de Fase 3 (nurturing WA / enroll T+7/T+10).
+ *
+ * Lunes / lote diario:
+ *   OUTBOUND_CALLS_ENABLED=true
+ *   NURTURING_PHASE3_ENABLED=false   ← pausa nurturing masivo
+ *   OUTBOUND_TEST_PHONE_ONLY=        ← vacío (sin filtro Toni)
+ *   MAX_DAILY_CALLS=30
+ *
+ * Si OUTBOUND_CALLS_ENABLED está vacío, hereda NURTURING_PHASE3_ENABLED
+ * (compat). Para Fase 1 con Fase 3 off, hay que poner OUTBOUND_CALLS_ENABLED=true.
  */
 export const OUTBOUND_CALLS_DISABLED_LOG =
   'Outbound calls disabled via environment variable';
+
+export const OUTBOUND_PHASE1_ACTIVE_LOG =
+  'Outbound Fase 1 ACTIVO (lote Localizados → Retell). Fase 3 nurturing aislada/off.';
 
 function isTruthyEnvFlag(raw?: string | boolean | null): boolean {
   if (raw === true) return true;
@@ -24,4 +36,30 @@ export function isOutboundCallsEnabled(params: {
     return isTruthyEnvFlag(params.outboundCallsEnabled);
   }
   return isTruthyEnvFlag(params.nurturingPhase3Enabled);
+}
+
+/** Resumen operativo para logs / status. */
+export function describeOutboundMode(params: {
+  outboundCallsEnabled?: string | boolean | null;
+  nurturingPhase3Enabled?: string | boolean | null;
+  testPhoneOnly?: string | null;
+  maxDailyCalls?: number;
+}): {
+  outboundEnabled: boolean;
+  phase3NurturingEnabled: boolean;
+  phase1MassBatch: boolean;
+  testFilterActive: boolean;
+  maxDailyCalls: number;
+} {
+  const outboundEnabled = isOutboundCallsEnabled(params);
+  const phase3NurturingEnabled = isTruthyEnvFlag(params.nurturingPhase3Enabled);
+  const testFilterActive = Boolean(params.testPhoneOnly?.trim());
+  return {
+    outboundEnabled,
+    phase3NurturingEnabled,
+    /** Lote masivo Fase 1: outbound on, sin filtro Toni (Fase 3 puede estar off). */
+    phase1MassBatch: outboundEnabled && !testFilterActive,
+    testFilterActive,
+    maxDailyCalls: params.maxDailyCalls ?? 30,
+  };
 }

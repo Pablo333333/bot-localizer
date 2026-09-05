@@ -6,6 +6,8 @@ import { SheetsService } from '../sheets/sheets.service';
 import { resolveRetellFromNumber } from '../nurturing/toni-fase3.constants';
 import {
   OUTBOUND_CALLS_DISABLED_LOG,
+  OUTBOUND_PHASE1_ACTIVE_LOG,
+  describeOutboundMode,
   isOutboundCallsEnabled,
 } from './outbound-enabled';
 import {
@@ -51,9 +53,6 @@ export class OutboundService {
   private readonly retell: Retell;
   private readonly agentId: string;
   private readonly fromNumber: string;
-  private readonly maxDailyCalls: number;
-  /** Si está definido, solo se llaman filas con ese teléfono (prueba Toni). */
-  private readonly testPhoneOnly: string | null;
   private isRunning = false;
 
   /** Fuente de verdad del límite diario: intentos de esta sesión/día Madrid. */
@@ -76,31 +75,56 @@ export class OutboundService {
     this.fromNumber = resolveRetellFromNumber(
       this.configService.get<string>('RETELL_FROM_NUMBER'),
     );
-    this.maxDailyCalls = resolveMaxDailyCalls(
-      this.configService.get('MAX_DAILY_CALLS'),
+    const mode = this.resolveMode();
+    this.logger.log(
+      `[OutboundService] Arranque mode=${JSON.stringify(mode)} horario=${OUTBOUND_HOURS_DESCRIPTION}`,
     );
-    this.testPhoneOnly = resolveOutboundTestPhoneOnly(
-      this.configService.get('OUTBOUND_TEST_PHONE_ONLY'),
-    );
-    if (this.testPhoneOnly) {
+    if (mode.testFilterActive) {
       this.logger.warn(
-        `[Outbound TEST FILTER] ACTIVO — solo se llamará a ${this.testPhoneOnly} (OUTBOUND_TEST_PHONE_ONLY)`,
+        `[Outbound TEST FILTER] ACTIVO — solo ${this.configService.get('OUTBOUND_TEST_PHONE_ONLY')} (quitar para lote Fase 1 masivo)`,
       );
     }
+    if (mode.phase1MassBatch && !mode.phase3NurturingEnabled) {
+      this.logger.log(OUTBOUND_PHASE1_ACTIVE_LOG);
+    }
+  }
+
+  /** Config leída en cada ciclo (permite cambiar env en Railway sin redeploy de código). */
+  private resolveMode() {
+    return describeOutboundMode({
+      outboundCallsEnabled: this.configService.get('OUTBOUND_CALLS_ENABLED'),
+      nurturingPhase3Enabled: this.configService.get('NURTURING_PHASE3_ENABLED'),
+      testPhoneOnly: resolveOutboundTestPhoneOnly(
+        this.configService.get('OUTBOUND_TEST_PHONE_ONLY'),
+      ),
+      maxDailyCalls: resolveMaxDailyCalls(
+        this.configService.get('MAX_DAILY_CALLS'),
+      ),
+    });
   }
 
   @Cron(CronExpression.EVERY_5_MINUTES)
   async checkPendingCalls(): Promise<void> {
-    if (
-      !isOutboundCallsEnabled({
-        outboundCallsEnabled: this.configService.get('OUTBOUND_CALLS_ENABLED'),
-        nurturingPhase3Enabled: this.configService.get(
-          'NURTURING_PHASE3_ENABLED',
-        ),
-      })
-    ) {
+    const mode = this.resolveMode();
+    if (!mode.outboundEnabled) {
       this.logger.log(OUTBOUND_CALLS_DISABLED_LOG);
       return;
+    }
+
+    if (!mode.phase3NurturingEnabled) {
+      this.logger.log(
+        `[OutboundService] Fase 3 nurturing OFF — lote Solo Fase 1 (sin WA/enroll T+7/T+10). cupo=${mode.maxDailyCalls}`,
+      );
+    } else {
+      this.logger.warn(
+        '[OutboundService] NURTURING_PHASE3_ENABLED=true — el webhook SÍ puede enrollar tras no_answer. Para lote masivo Fase 1, ponerlo en false.',
+      );
+    }
+
+    if (mode.testFilterActive) {
+      this.logger.warn(
+        `[Outbound TEST FILTER] activo (${this.configService.get('OUTBOUND_TEST_PHONE_ONLY')}) — no es lote masivo`,
+      );
     }
 
     if (this.isRunning) {
@@ -112,26 +136,30 @@ export class OutboundService {
 
     this.isRunning = true;
     try {
-      await this.processPendingCalls();
+      await this.processPendingCalls(mode.maxDailyCalls);
     } finally {
       this.isRunning = false;
     }
   }
 
-  private async processPendingCalls(): Promise<void> {
+  private async processPendingCalls(maxDailyCalls: number): Promise<void> {
     const madridNow = this.getMadridParts(new Date());
     this.logger.log(
-      `[OutboundService] Inicio ciclo. Hora Madrid: ${madridNow.day}/${madridNow.month}/${madridNow.year} ${String(madridNow.hour).padStart(2, '0')}:${String(madridNow.minute).padStart(2, '0')} (weekday=${madridNow.weekday})`,
+      `[OutboundService] Inicio ciclo Fase 1. Hora Madrid: ${madridNow.day}/${madridNow.month}/${madridNow.year} ${String(madridNow.hour).padStart(2, '0')}:${String(madridNow.minute).padStart(2, '0')} (weekday=${madridNow.weekday}) cupo=${maxDailyCalls}`,
     );
 
     if (!this.isWithinBusinessHours()) {
       this.logger.log(
-        `[OutboundService] Descartado ciclo: Fuera de horario laboral (${OUTBOUND_HOURS_DESCRIPTION}).`,
+        `[OutboundService] Descartado ciclo: Fuera de horario laboral (${OUTBOUND_HOURS_DESCRIPTION}). Lunes primera hora = desde 10:00 Madrid.`,
       );
       return;
     }
 
     this.rotateDailyCountersIfNeeded();
+
+    const testPhoneOnly = resolveOutboundTestPhoneOnly(
+      this.configService.get('OUTBOUND_TEST_PHONE_ONLY'),
+    );
 
     const { sheet, rows } = await this.sheetsService.getAllRows(SHEET_NAME);
 
@@ -155,17 +183,17 @@ export class OutboundService {
     // Límite diario: SOLO memoria (no bloquear por formatos raros de Fecha actualización)
     const attemptsToday = this.dailyAttemptCount;
     this.logger.log(
-      `[OutboundService] Cupo diario (memoria): ${attemptsToday}/${this.maxDailyCalls}. Set teléfonos hoy: ${this.attemptedPhonesToday.size}`,
+      `[OutboundService] Cupo diario (memoria): ${attemptsToday}/${maxDailyCalls}. Set teléfonos hoy: ${this.attemptedPhonesToday.size}`,
     );
 
-    if (attemptsToday >= this.maxDailyCalls) {
+    if (attemptsToday >= maxDailyCalls) {
       this.logger.log(
-        `[OutboundService] Descartado ciclo: Límite alcanzado (${attemptsToday}/${this.maxDailyCalls}).`,
+        `[OutboundService] Descartado ciclo: Límite alcanzado (${attemptsToday}/${maxDailyCalls}).`,
       );
       return;
     }
 
-    let remainingToday = this.maxDailyCalls - attemptsToday;
+    let remainingToday = maxDailyCalls - attemptsToday;
 
     // Clasificar filas con motivo explícito de descarte
     type Candidate = {
@@ -196,12 +224,12 @@ export class OutboundService {
       const phone = this.formatE164Spain(rawPhone);
 
       if (
-        this.testPhoneOnly &&
-        !matchesOutboundTestPhone(phone, this.testPhoneOnly)
+        testPhoneOnly &&
+        !matchesOutboundTestPhone(phone, testPhoneOnly)
       ) {
         discardedCount++;
         this.logger.log(
-          `[Outbound TEST FILTER] Saltando lead fila ${rowNumber} (${phone}) por no coincidir con ${this.testPhoneOnly}`,
+          `[Outbound TEST FILTER] Saltando lead fila ${rowNumber} (${phone}) por no coincidir con ${testPhoneOnly}`,
         );
         continue;
       }
@@ -235,7 +263,7 @@ export class OutboundService {
     for (const candidate of candidates) {
       if (remainingToday <= 0) {
         this.logger.log(
-          `[OutboundService] Fila ${candidate.rowNumber} descartada: Límite alcanzado (${this.dailyAttemptCount}/${this.maxDailyCalls}).`,
+          `[OutboundService] Fila ${candidate.rowNumber} descartada: Límite alcanzado (${this.dailyAttemptCount}/${maxDailyCalls}).`,
         );
         break;
       }
@@ -313,7 +341,7 @@ export class OutboundService {
         });
 
         this.logger.log(
-          `[OutboundService] Fila ${rowNumber} OK — call_id=${call.call_id} | intentos hoy=${this.dailyAttemptCount}/${this.maxDailyCalls}`,
+          `[OutboundService] Fila ${rowNumber} OK — call_id=${call.call_id} | intentos hoy=${this.dailyAttemptCount}/${maxDailyCalls}`,
         );
       } catch (err) {
         this.logger.error(
@@ -323,7 +351,7 @@ export class OutboundService {
     }
 
     this.logger.log(
-      `[OutboundService] Ciclo terminado. Intentos en este run: ${callsLaunchedThisRun}. Total día (memoria): ${this.dailyAttemptCount}/${this.maxDailyCalls}`,
+      `[OutboundService] Ciclo terminado. Intentos en este run: ${callsLaunchedThisRun}. Total día (memoria): ${this.dailyAttemptCount}/${maxDailyCalls}`,
     );
   }
 

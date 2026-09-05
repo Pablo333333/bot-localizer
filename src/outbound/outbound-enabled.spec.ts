@@ -1,7 +1,10 @@
-import { isOutboundCallsEnabled } from './outbound-enabled';
+import {
+  describeOutboundMode,
+  isOutboundCallsEnabled,
+} from './outbound-enabled';
 
 describe('isOutboundCallsEnabled', () => {
-  it('usa OUTBOUND_CALLS_ENABLED si está definido', () => {
+  it('usa OUTBOUND_CALLS_ENABLED si está definido (independiente de Fase 3)', () => {
     expect(
       isOutboundCallsEnabled({
         outboundCallsEnabled: 'true',
@@ -29,5 +32,34 @@ describe('isOutboundCallsEnabled', () => {
         nurturingPhase3Enabled: 'false',
       }),
     ).toBe(false);
+  });
+});
+
+describe('describeOutboundMode', () => {
+  it('lote Fase 1 masivo: outbound on + Fase 3 off + sin filtro Toni', () => {
+    const mode = describeOutboundMode({
+      outboundCallsEnabled: 'true',
+      nurturingPhase3Enabled: 'false',
+      testPhoneOnly: null,
+      maxDailyCalls: 30,
+    });
+    expect(mode).toEqual({
+      outboundEnabled: true,
+      phase3NurturingEnabled: false,
+      phase1MassBatch: true,
+      testFilterActive: false,
+      maxDailyCalls: 30,
+    });
+  });
+
+  it('filtro Toni no es lote masivo', () => {
+    const mode = describeOutboundMode({
+      outboundCallsEnabled: 'true',
+      nurturingPhase3Enabled: 'false',
+      testPhoneOnly: '+34644408099',
+      maxDailyCalls: 30,
+    });
+    expect(mode.phase1MassBatch).toBe(false);
+    expect(mode.testFilterActive).toBe(true);
   });
 });
