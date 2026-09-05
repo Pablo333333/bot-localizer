@@ -22,22 +22,23 @@ export function resolveT0MessageChannel(
 }
 
 /**
- * Acciones de seguimiento cuando la llamada no contacta (NO_ANSWER / HANGUP / etc.).
- * T+0: mensaje + enroll. T+7: SMS. T+10: ilocalizable.
- * `t0Channel` permite forzar SMS en pruebas sin plantilla WhatsApp aprobada.
+ * Acciones de seguimiento por fase.
+ * `enroll` en T+0 solo si el caller pasa enroll=true (no_answer / postpone).
+ * Hangup: el servicio marca PENDIENTE sin enroll.
  */
 export function planNoContactFollowup(
   phase: NurturingCallPhase,
-  opts?: { t0Channel?: T0MessageChannel },
+  opts?: { t0Channel?: T0MessageChannel; enroll?: boolean },
 ): NoContactFollowupPlan {
   const t0 = opts?.t0Channel ?? 'whatsapp';
+  const enroll = opts?.enroll === true;
 
   switch (phase) {
     case 't0':
       return {
-        sendWhatsApp: t0 === 'whatsapp' || t0 === 'both',
-        sendSms: t0 === 'sms' || t0 === 'both',
-        enroll: true,
+        sendWhatsApp: enroll && (t0 === 'whatsapp' || t0 === 'both'),
+        sendSms: enroll && (t0 === 'sms' || t0 === 'both'),
+        enroll,
         markIlocalizable: false,
       };
     case 't7':

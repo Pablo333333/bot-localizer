@@ -4,7 +4,7 @@ import { CallOutcome } from '../enums';
 describe('CallOutcomeClassifier', () => {
   const classifier = new CallOutcomeClassifier();
 
-  it('clasifica NO_ANSWER, BUSY, VOICEMAIL y HANGUP (no cerrado)', () => {
+  it('clasifica NO_ANSWER, BUSY, VOICEMAIL y HANGUP', () => {
     expect(
       classifier.classify({ disconnection_reason: 'dial_no_answer' }),
     ).toBe(CallOutcome.NO_ANSWER);
@@ -20,10 +20,26 @@ describe('CallOutcomeClassifier', () => {
         duration_ms: 4000,
       }),
     ).toBe(CallOutcome.HANGUP);
-    expect(classifier.shouldSendBookingWhatsApp(CallOutcome.HANGUP)).toBe(true);
   });
 
-  it('user_hangup de 24s con Session Outcome Successful → HANGUP + WA (no ANSWERED_SUCCESS)', () => {
+  it('NO_ANSWER enrolla; HANGUP solo PENDIENTE sin enroll', () => {
+    expect(classifier.shouldEnrollRetrySequence(CallOutcome.NO_ANSWER)).toBe(
+      true,
+    );
+    expect(classifier.shouldSendBookingWhatsApp(CallOutcome.NO_ANSWER)).toBe(
+      true,
+    );
+    expect(classifier.shouldEnrollRetrySequence(CallOutcome.HANGUP)).toBe(
+      false,
+    );
+    expect(classifier.shouldSendBookingWhatsApp(CallOutcome.HANGUP)).toBe(
+      false,
+    );
+    expect(classifier.shouldMarkPendiente(CallOutcome.HANGUP)).toBe(true);
+    expect(classifier.shouldMarkPendiente(CallOutcome.NO_ANSWER)).toBe(true);
+  });
+
+  it('user_hangup con Session Outcome Successful → HANGUP sin enroll', () => {
     const outcome = classifier.classify({
       call_id: 'call_5df14bab027f2c5a803053f0b6b',
       disconnection_reason: 'user_hangup',
@@ -31,8 +47,23 @@ describe('CallOutcomeClassifier', () => {
       call_analysis: { call_successful: true, call_summary: 'Brief call' },
     });
     expect(outcome).toBe(CallOutcome.HANGUP);
-    expect(classifier.shouldSendBookingWhatsApp(outcome)).toBe(true);
+    expect(classifier.shouldEnrollRetrySequence(outcome)).toBe(false);
+    expect(classifier.shouldMarkPendiente(outcome)).toBe(true);
     expect(classifier.shouldMarkClosed(outcome)).toBe(false);
+  });
+
+  it('posponer en summary/estado → POSTPONE + enroll', () => {
+    expect(
+      classifier.classify({
+        call_analysis: {
+          call_summary: 'Dice que le llamemos más tarde',
+          custom_analysis_data: { estado: 'posponer' },
+        },
+      }),
+    ).toBe(CallOutcome.POSTPONE);
+    expect(classifier.shouldEnrollRetrySequence(CallOutcome.POSTPONE)).toBe(
+      true,
+    );
   });
 
   it('user hangup (con espacio) también se reconoce', () => {
@@ -41,7 +72,7 @@ describe('CallOutcomeClassifier', () => {
     ).toBe(CallOutcome.HANGUP);
   });
 
-  it('call_ended: user_hangup es nurturing temprano', () => {
+  it('call_ended: user_hangup es nurturing temprano (PENDIENTE)', () => {
     expect(
       classifier.isClearNoContactBeforeAnalysis({
         disconnection_reason: 'user_hangup',

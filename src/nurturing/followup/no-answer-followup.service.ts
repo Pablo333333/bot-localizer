@@ -22,15 +22,16 @@ import {
   NURTURING_PHASE3_DISABLED_LOG,
   isNurturingPhase3Enabled,
 } from '../phase3-enabled';
-import { normalizePhone } from '../utils/phone.util';
+import { normalizePhone, formatE164Spain } from '../utils/phone.util';
 import { CallOutcomeClassifier } from './call-outcome.classifier';
 import { planNoContactFollowup, resolveT0MessageChannel } from './no-answer-followup.policy';
 
 /**
- * T+0: NO_ANSWER/HANGUP → solo WhatsApp (plantilla Localisto + enlace cita) + enroll T+7/T+10.
- *       El SMS de seguimiento NO se envía en este primer intento.
- * T+7: no-contesta / fallo de la rellamada → SMS con enlace para reservar la cita.
- * T+10: no-contesta → estado ILOCALIZABLE (Prisma + Sheets).
+ * Retell outbound / follow-up:
+ * - Crea Lead si el teléfono no existe.
+ * - NO_ANSWER / POSTPONE (/ busy / voicemail): mensaje T+0 + enroll T+7/T+10 días + PENDIENTE.
+ * - HANGUP u otras casuísticas: PENDIENTE, sin cola T+7/T+10.
+ * - T+7: SMS si la rellamada no contacta. T+10: ILOCALIZABLE.
  */
 @Injectable()
 export class NoAnswerFollowupService {
@@ -91,8 +92,10 @@ export class NoAnswerFollowupService {
     }
 
     const outcome = this.classifier.classify(callData);
+    const enrollRetry = this.classifier.shouldEnrollRetrySequence(outcome);
+    const markPendiente = this.classifier.shouldMarkPendiente(outcome);
     this.logger.log(
-      `[Followup] outcome=${outcome} sendWA=${this.classifier.shouldSendBookingWhatsApp(outcome)} call=${callData.call_id}`,
+      `[Followup] outcome=${outcome} enrollRetry=${enrollRetry} pendiente=${markPendiente} call=${callData.call_id}`,
     );
     const phoneRaw = callData.to_number || '';
     if (!phoneRaw) {
@@ -107,25 +110,7 @@ export class NoAnswerFollowupService {
       };
     }
 
-    const phone = normalizePhone(phoneRaw);
-    let lead = await this.prisma.lead.findUnique({ where: { phone } });
-    if (!lead) {
-      lead = await this.prisma.lead.create({
-        data: {
-          phone,
-          name:
-            callData.call_analysis?.custom_analysis_data?.nombre_contacto ||
-            null,
-          source: 'outbound',
-          status: LeadStatus.NUEVO as any,
-          externalRef: callData.call_id,
-          metadata: {
-            last_call_id: callData.call_id,
-            last_outcome: outcome,
-          },
-        },
-      });
-    }
+    const lead = await this.findOrCreateLeadFromCall(phoneRaw, callData, outcome);
 
     // Idempotencia: call_ended + call_analyzed del mismo call_id no deben
     // reenviar WhatsApp ni re-enrollar.
@@ -233,7 +218,6 @@ export class NoAnswerFollowupService {
       };
     }
 
-    const noContact = this.classifier.shouldSendBookingWhatsApp(outcome);
     let whatsappSent = false;
     let smsSent = false;
     let enrolled = false;
@@ -241,13 +225,29 @@ export class NoAnswerFollowupService {
     const t0Channel = resolveT0MessageChannel(
       this.config.get('NURTURING_T0_CHANNEL'),
     );
-    const plan = noContact
-      ? planNoContactFollowup(phase, { t0Channel })
-      : planNoContactFollowup('unknown');
+    const plan = planNoContactFollowup(phase, {
+      t0Channel,
+      // Solo no_answer / postpone (y busy/voicemail) enrollan en T+0
+      enroll: enrollRetry && phase === 't0',
+    });
 
-    if (phase === 't0' && noContact) {
+    // T+7 SMS / T+10 ilocalizable solo si el outcome sigue siendo no-contacto enrollable
+    if (phase === 't7' && enrollRetry) {
+      plan.sendSms = true;
+    }
+    if (phase === 't10' && enrollRetry) {
+      plan.markIlocalizable = true;
+    }
+    if (phase === 't7' && !enrollRetry) {
+      plan.sendSms = false;
+    }
+    if (phase === 't10' && !enrollRetry) {
+      plan.markIlocalizable = false;
+    }
+
+    if (phase === 't0') {
       this.logger.log(
-        `[Followup] T+0 channel mode=${t0Channel} → WA=${plan.sendWhatsApp} SMS=${plan.sendSms}`,
+        `[Followup] T+0 enroll=${plan.enroll} channel=${t0Channel} WA=${plan.sendWhatsApp} SMS=${plan.sendSms} (hangup→PENDIENTE sin cola)`,
       );
     }
 
@@ -257,19 +257,19 @@ export class NoAnswerFollowupService {
         sms: plan.sendSms,
         waKey: TEMPLATE_WA_T0,
         smsKey: plan.sendSms && phase === 't0' ? TEMPLATE_SMS_T0 : TEMPLATE_SMS_T7,
-        summaryPrefix: `${phase}_no_answer:${outcome}`,
+        summaryPrefix: `${phase}_${outcome}`,
       });
       whatsappSent = sent.whatsappSent;
       smsSent = sent.smsSent;
     }
 
-    if (noContact && !plan.markIlocalizable) {
+    if (markPendiente && !plan.markIlocalizable) {
       await this.leads.updateStatus(lead.id, {
         status: LeadStatus.PENDIENTE,
-        reason: `no_contact:${outcome}`,
+        reason: `${outcome}:${phase}`,
       });
       this.logger.log(
-        `Lead ${lead.id} → PENDIENTE (outcome=${outcome} phase=${phase})`,
+        `Lead ${lead.id} → PENDIENTE (outcome=${outcome} phase=${phase} enroll=${plan.enroll})`,
       );
     }
 
@@ -277,13 +277,20 @@ export class NoAnswerFollowupService {
       try {
         await this.enrollments.enrollLead(lead.id);
         enrolled = true;
+        this.logger.log(
+          `Lead ${lead.id} enrollado en secuencia T+7/T+10 (outcome=${outcome})`,
+        );
       } catch (err) {
         this.logger.warn(
-          `Enroll after T+0 no-answer skipped: ${
+          `Enroll after ${outcome} skipped: ${
             err instanceof Error ? err.message : err
           }`,
         );
       }
+    } else if (phase === 't0' && markPendiente) {
+      this.logger.log(
+        `Lead ${lead.id} sin enroll T+7/T+10 (outcome=${outcome} — solo PENDIENTE)`,
+      );
     }
 
     if (plan.markIlocalizable) {
@@ -325,6 +332,57 @@ export class NoAnswerFollowupService {
       markedIlocalizable,
       leadId: lead.id,
     };
+  }
+
+  /**
+   * Si el número no está en BD al finalizar la llamada, lo crea automáticamente.
+   */
+  private async findOrCreateLeadFromCall(
+    phoneRaw: string,
+    callData: Record<string, any>,
+    outcome: CallOutcome,
+  ) {
+    const phone = normalizePhone(phoneRaw);
+    const e164 = formatE164Spain(phoneRaw);
+    const digits = phone.replace(/\D/g, '').slice(-9);
+
+    let lead =
+      (await this.prisma.lead.findUnique({ where: { phone } })) ||
+      (phone !== e164
+        ? await this.prisma.lead.findUnique({ where: { phone: e164 } })
+        : null);
+
+    if (!lead && digits.length >= 9) {
+      lead = await this.prisma.lead.findFirst({
+        where: { phone: { contains: digits } },
+        orderBy: { updatedAt: 'desc' },
+      });
+    }
+
+    if (!lead) {
+      const storedPhone = e164 || phone;
+      lead = await this.prisma.lead.create({
+        data: {
+          phone: storedPhone,
+          name:
+            callData.call_analysis?.custom_analysis_data?.nombre_contacto ||
+            null,
+          source: 'outbound',
+          status: LeadStatus.NUEVO as any,
+          externalRef: callData.call_id ? String(callData.call_id) : null,
+          metadata: {
+            last_call_id: callData.call_id,
+            last_outcome: outcome,
+            created_from: 'retell_webhook',
+          },
+        },
+      });
+      this.logger.log(
+        `Lead creado automáticamente phone=${storedPhone} id=${lead.id} outcome=${outcome}`,
+      );
+    }
+
+    return lead;
   }
 
   private async resolveTemplateKey(

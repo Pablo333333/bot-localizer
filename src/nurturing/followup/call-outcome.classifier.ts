@@ -3,9 +3,10 @@ import { CallOutcome } from '../enums';
 
 /**
  * Clasifica el resultado de una llamada Retell.
- * Importante Toni: "no contesta" / colgado / busy / declined ≠ cerrado.
- * Retell "call_successful" / Session Outcome Successful ≠ contacto comercial útil:
- * un user_hangup sigue disparando WhatsApp de seguimiento + enroll T+7.
+ *
+ * - NO_ANSWER / BUSY / VOICEMAIL / POSTPONE → mensaje T+0 + enroll T+7/T+10 + PENDIENTE
+ * - HANGUP (cuelgue a mitad) u otras casuísticas → PENDIENTE, sin cola T+7/T+10
+ * - EXPLICIT_REJECTION → cerrado
  *
  * @see https://docs.retellai.com/reliability/debug-call-disconnect
  */
@@ -44,16 +45,23 @@ export class CallOutcomeClassifier {
       return CallOutcome.EXPLICIT_REJECTION;
     }
 
-    // user_hangup / user_hung_up → SIEMPRE seguimiento (WA + T+7).
-    // Retell marca Session Outcome Successful si hubo audio; eso NO bloquea el WA.
+    // Posponer / callback → enroll T+7/T+10 (antes que hangup genérico)
+    if (this.isPostponeSignal(summary, estado, cad)) {
+      this.logger.log(
+        `postpone detectado → POSTPONE (enroll T+7/T+10). call=${callData.call_id}`,
+      );
+      return CallOutcome.POSTPONE;
+    }
+
+    // user_hangup → PENDIENTE sin enroll (cuelgue a mitad / corta conversación)
     if (this.isUserHangupReason(reason)) {
       this.logger.log(
-        `user_hangup → HANGUP (WA+enroll). call_successful=${callData.call_analysis?.call_successful} no bloquea.`,
+        `user_hangup → HANGUP (PENDIENTE, sin enroll T+7/T+10). call_successful=${callData.call_analysis?.call_successful}`,
       );
       return CallOutcome.HANGUP;
     }
 
-    // --- No conectó / no contactó (siempre nurturing) ---
+    // --- No conectó / no contactó → NO_ANSWER (+ busy/voicemail) ---
     if (this.isNoAnswerReason(reason) || callStatus === 'not_connected') {
       if (this.isBusyReason(reason)) return CallOutcome.BUSY;
       if (this.isVoicemailReason(reason)) return CallOutcome.VOICEMAIL;
@@ -73,7 +81,10 @@ export class CallOutcomeClassifier {
 
     // agent_hangup / manual_stopped: sin éxito de negocio → HANGUP; con éxito → OK
     if (this.isHangupReason(reason)) {
-      if (callData.call_analysis?.call_successful === true && duration >= 15_000) {
+      if (
+        callData.call_analysis?.call_successful === true &&
+        duration >= 15_000
+      ) {
         return CallOutcome.ANSWERED_SUCCESS;
       }
       return CallOutcome.HANGUP;
@@ -93,13 +104,33 @@ export class CallOutcomeClassifier {
     return CallOutcome.UNKNOWN;
   }
 
-  /** Outcomes que disparan WhatsApp T+0 + enroll T+7/T+10 */
-  shouldSendBookingWhatsApp(outcome: CallOutcome): boolean {
+  /**
+   * Enroll cola T+7/T+10: solo no_answer (y equivalentes sin conexión) o posponer.
+   * Hangup a mitad NO enrolla.
+   */
+  shouldEnrollRetrySequence(outcome: CallOutcome): boolean {
     return (
       outcome === CallOutcome.NO_ANSWER ||
+      outcome === CallOutcome.POSTPONE ||
+      outcome === CallOutcome.BUSY ||
+      outcome === CallOutcome.VOICEMAIL
+    );
+  }
+
+  /** WhatsApp/SMS booking T+0: misma regla que enroll (no hangup). */
+  shouldSendBookingWhatsApp(outcome: CallOutcome): boolean {
+    return this.shouldEnrollRetrySequence(outcome);
+  }
+
+  /**
+   * PENDIENTE: no_answer/postpone (con enroll) y hangup / otras casuísticas
+   * sin éxito ni cierre.
+   */
+  shouldMarkPendiente(outcome: CallOutcome): boolean {
+    return (
+      this.shouldEnrollRetrySequence(outcome) ||
       outcome === CallOutcome.HANGUP ||
-      outcome === CallOutcome.VOICEMAIL ||
-      outcome === CallOutcome.BUSY
+      outcome === CallOutcome.UNKNOWN
     );
   }
 
@@ -109,20 +140,64 @@ export class CallOutcomeClassifier {
   }
 
   /**
-   * En call_ended: nurturing temprano si no-conexión o user_hangup
-   * (no esperar call_analyzed para enviar WA).
+   * En call_ended: nurturing temprano si no-conexión, postpone o hangup
+   * (hangup solo para marcar PENDIENTE; enroll espera no_answer).
    */
   isClearNoContactBeforeAnalysis(callData: Record<string, any>): boolean {
     const reason = this.resolveDisconnectionReason(callData);
     const callStatus = this.resolveCallStatus(callData);
+    const summary = String(
+      callData.call_analysis?.call_summary || '',
+    ).toLowerCase();
+    const cad = callData.call_analysis?.custom_analysis_data || {};
+    const estado = String(cad.estado || cad.resultado || '').toLowerCase();
+
+    if (this.isPostponeSignal(summary, estado, cad)) return true;
     if (callStatus === 'not_connected') return true;
     if (this.isBusyReason(reason)) return true;
     if (this.isVoicemailReason(reason)) return true;
     if (this.isNoAnswerReason(reason)) return true;
     if (this.isCanceledReason(reason)) return true;
-    // user_hangup: enviar WA ya en call_ended (caso Toni / prueba)
     if (this.isUserHangupReason(reason)) return true;
     return false;
+  }
+
+  private isPostponeSignal(
+    summary: string,
+    estado: string,
+    cad: Record<string, unknown>,
+  ): boolean {
+    const hints = [
+      'posponer',
+      'pospuesto',
+      'más tarde',
+      'mas tarde',
+      'otro día',
+      'otro dia',
+      'llamar después',
+      'llamar despues',
+      'callback',
+      'call back',
+      'reagendar',
+      're-agendar',
+      'no ahora',
+      'más adelante',
+      'mas adelante',
+    ];
+    if (estado === 'posponer' || estado === 'postpone' || estado === 'pendiente') {
+      return true;
+    }
+    const intent = String(
+      cad.intencion || cad.intention || cad.next_action || '',
+    ).toLowerCase();
+    if (
+      intent.includes('pospon') ||
+      intent.includes('callback') ||
+      intent.includes('reagend')
+    ) {
+      return true;
+    }
+    return hints.some((h) => summary.includes(h) || estado.includes(h));
   }
 
   private resolveDisconnectionReason(callData: Record<string, any>): string {

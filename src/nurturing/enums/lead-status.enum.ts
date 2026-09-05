@@ -1,6 +1,6 @@
 export enum LeadStatus {
   NUEVO = 'nuevo',
-  /** Tras hangup / no_answer: en secuencia de reintento (T+7 / T+10). */
+  /** Hangup / no_answer / postpone: seguimiento. Enroll T+7/T+10 solo no_answer|postpone. */
   PENDIENTE = 'pendiente',
   INTERESADO = 'interesado',
   /** Estado Toni: cita agendada — detiene secuencias activas */
@@ -25,6 +25,8 @@ export const TERMINAL_LEAD_STATUSES: ReadonlySet<LeadStatus> = new Set([
 export enum CallOutcome {
   ANSWERED_SUCCESS = 'answered_success',
   NO_ANSWER = 'no_answer',
+  /** Cliente pidió llamar más tarde / posponer — enroll T+7/T+10 */
+  POSTPONE = 'postpone',
   HANGUP = 'hangup',
   VOICEMAIL = 'voicemail',
   BUSY = 'busy',
