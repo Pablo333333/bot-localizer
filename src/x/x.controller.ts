@@ -7,10 +7,12 @@ import {
   Logger,
   Post,
   Query,
+  Req,
   Res,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
+import { XChatService } from './x-chat.service';
 import { XService } from './x.service';
 
 @Controller('x')
@@ -19,28 +21,51 @@ export class XController {
 
   constructor(
     private readonly xService: XService,
+    private readonly xChat: XChatService,
     private readonly config: ConfigService,
   ) {}
 
   /**
-   * Verificación CRC Account Activity API.
+   * CRC challenge Account Activity API (X/Twitter).
    * GET /x/webhook?crc_token=...
+   * Respuesta exacta: { "response_token": "sha256=<base64>" }
+   * @see https://developer.x.com/en/docs/twitter-api/enterprise/account-activity-api/guides/securing-webhooks
    */
   @Get('webhook')
   verifyWebhook(
-    @Query('crc_token') crcToken: string,
+    @Query('crc_token') crcToken: string | undefined,
+    @Req() req: Request,
     @Res() res: Response,
   ) {
-    const responseToken = this.xService.verifyCrc(crcToken);
+    const token =
+      (typeof crcToken === 'string' && crcToken) ||
+      (typeof req.query.crc_token === 'string' ? req.query.crc_token : '') ||
+      '';
+
+    if (!token) {
+      this.logger.warn('X webhook CRC: falta query crc_token');
+      return res.status(HttpStatus.BAD_REQUEST).json({
+        error: 'missing_crc_token',
+      });
+    }
+
+    const responseToken = this.xService.verifyCrc(token);
     if (!responseToken) {
       this.logger.warn(
-        'X webhook CRC: falta crc_token o X_API_SECRET / X_CONSUMER_SECRET',
+        'X webhook CRC: falta X_API_SECRET / X_CONSUMER_SECRET en el entorno',
       );
       return res.status(HttpStatus.FORBIDDEN).send('Forbidden');
     }
 
-    this.logger.log('X webhook CRC verificado OK');
-    return res.status(HttpStatus.OK).json({ response_token: responseToken });
+    this.logger.log(
+      `X webhook CRC OK (tokenLen=${token.length} responsePrefix=${responseToken.slice(0, 12)}…)`,
+    );
+
+    // Spec X: 200 + application/json + únicamente response_token
+    res.status(HttpStatus.OK);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.send(JSON.stringify({ response_token: responseToken }));
   }
 
   /**
@@ -57,7 +82,9 @@ export class XController {
         : 0;
 
     this.logger.log(`X webhook event dmEvents=${dmCount}`);
-    this.logger.debug(`X webhook payload keys=${Object.keys(body || {}).join(',')}`);
+    this.logger.debug(
+      `X webhook payload keys=${Object.keys(body || {}).join(',')}`,
+    );
 
     try {
       await this.xService.handleIncomingDm(body);
@@ -70,17 +97,31 @@ export class XController {
     return { status: 'ok' };
   }
 
+  /**
+   * Exporta el System Prompt de DMs (Toni: auditar / copiar a Retell).
+   * GET /x/prompt
+   */
+  @Get('prompt')
+  getPrompt() {
+    return this.xChat.getSystemPromptForAudit();
+  }
+
   /** Health / diagnóstico de credenciales (sin secretos). */
   @Get('health')
   health() {
     const creds = this.xService.getCredentials();
+    const secretConfigured = Boolean(
+      this.config.get<string>('X_API_SECRET') ||
+        this.config.get<string>('X_CONSUMER_SECRET'),
+    );
     return {
       ok: true,
       service: 'x-dm',
       credentialsConfigured: Boolean(creds),
-      agentIdConfigured: Boolean(
-        this.config.get<string>('X_AGENT_ID')?.trim(),
-      ),
+      crcSecretConfigured: secretConfigured,
+      agentIdConfigured: Boolean(this.config.get<string>('X_AGENT_ID')?.trim()),
+      prompt: this.xChat.getSystemPromptForAudit(),
+      webhookUrlHint: 'GET|POST /x/webhook',
     };
   }
 }

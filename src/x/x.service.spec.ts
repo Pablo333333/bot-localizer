@@ -9,6 +9,11 @@ jest.mock('./x-chat.service', () => ({
   XChatService: jest.fn().mockImplementation(() => ({
     getAgentId: jest.fn(() => 'agent_x_chat'),
     generateReply: jest.fn(),
+    getSystemPromptForAudit: jest.fn(() => ({
+      source: 'fallback:generic',
+      prompt: 'test prompt',
+      editableVia: 'env_for_now_sheets_or_db_later',
+    })),
   })),
 }));
 

@@ -64,13 +64,16 @@ export class XService {
     };
   }
 
-  /** CRC Account Activity API. */
+  /** CRC Account Activity API — firma HMAC-SHA256(crc_token, consumer_secret). */
   verifyCrc(crcToken: string): string | null {
-    const secret =
+    const secret = (
       this.config.get<string>('X_API_SECRET') ||
-      this.config.get<string>('X_CONSUMER_SECRET');
-    if (!crcToken || !secret) return null;
-    return buildCrcResponseToken(crcToken, secret);
+      this.config.get<string>('X_CONSUMER_SECRET') ||
+      ''
+    ).trim();
+    const token = (crcToken || '').trim();
+    if (!token || !secret) return null;
+    return buildCrcResponseToken(token, secret);
   }
 
   /**
@@ -227,7 +230,8 @@ export class XService {
 
     const autoReply = isXInboundAutoReplyEnabled(
       this.config.get('X_INBOUND_AUTO_REPLY'),
-      Boolean(this.chat.getAgentId()),
+      Boolean(this.chat.getAgentId()) ||
+        Boolean(this.config.get<string>('OPENAI_API_KEY')?.trim()),
     );
 
     if (!autoReply) {
