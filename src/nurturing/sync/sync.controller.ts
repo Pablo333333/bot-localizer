@@ -42,6 +42,21 @@ export class SyncController {
     );
   }
 
+  /**
+   * Reprocesa los estate_property de prueba de Toni (o ?ids=33595,33597).
+   * Usa la fila Localizados con ese ID_WP y el mapeo estructurado WPResidence.
+   */
+  @Post('toni-test-properties')
+  syncToniTestProperties(@Query('ids') ids?: string) {
+    const parsed = String(ids || '')
+      .split(',')
+      .map((v) => Number.parseInt(v.trim(), 10))
+      .filter((n) => Number.isFinite(n));
+    return this.sheetsReviewedSync.syncWordpressPostsByIds(
+      parsed.length ? parsed : undefined,
+    );
+  }
+
   @Get('health')
   health() {
     return { ok: true, service: 'nurturing-sync' };

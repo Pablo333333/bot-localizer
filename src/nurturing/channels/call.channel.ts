@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Retell from 'retell-sdk';
+import {
+  OUTBOUND_AUTO_DIAL_PAUSED,
+  OUTBOUND_AUTO_DIAL_PAUSED_LOG,
+} from '../../outbound/outbound-enabled';
 import { Channel } from '../enums';
 import {
   isFollowupCallTemplate,
@@ -49,6 +53,13 @@ export class CallChannel implements NurturingChannel {
   }
 
   async send(payload: ChannelSendPayload): Promise<ChannelSendResult> {
+    if (OUTBOUND_AUTO_DIAL_PAUSED) {
+      this.logger.warn(
+        `${OUTBOUND_AUTO_DIAL_PAUSED_LOG} lead=${payload.leadId} template=${payload.templateKey}`,
+      );
+      return { success: true, providerRef: 'paused_no_call' };
+    }
+
     const forceMock =
       this.config.get<string>('NURTURING_MOCK_CHANNELS') === 'true';
     const agentId = this.resolveAgentId(payload.templateKey);

@@ -1,10 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Cron, CronExpression } from '@nestjs/schedule';
 import Retell from 'retell-sdk';
 import { SheetsService } from '../sheets/sheets.service';
 import { resolveRetellFromNumber } from '../nurturing/toni-fase3.constants';
 import {
+  OUTBOUND_AUTO_DIAL_PAUSED,
+  OUTBOUND_AUTO_DIAL_PAUSED_LOG,
   OUTBOUND_CALLS_DISABLED_LOG,
   OUTBOUND_PHASE1_ACTIVE_LOG,
   describeOutboundMode,
@@ -79,6 +80,9 @@ export class OutboundService {
     this.logger.log(
       `[OutboundService] Arranque mode=${JSON.stringify(mode)} horario=${OUTBOUND_HOURS_DESCRIPTION}`,
     );
+    if (OUTBOUND_AUTO_DIAL_PAUSED) {
+      this.logger.warn(OUTBOUND_AUTO_DIAL_PAUSED_LOG);
+    }
     if (mode.testFilterActive) {
       this.logger.warn(
         `[Outbound TEST FILTER] ACTIVO — solo ${this.configService.get('OUTBOUND_TEST_PHONE_ONLY')} (quitar para lote Fase 1 masivo)`,
@@ -103,8 +107,17 @@ export class OutboundService {
     });
   }
 
-  @Cron(CronExpression.EVERY_5_MINUTES)
+  /**
+   * PAUSA TEMPORAL: cron de lote Fase 1 desactivado para el deploy.
+   * Para reactivar: OUTBOUND_AUTO_DIAL_PAUSED=false y descomentar
+   * `@Cron(CronExpression.EVERY_5_MINUTES)` (import de @nestjs/schedule).
+   */
   async checkPendingCalls(): Promise<void> {
+    if (OUTBOUND_AUTO_DIAL_PAUSED) {
+      this.logger.warn(OUTBOUND_AUTO_DIAL_PAUSED_LOG);
+      return;
+    }
+
     const mode = this.resolveMode();
     if (!mode.outboundEnabled) {
       this.logger.log(OUTBOUND_CALLS_DISABLED_LOG);
@@ -143,6 +156,11 @@ export class OutboundService {
   }
 
   private async processPendingCalls(maxDailyCalls: number): Promise<void> {
+    if (OUTBOUND_AUTO_DIAL_PAUSED) {
+      this.logger.warn(OUTBOUND_AUTO_DIAL_PAUSED_LOG);
+      return;
+    }
+
     const madridNow = this.getMadridParts(new Date());
     this.logger.log(
       `[OutboundService] Inicio ciclo Fase 1. Hora Madrid: ${madridNow.day}/${madridNow.month}/${madridNow.year} ${String(madridNow.hour).padStart(2, '0')}:${String(madridNow.minute).padStart(2, '0')} (weekday=${madridNow.weekday}) cupo=${maxDailyCalls}`,

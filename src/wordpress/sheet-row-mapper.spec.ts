@@ -50,4 +50,14 @@ describe('sheet-row-mapper', () => {
     expect(data.call_analysis.custom_analysis_data.municipio).toBe('Felanitx');
     expect(data.call_analysis.custom_analysis_data.tipo_inmueble).toBe('Nave');
   });
+
+  it('lee Descripción por el propietario', () => {
+    const cad = sheetRowToCad(
+      fakeRow({
+        'Descripción por el propietario':
+          'Local luminoso junto al mercado, ideal para hostelería.',
+      }),
+    );
+    expect(cad.descripcion_propietario).toContain('hostelería');
+  });
 });

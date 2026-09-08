@@ -159,6 +159,16 @@ export function buildCadPropertyUpdates(
     val(cad.informacion_adicional || cad.info_adicional),
     getExisting,
   );
+  pickIfChanged(
+    out,
+    'Descripción por el propietario',
+    val(
+      cad.descripcion_propietario ||
+        cad.descripcion_por_el_propietario ||
+        cad.comentario_anunciante,
+    ),
+    getExisting,
+  );
   pickIfChanged(out, 'Superficie Total', val(cad.superficie_total, true), getExisting);
   pickIfChanged(out, 'Superficie util', val(cad.superficie_util, true), getExisting);
   pickIfChanged(out, 'Negocio anterior', val(cad.negocio_anterior), getExisting);

@@ -14,6 +14,13 @@ const SHEET_TO_CAD: ReadonlyArray<{
     columns: ['Disponibilidad del local', 'Disponibilidad'],
   },
   { cadKey: 'informacion_adicional', columns: ['Información adicional'] },
+  {
+    cadKey: 'descripcion_propietario',
+    columns: [
+      'Descripción por el propietario',
+      'Descripcion por el propietario',
+    ],
+  },
   { cadKey: 'superficie_total', columns: ['Superficie Total'], cleanSymbols: true },
   { cadKey: 'superficie_util', columns: ['Superficie util'], cleanSymbols: true },
   { cadKey: 'negocio_anterior', columns: ['Negocio anterior'] },

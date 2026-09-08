@@ -15,6 +15,11 @@ import {
   WP_PUBLISH_CONTACTED_VALUE,
   buildWpPublishWritebackFields,
 } from './wp-publish-writeback';
+import {
+  readWpPostIdFromSheetRow,
+  sheetRowToCad,
+} from '../wordpress/sheet-row-mapper';
+import type { RetellCad } from '../wordpress/property-mapper';
 
 @Injectable()
 export class SheetsService implements OnModuleInit {
@@ -135,6 +140,80 @@ export class SheetsService implements OnModuleInit {
     );
 
     return { sheet, rows: allRows };
+  }
+
+  private normalizePhoneDigits(p: unknown): string {
+    return String(p || '').replace(/\D/g, '').replace(/^34/, '');
+  }
+
+  async findLocalizadosRowByPhone(phoneCalled: string): Promise<{
+    sheet: GoogleSpreadsheetWorksheet;
+    row: Awaited<ReturnType<GoogleSpreadsheetWorksheet['getRows']>>[number];
+  } | null> {
+    const { sheet, rows } = await this.getAllRows('Localizados');
+    const target = this.normalizePhoneDigits(phoneCalled);
+    const row = rows.find((r) => {
+      const tels = [
+        r.get('Telefono1'),
+        r.get('Telefono2'),
+        r.get('Telefono3'),
+      ].map((v) => this.normalizePhoneDigits(v));
+      return target !== '' && tels.includes(target);
+    });
+    if (!row) return null;
+    return { sheet, row };
+  }
+
+  async findLocalizadosRowByWpPostId(postId: number): Promise<{
+    sheet: GoogleSpreadsheetWorksheet;
+    row: Awaited<ReturnType<GoogleSpreadsheetWorksheet['getRows']>>[number];
+  } | null> {
+    const { sheet, rows } = await this.getAllRows('Localizados');
+    const row = rows.find((r) => readWpPostIdFromSheetRow(r) === postId);
+    if (!row) return null;
+    return { sheet, row };
+  }
+
+  /**
+   * Escribe YA las celdas de inmueble corregidas en la llamada (antes de WP).
+   * El dato no vacío de Retell sustituye al valor inicial del Sheet.
+   */
+  async writeCallPropertyUpdates(
+    phoneCalled: string,
+    cad: RetellCad | undefined,
+  ): Promise<{
+    found: boolean;
+    sheet?: GoogleSpreadsheetWorksheet;
+    rowNumber?: number;
+    wpPostId?: number;
+    sheetCad: RetellCad;
+    updates: Record<string, string>;
+  }> {
+    const located = await this.findLocalizadosRowByPhone(phoneCalled);
+    if (!located) {
+      return { found: false, sheetCad: {}, updates: {} };
+    }
+
+    const { sheet, row } = located;
+    const sheetCad = sheetRowToCad(row);
+    const updates = buildCadPropertyUpdates(cad, (header) => row.get(header));
+
+    if (Object.keys(updates).length > 0) {
+      await this.updateSpecificCells(sheet, row.rowNumber, updates, row);
+    }
+
+    this.logger.log(
+      `[writeCallPropertyUpdates] Fila ${row.rowNumber} tel=${phoneCalled} ${Object.keys(updates).length} celdas: ${Object.keys(updates).join(', ') || '(sin cambios)'}`,
+    );
+
+    return {
+      found: true,
+      sheet,
+      rowNumber: row.rowNumber,
+      wpPostId: readWpPostIdFromSheetRow(row),
+      sheetCad,
+      updates,
+    };
   }
 
   async addLead(data: {

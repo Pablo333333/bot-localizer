@@ -10,7 +10,17 @@
  *
  * Si OUTBOUND_CALLS_ENABLED está vacío, hereda NURTURING_PHASE3_ENABLED
  * (compat). Para Fase 1 con Fase 3 off, hay que poner OUTBOUND_CALLS_ENABLED=true.
+ *
+ * PAUSA TEMPORAL PRE-DEPLOY: con OUTBOUND_AUTO_DIAL_PAUSED=true no se llama
+ * a nadie (ni cron Fase 1 ni re-llamadas Fase 3), aunque Railway tenga
+ * OUTBOUND_CALLS_ENABLED=true. Webhooks y sync siguen vivos.
+ * Para reactivar: poner esta constante en false y descomentar el @Cron.
  */
+export const OUTBOUND_AUTO_DIAL_PAUSED = true;
+
+export const OUTBOUND_AUTO_DIAL_PAUSED_LOG =
+  'Outbound AUTO-DIAL PAUSADO en código — no se lanzan llamadas Retell (Fase 1 / Fase 3). Webhooks y sync siguen activos.';
+
 export const OUTBOUND_CALLS_DISABLED_LOG =
   'Outbound calls disabled via environment variable';
 

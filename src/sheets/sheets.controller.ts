@@ -4,6 +4,12 @@ import { WordpressService } from '../wordpress/wordpress.service';
 import { GoogleDriveService } from '../google/google-drive.service';
 import { ConfigService } from '@nestjs/config';
 import { extractImageUrlFromCad } from '../wordpress/property-mapper';
+import { preferCallCad } from '../wordpress/call-cad-priority';
+import { CommercialDescriptionService } from '../wordpress/commercial-description.service';
+import {
+  COL_DESCRIPCION_PROPIETARIO,
+  COL_DESCRIPCION_PROPIETARIO_ALT,
+} from '../wordpress/wpresidence.constants';
 import { PropertyPublishEmailService } from '../notifications/property-publish-email.service';
 import { NoAnswerFollowupService } from '../nurturing/followup/no-answer-followup.service';
 
@@ -18,6 +24,7 @@ export class SheetsController {
     private readonly configService: ConfigService,
     private readonly propertyPublishEmail: PropertyPublishEmailService,
     private readonly noAnswerFollowup: NoAnswerFollowupService,
+    private readonly commercialDescription: CommercialDescriptionService,
   ) {
     this.verifyDocAccess();
   }
@@ -203,58 +210,103 @@ export class SheetsController {
       );
     }
 
-    const dispValue = String(cad?.disponibilidad || '')
-      .toUpperCase()
-      .trim();
-    const isAvailable = ['DISPONIBLE', 'SÍ', 'SI', 'TRUE', 'YES'].includes(
-      dispValue,
-    );
-
-    this.logger.log(
-      `Procesando webhook para Agent ID: ${agentId}. Éxito: ${isSuccessful}, Disponible: ${isAvailable} (Valor original: ${cad?.disponibilidad})`,
-    );
-
     try {
       let publicadoWordpress: string | undefined;
       let wpPostId: number | string | undefined;
 
+      const phoneCalled = callData.to_number || '';
+      if (!phoneCalled) {
+        this.logger.warn(
+          `[Webhook] Call ${callId}: to_number vacío; no se puede localizar la fila en Sheets.`,
+        );
+        return;
+      }
+
+      this.logger.log(
+        `[Webhook] Escritura Sheets ANTES de WP — buscando fila por to_number: ${phoneCalled}`,
+      );
+
+      const sheetWrite = await this.sheetsService.writeCallPropertyUpdates(
+        phoneCalled,
+        cad,
+      );
+      if (!sheetWrite.found) {
+        this.logger.warn(
+          `[Webhook] Call ${callId}: no hay fila en Localizados para ${phoneCalled}. No se publica WP para no perder el dato en un refresh posterior.`,
+        );
+        return;
+      }
+
+      const mergedCad = preferCallCad(sheetWrite.sheetCad, cad);
+      if (callData.call_analysis) {
+        callData.call_analysis.custom_analysis_data = mergedCad;
+      }
+
+      const dispValue = String(mergedCad.disponibilidad || cad?.disponibilidad || '')
+        .toUpperCase()
+        .trim();
+      const isAvailable = ['DISPONIBLE', 'SÍ', 'SI', 'TRUE', 'YES'].includes(
+        dispValue,
+      );
+      this.logger.log(
+        `Procesando webhook para Agent ID: ${agentId}. Éxito: ${isSuccessful}, Disponible: ${isAvailable} (Valor: ${mergedCad.disponibilidad || cad?.disponibilidad})`,
+      );
+
+      const commercialContent = await this.commercialDescription.resolve(
+        mergedCad,
+        callSummary,
+      );
+      mergedCad.descripcion_propietario = commercialContent;
+
+      if (sheetWrite.sheet && sheetWrite.rowNumber) {
+        await this.sheetsService.updateSpecificCells(
+          sheetWrite.sheet,
+          sheetWrite.rowNumber,
+          {
+            [COL_DESCRIPCION_PROPIETARIO]: commercialContent,
+            [COL_DESCRIPCION_PROPIETARIO_ALT]: commercialContent,
+          },
+        );
+      }
+
       if (isSuccessful && isAvailable) {
         try {
           this.logger.log(
-            'Iniciando flujo WordPress (Llamada Exitosa y Disponible)...',
+            'Iniciando flujo WordPress con CAD de llamada (Sheet ya actualizado)...',
           );
           const featuredMediaId = await this.resolveFeaturedMediaId(
-            cad,
+            mergedCad,
             callId,
           );
-          const created = await this.wordpressService.createPropertyPost(
+          const existingPostId = sheetWrite.wpPostId;
+          const upserted = await this.wordpressService.upsertPropertyFromCallData(
             callData,
-            featuredMediaId,
+            {
+              postId: existingPostId,
+              featuredMediaId,
+              commercialContent,
+            },
           );
           publicadoWordpress = 'SI';
-          wpPostId = created?.id;
+          wpPostId = upserted.id;
 
-          const propertyTitle =
-            typeof created?.title === 'object'
-              ? created.title?.rendered
-              : created?.title;
-          const propertyUrl =
-            created?.link ||
-            (created?.id
-              ? `${this.configService.get('WP_URL')?.replace(/\/$/, '')}/?p=${created.id}`
-              : undefined);
+          const created = upserted;
+          const propertyTitle = `Inmueble ${created.id}`;
+          const propertyUrl = created?.id
+            ? `${this.configService.get('WP_URL')?.replace(/\/$/, '')}/?p=${created.id}`
+            : undefined;
 
           const notifyTo =
-            cad?.email_avisos ||
-            cad?.email_propietario_gestor ||
-            cad?.email ||
+            mergedCad?.email_avisos ||
+            mergedCad?.email_propietario_gestor ||
+            mergedCad?.email ||
             this.configService.get<string>('PROPERTY_PUBLISH_NOTIFY_TO') ||
             'somos@localicer.com';
 
           if (propertyUrl) {
             await this.propertyPublishEmail.sendPropertyPublishedEmail({
               to: String(notifyTo),
-              propertyTitle: propertyTitle || 'Anuncio Localicer',
+              propertyTitle,
               propertyUrl,
               callId,
             });
@@ -265,22 +317,12 @@ export class SheetsController {
         }
       } else {
         this.logger.log(
-          `No se cumple el criterio para WordPress (Éxito: ${isSuccessful}, Disponible: ${isAvailable}). Se actualizará tracking y celdas de inmueble solo si Retell trajo datos nuevos.`,
+          `No se cumple el criterio para WordPress (Éxito: ${isSuccessful}, Disponible: ${isAvailable}). Sheet ya tiene el dato de la llamada.`,
         );
       }
 
       this.logger.log(
-        'Guardando datos en Google Sheets (Actualizando fila existente)...',
-      );
-      const phoneCalled = callData.to_number || '';
-      if (!phoneCalled) {
-        this.logger.warn(
-          `[Webhook] Call ${callId}: to_number vacío; no se puede localizar la fila en Sheets.`,
-        );
-        return;
-      }
-      this.logger.log(
-        `[Webhook] Buscando fila por to_number (destinatario): ${phoneCalled}`,
+        'Escribiendo tracking de llamada en Google Sheets...',
       );
       await this.sheetsService.updateRowByPhone(
         phoneCalled,

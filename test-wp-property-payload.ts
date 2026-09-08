@@ -110,6 +110,19 @@ function main() {
   );
   assert(!!imageUrl && imageUrl.includes('drive.google.com'), 'URL Drive en CAD');
   assert(!(body as any)._mapping, 'sin _mapping en body');
+  assert((body as any).author === 1, 'author = usuario 1');
+  assert(
+    (body.meta as any)?.property_agent === '28973',
+    'property_agent = 28973',
+  );
+  assert(
+    !String(body.content).includes('Detalles del Inmueble'),
+    'content no es ficha técnica',
+  );
+  assert(
+    (body as any).localicer_taxonomies?.property_category?.[0] === 'local',
+    'taxonomía property_category = local',
+  );
 
   console.log('\n✓ Payload válido para estate_property + meta WP Residence');
 }

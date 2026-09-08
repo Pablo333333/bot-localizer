@@ -78,6 +78,7 @@ export class WordpressService {
       postId?: number;
       featuredMediaId?: number;
       status?: string;
+      commercialContent?: string;
     } = {},
   ): Promise<{ id: number; created: boolean }> {
     const status =
@@ -88,13 +89,14 @@ export class WordpressService {
     const payload = buildEstatePropertyPayload(callData, {
       status,
       featuredMediaId: options.featuredMediaId,
+      commercialContent: options.commercialContent,
     });
     const body = toWordpressRequestBody(payload);
 
     if (options.postId) {
       try {
         this.logger.log(
-          `Actualizando estate_property ${options.postId}: "${payload.title}"`,
+          `Actualizando estate_property ${options.postId}: "${payload.title}" (agent=${payload.meta.property_agent} author=${payload.author})`,
         );
         const response = await lastValueFrom(
           this.httpService.post(
@@ -118,6 +120,7 @@ export class WordpressService {
       callData,
       options.featuredMediaId,
       status,
+      options.commercialContent,
     );
     return { id: created.id, created: true };
   }
@@ -130,6 +133,7 @@ export class WordpressService {
     data: any,
     featuredMediaId?: number,
     statusOverride?: string,
+    commercialContent?: string,
   ): Promise<any> {
     const status =
       statusOverride ||
@@ -139,12 +143,13 @@ export class WordpressService {
     const payload = buildEstatePropertyPayload(data, {
       status,
       featuredMediaId,
+      commercialContent,
     });
     const body = toWordpressRequestBody(payload);
 
     try {
       this.logger.log(
-        `Creando estate_property en WP: "${payload.title}" (status=${status})`,
+        `Creando estate_property en WP: "${payload.title}" (status=${status} agent=${payload.meta.property_agent} author=${payload.author})`,
       );
       this.logger.debug(`Meta WP Residence: ${JSON.stringify(payload.meta)}`);
 
@@ -383,12 +388,13 @@ export class WordpressService {
   }): Promise<any[]> {
     try {
       const categoryMapping: Record<string, string> = {
-        local: 'locales',
-        comercial: 'locales',
-        oficina: 'oficinas',
-        nave: 'naves-industriales',
-        industrial: 'naves-industriales',
-        almacen: 'naves-industriales',
+        local: 'local',
+        comercial: 'local',
+        oficina: 'oficina',
+        nave: 'nave',
+        industrial: 'nave',
+        almacen: 'nave',
+        almacén: 'nave',
       };
 
       const categorySlug = filters.type

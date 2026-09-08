@@ -3,14 +3,31 @@
  * Metakeys nativos: https://help.wpresidence.net/article/technical-how-to-default-property-fields/
  */
 
+import {
+  buildFallbackCommercialDescription,
+  looksLikeTechnicalDump,
+} from './commercial-description';
+import {
+  WPRESTENCE_AGENT_ID,
+  WPRESTENCE_AUTHOR_ID,
+} from './wpresidence.constants';
+import {
+  buildWpResidenceTaxonomies,
+  type WpResidenceTaxonomies,
+} from './wpresidence-taxonomies';
+
+export { resolveCategorySlug } from './wpresidence-taxonomies';
+
 export type RetellCad = Record<string, unknown>;
 
 export interface EstatePropertyPayload {
   title: string;
   content: string;
   status: string;
+  author: number;
   featured_media?: number;
   meta: Record<string, string | number>;
+  taxonomies: WpResidenceTaxonomies;
   /** Campos auxiliares para taxonomías / logs (no siempre enviados a REST). */
   _mapping?: {
     operation: 'alquiler' | 'venta' | 'traspaso';
@@ -135,19 +152,6 @@ export function resolvePrimaryPrice(
   return toNumericMeta(cad?.precio_alquiler);
 }
 
-export function resolveCategorySlug(tipoInmueble: unknown): string | undefined {
-  const t = sanitizeValue(tipoInmueble).toLowerCase();
-  if (!t) return undefined;
-  if (t.includes('oficina')) return 'oficinas';
-  if (t.includes('nave') || t.includes('industrial') || t.includes('almacen') || t.includes('almacén')) {
-    return 'naves-industriales';
-  }
-  if (t.includes('local') || t.includes('comercial') || t.includes('tienda')) {
-    return 'locales';
-  }
-  return 'locales';
-}
-
 function buildAddress(cad: RetellCad | undefined): string {
   const parts = [
     sanitizeValue(cad?.tipo_via),
@@ -171,68 +175,62 @@ function buildTitle(cad: RetellCad | undefined, operation: string): string {
   return `${opTag} ${tipo}${ubicacion ? ' en ' + ubicacion : ''}`;
 }
 
-function buildHtmlContent(
+/**
+ * Custom fields oficiales de WPResidence (modelo 33393 — Características básicas).
+ * Los slugs coinciden con sanitize_title de las etiquetas del tema.
+ */
+export function buildWpResidenceCustomFields(
+  cad: RetellCad | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  const estado = sanitizeValue(cad?.estado);
+  if (estado) out['estado-del-inmueble'] = estado;
+
+  const plantas = toNumericMeta(cad?.num_plantas || cad?.numero_plantas);
+  if (plantas) out['plantas-del-inmueble'] = plantas;
+
+  const escaparates =
+    toNumericMeta(cad?.escaparates) || sanitizeValue(cad?.escaparates);
+  if (escaparates) out['numero-de-escaparates'] = escaparates;
+
+  const actividad = sanitizeValue(cad?.negocio_anterior);
+  if (actividad) out['ultima-actividad'] = actividad;
+
+  const disposicion = sanitizeValue(
+    cad?.disposicion_diafano ||
+      cad?.['disposicion_diafano?'] ||
+      cad?.posicion_exacta,
+  );
+  if (disposicion) out['disposicion'] = disposicion;
+
+  const traspaso =
+    sanitizeValue(cad?.contrato) ||
+    (toNumericMeta(cad?.precio_traspaso) ? 'Traspaso' : '');
+  if (traspaso) out['traspaso'] = traspaso;
+
+  const fianza = sanitizeValue(cad?.fianza_meses || cad?.fianza);
+  if (fianza) out['fianza'] = fianza;
+
+  const comunidad = toNumericMeta(cad?.gastos_comunidad);
+  if (comunidad) out['gastos-de-comunidad'] = comunidad;
+
+  return out;
+}
+
+function buildCommercialContent(
   cad: RetellCad | undefined,
   callSummary: string | undefined,
-  callId: string | undefined,
+  commercialContent?: string,
 ): string {
-  return `
-      <h3>Detalles del Inmueble</h3>
-      <ul>
-        <li><strong>Tipo de inmueble:</strong> ${displayValue(cad?.tipo_inmueble)}</li>
-        <li><strong>Estado:</strong> ${displayValue(cad?.estado)}</li>
-        <li><strong>Superficie Total:</strong> ${formatSurfaceDisplay(cad?.superficie_total)}</li>
-        <li><strong>Superficie Útil:</strong> ${formatSurfaceDisplay(cad?.superficie_util)}</li>
-        <li><strong>Precio Alquiler:</strong> ${formatCurrencyDisplay(cad?.precio_alquiler)}</li>
-        <li><strong>Precio Venta:</strong> ${formatCurrencyDisplay(cad?.precio_venta)}</li>
-        <li><strong>Precio Traspaso:</strong> ${formatCurrencyDisplay(cad?.precio_traspaso)}</li>
-        <li><strong>¿Fianza?:</strong> ${displayValue(cad?.fianza_meses || cad?.fianza, 'A consultar')}</li>
-        <li><strong>¿Gastos de comunidad?:</strong> ${formatCurrencyDisplay(cad?.gastos_comunidad)}</li>
-        <li><strong>Disponibilidad:</strong> ${displayValue(cad?.disponibilidad)}</li>
-      </ul>
+  const explicit = sanitizeValue(commercialContent);
+  if (explicit && !looksLikeTechnicalDump(explicit)) return explicit;
 
-      <h3>Características Técnicas</h3>
-      <ul>
-        <li><strong>Año de construcción:</strong> ${displayValue(cad?.anio_construccion)}</li>
-        <li><strong>Año de reforma:</strong> ${displayValue(cad?.anio_reforma)}</li>
-        <li><strong>Número de plantas:</strong> ${displayValue(cad?.num_plantas)}</li>
-        <li><strong>Número de aseos/baños:</strong> ${displayValue(cad?.numero_aseos || cad?.aseos || cad?.numero_banios)}</li>
-        <li><strong>Aforo máximo:</strong> ${displayValue(cad?.aforo_maximo)}</li>
-        <li><strong>Vado:</strong> ${displayValue(cad?.vado)}</li>
-        <li><strong>Altura techos:</strong> ${displayValue(cad?.altura_techos, 'No especificada')}</li>
-        <li><strong>Iluminación:</strong> ${displayValue(cad?.iluminacion, 'No especificada')}</li>
-        <li><strong>Suelos:</strong> ${displayValue(cad?.suelos)}</li>
-        <li><strong>Certificación energética:</strong> ${displayValue(cad?.certificado_energetico || cad?.certificacion, 'No especificada')}</li>
-      </ul>
+  const fromCad = sanitizeValue(
+    cad?.descripcion_propietario || cad?.descripcion_por_el_propietario,
+  );
+  if (fromCad && !looksLikeTechnicalDump(fromCad)) return fromCad;
 
-      <h3>Distribución y Equipamiento</h3>
-      <ul>
-        <li><strong>Posición exacta:</strong> ${displayValue(cad?.posicion_exacta)}</li>
-        <li><strong>Escaparates/Ventanales:</strong> ${displayValue(cad?.escaparates)}</li>
-        <li><strong>Disposición (Diafano?):</strong> ${displayValue(cad?.disposicion_diafano || cad?.['disposicion_diafano?'])}</li>
-        <li><strong>Almacen/trastienda:</strong> ${formatSurfaceDisplay(cad?.almacen_trastienda)}</li>
-        <li><strong>Terraza propia:</strong> ${formatSurfaceDisplay(cad?.terraza_patio)}</li>
-        <li><strong>Equipamiento:</strong> ${displayValue(cad?.equipamiento)}</li>
-        <li><strong>Eventos permitidos:</strong> ${displayValue(cad?.eventos)}</li>
-        <li><strong>Limpieza:</strong> ${displayValue(cad?.limpieza)}</li>
-      </ul>
-
-      <h3>Ubicación</h3>
-      <ul>
-        <li><strong>Dirección:</strong> ${displayValue(cad?.tipo_via, '')} ${displayValue(cad?.nombre_via, '')} ${displayValue(cad?.numero_via || cad?.altura, '')}</li>
-        <li><strong>Pueblo/Barrio:</strong> ${displayValue(cad?.pueblo_barrio || cad?.pueblo, '')}</li>
-        <li><strong>Municipio:</strong> ${displayValue(cad?.municipio, '')}</li>
-        <li><strong>Provincia:</strong> ${displayValue(cad?.provincia, '')}</li>
-      </ul>
-
-      <h3>Información Adicional</h3>
-      <p><strong>Negocio anterior:</strong> ${displayValue(cad?.negocio_anterior)}</p>
-      <p><strong>¿Negociable?:</strong> ${displayValue(cad?.es_negociable)}</p>
-      <p><strong>Descripción:</strong> ${callSummary || sanitizeValue(cad?.informacion_adicional) || 'Sin descripción adicional.'}</p>
-      
-      <hr>
-      <p><em>Publicado automáticamente por Localisto IA. Referencia de llamada: ${callId || ''}</em></p>
-    `;
+  return buildFallbackCommercialDescription(cad, callSummary);
 }
 
 /**
@@ -249,6 +247,9 @@ export function buildEstatePropertyPayload(
   options: {
     status?: string;
     featuredMediaId?: number;
+    commercialContent?: string;
+    authorId?: number;
+    agentId?: number;
   } = {},
 ): EstatePropertyPayload {
   const cad = callData.call_analysis?.custom_analysis_data;
@@ -260,12 +261,15 @@ export function buildEstatePropertyPayload(
   );
   const sizeUtil = toNumericMeta(cad?.superficie_util);
   const sizeTotal = toNumericMeta(cad?.superficie_total);
-  const floors = toNumericMeta(cad?.num_plantas);
+  const floors = toNumericMeta(cad?.num_plantas || cad?.numero_plantas);
   const energy = sanitizeValue(
     cad?.certificado_energetico || cad?.certificacion,
   );
   const yearBuilt = sanitizeValue(cad?.anio_construccion);
   const imageUrl = extractImageUrlFromCad(cad);
+  const taxonomies = buildWpResidenceTaxonomies(cad);
+  const agentId = options.agentId ?? WPRESTENCE_AGENT_ID;
+  const authorId = options.authorId ?? WPRESTENCE_AUTHOR_ID;
 
   const meta: Record<string, string | number> = {};
 
@@ -275,13 +279,28 @@ export function buildEstatePropertyPayload(
       meta.property_label = '/mes';
     } else if (operation === 'traspaso') {
       meta.property_label = 'traspaso';
+      meta.property_label_before = 'TRASPASO';
+    } else if (operation === 'venta') {
+      meta.property_label_before = 'VENTA';
     }
+  }
+
+  const alquiler = toNumericMeta(cad?.precio_alquiler);
+  const venta = toNumericMeta(cad?.precio_venta);
+  const traspaso = toNumericMeta(cad?.precio_traspaso);
+  if (operation === 'alquiler' && (venta || traspaso)) {
+    meta.property_second_price = venta || traspaso;
+    meta.property_second_price_label = venta ? 'venta' : 'traspaso';
+  } else if (operation !== 'alquiler' && alquiler) {
+    meta.property_second_price = alquiler;
+    meta.property_second_price_label = '/mes';
   }
 
   // WP Residence: property_size = superficie útil/habitable; lot = parcela/total
   if (sizeUtil) meta.property_size = sizeUtil;
   else if (sizeTotal) meta.property_size = sizeTotal;
   if (sizeTotal && sizeUtil) meta.property_lot_size = sizeTotal;
+  else if (sizeTotal && !sizeUtil) meta.property_lot_size = sizeTotal;
 
   if (baths) meta.property_bathrooms = baths;
   if (floors) meta.property_rooms = floors;
@@ -289,7 +308,6 @@ export function buildEstatePropertyPayload(
   const area = sanitizeValue(cad?.pueblo_barrio || cad?.pueblo);
   const city = sanitizeValue(cad?.municipio);
   const state = sanitizeValue(cad?.provincia);
-  // property_city / property_area son taxonomías en WP Residence; la dirección va en meta.
   const addressFull = [address, area, city].filter(Boolean).join(', ');
   if (addressFull) meta.property_address = addressFull;
   if (state) meta.property_state = state;
@@ -301,35 +319,36 @@ export function buildEstatePropertyPayload(
   const notesParts = [
     sanitizeValue(callData.call_analysis?.call_summary),
     sanitizeValue(cad?.informacion_adicional),
-    sanitizeValue(cad?.negocio_anterior)
-      ? `Negocio anterior: ${sanitizeValue(cad?.negocio_anterior)}`
-      : '',
-    energy ? `Cert. energética: ${energy}` : '',
-    yearBuilt ? `Año construcción: ${yearBuilt}` : '',
     callData.call_id ? `Call ID: ${callData.call_id}` : '',
   ].filter(Boolean);
   if (notesParts.length) {
     meta.owner_notes = notesParts.join(' | ');
   }
 
-  // Extras útiles (custom / visibles en admin WP Residence)
   const fianza = sanitizeValue(cad?.fianza_meses || cad?.fianza);
   if (fianza) meta.property_rent_price_extra = `Fianza: ${fianza}`;
   if (energy) meta.energy_class = energy;
   if (yearBuilt) meta.property_year = yearBuilt;
 
+  meta.property_agent = String(agentId);
+  meta.property_user = String(authorId);
+
+  Object.assign(meta, buildWpResidenceCustomFields(cad));
+
   const payload: EstatePropertyPayload = {
     title: buildTitle(cad, operation),
-    content: buildHtmlContent(
+    content: buildCommercialContent(
       cad,
       callData.call_analysis?.call_summary,
-      callData.call_id,
+      options.commercialContent,
     ),
     status: options.status || 'draft',
+    author: authorId,
     meta,
+    taxonomies,
     _mapping: {
       operation,
-      categorySlug: resolveCategorySlug(cad?.tipo_inmueble),
+      categorySlug: taxonomies.property_category[0],
       imageUrl,
     },
   };
@@ -345,11 +364,12 @@ export function buildEstatePropertyPayload(
 export function toWordpressRequestBody(
   payload: EstatePropertyPayload,
 ): Record<string, unknown> {
-  const { _mapping, ...rest } = payload;
+  const { _mapping, taxonomies, ...rest } = payload;
   void _mapping;
   return {
     ...rest,
-    // Asegura que meta viaje como objeto plano
+    author: payload.author,
     meta: { ...payload.meta },
+    localicer_taxonomies: taxonomies,
   };
 }

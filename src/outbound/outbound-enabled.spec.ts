@@ -1,7 +1,16 @@
 import {
+  OUTBOUND_AUTO_DIAL_PAUSED,
+  OUTBOUND_AUTO_DIAL_PAUSED_LOG,
   describeOutboundMode,
   isOutboundCallsEnabled,
 } from './outbound-enabled';
+
+describe('OUTBOUND_AUTO_DIAL_PAUSED', () => {
+  it('está activa: ningún lote automático debe llamar', () => {
+    expect(OUTBOUND_AUTO_DIAL_PAUSED).toBe(true);
+    expect(OUTBOUND_AUTO_DIAL_PAUSED_LOG).toMatch(/PAUSADO/);
+  });
+});
 
 describe('isOutboundCallsEnabled', () => {
   it('usa OUTBOUND_CALLS_ENABLED si está definido (independiente de Fase 3)', () => {

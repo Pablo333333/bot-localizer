@@ -62,6 +62,15 @@ describe('buildCadPropertyUpdates', () => {
     expect(updates).not.toHaveProperty('Tipo de inmueble');
   });
 
+  it('escribe Descripción por el propietario si la llamada aporta texto nuevo', () => {
+    const updates = buildCadPropertyUpdates(
+      { descripcion_propietario: 'Local reformado con mucha luz natural.' },
+      (h) =>
+        h === 'Descripción por el propietario' ? 'Texto antiguo del cartel' : undefined,
+    );
+    expect(updates['Descripción por el propietario']).toContain('luz natural');
+  });
+
   it('no sobrescribe Información adicional con call_summary genérico', () => {
     const updates = buildCadPropertyUpdates(
       {
