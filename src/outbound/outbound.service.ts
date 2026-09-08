@@ -27,6 +27,14 @@ import {
   matchesOutboundTestPhone,
   resolveOutboundTestPhoneOnly,
 } from './outbound-test-phone';
+import {
+  OUTBOUND_SANDBOX_WHITELIST_E164,
+  OUTBOUND_SANDBOX_WHITELIST_ENABLED,
+  OUTBOUND_SANDBOX_WHITELIST_LOG,
+  SKIPPED_SANDBOX_WHITELIST,
+  isAllowedOutboundSandboxPhone,
+  safeCreatePhoneCall,
+} from './outbound-sandbox-whitelist';
 
 const SHEET_NAME = 'Localizados';
 const COL_LLAMADO = 'Llamado';
@@ -80,6 +88,9 @@ export class OutboundService {
     this.logger.log(
       `[OutboundService] Arranque mode=${JSON.stringify(mode)} horario=${OUTBOUND_HOURS_DESCRIPTION}`,
     );
+    if (OUTBOUND_SANDBOX_WHITELIST_ENABLED) {
+      this.logger.warn(OUTBOUND_SANDBOX_WHITELIST_LOG);
+    }
     if (OUTBOUND_AUTO_DIAL_PAUSED) {
       this.logger.warn(OUTBOUND_AUTO_DIAL_PAUSED_LOG);
     }
@@ -241,6 +252,14 @@ export class OutboundService {
       const rawPhone = this.getBestPhone(row)!;
       const phone = this.formatE164Spain(rawPhone);
 
+      if (!isAllowedOutboundSandboxPhone(phone)) {
+        discardedCount++;
+        this.logger.log(
+          `[OutboundService] Fila ${rowNumber} ${SKIPPED_SANDBOX_WHITELIST} (${phone}) — sandbox solo ${OUTBOUND_SANDBOX_WHITELIST_E164}`,
+        );
+        continue;
+      }
+
       if (
         testPhoneOnly &&
         !matchesOutboundTestPhone(phone, testPhoneOnly)
@@ -329,10 +348,28 @@ export class OutboundService {
         }
 
         this.logger.log(
-          `[OutboundService] Fila ${rowNumber} ACEPTADA → marcando Llamado=SI y disparando Retell (${phone}) | municipio="${dynamicVars.municipio || '(vacío)'}"`,
+          `[OutboundService] Fila ${rowNumber} ACEPTADA (sandbox) → marcando Llamado=SI y disparando Retell (${phone}) | municipio="${dynamicVars.municipio || '(vacío)'}"`,
         );
 
-        // Marcar ANTES de Retell — solo celdas de tracking (nunca row.save() de fila completa)
+        const guarded = await safeCreatePhoneCall(
+          this.retell,
+          {
+            from_number: this.fromNumber,
+            to_number: phone,
+            override_agent_id: this.agentId,
+            retell_llm_dynamic_variables: dynamicVars,
+          },
+          (msg) => this.logger.warn(msg),
+        );
+
+        if (guarded.skipped) {
+          this.logger.warn(
+            `[OutboundService] Fila ${rowNumber} ${guarded.skipCode} — no se marca Llamado ni se llama a Retell (${phone})`,
+          );
+          continue;
+        }
+
+        // Marcar ANTES de persistir call_id — solo celdas de tracking (nunca row.save() de fila completa)
         await this.sheetsService.updateTrackingCells(sheet, row.rowNumber, {
           [COL_LLAMADO]: 'SI',
           [COL_FECHA_ACTUALIZACION]: nowLabel,
@@ -347,12 +384,7 @@ export class OutboundService {
           `[OutboundService] createPhoneCall agent=${this.agentId} fila=${rowNumber} tel=${phone} retell_llm_dynamic_variables (${Object.keys(dynamicVars).length}/${RETELL_OUTBOUND_VARIABLE_KEYS.length}): ${JSON.stringify(dynamicVars)}`,
         );
 
-        const call = await this.retell.call.createPhoneCall({
-          from_number: this.fromNumber,
-          to_number: phone,
-          override_agent_id: this.agentId,
-          retell_llm_dynamic_variables: dynamicVars,
-        });
+        const call = guarded.call;
 
         await this.sheetsService.updateTrackingCells(sheet, row.rowNumber, {
           [COL_CALL_ID]: call.call_id,

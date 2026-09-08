@@ -5,6 +5,12 @@ import {
   OUTBOUND_AUTO_DIAL_PAUSED,
   OUTBOUND_AUTO_DIAL_PAUSED_LOG,
 } from '../../outbound/outbound-enabled';
+import {
+  OUTBOUND_SANDBOX_WHITELIST_E164,
+  SKIPPED_SANDBOX_WHITELIST,
+  isAllowedOutboundSandboxPhone,
+  safeCreatePhoneCall,
+} from '../../outbound/outbound-sandbox-whitelist';
 import { Channel } from '../enums';
 import {
   isFollowupCallTemplate,
@@ -53,6 +59,23 @@ export class CallChannel implements NurturingChannel {
   }
 
   async send(payload: ChannelSendPayload): Promise<ChannelSendResult> {
+    let toNumber = '';
+    try {
+      toNumber = formatE164Spain(payload.phone);
+    } catch {
+      this.logger.warn(
+        `[CallChannel] ${SKIPPED_SANDBOX_WHITELIST} lead=${payload.leadId} phone vacío o inválido`,
+      );
+      return { success: true, providerRef: SKIPPED_SANDBOX_WHITELIST };
+    }
+
+    if (!isAllowedOutboundSandboxPhone(toNumber)) {
+      this.logger.warn(
+        `[CallChannel] ${SKIPPED_SANDBOX_WHITELIST} lead=${payload.leadId} to=${toNumber} — sandbox solo ${OUTBOUND_SANDBOX_WHITELIST_E164}`,
+      );
+      return { success: true, providerRef: SKIPPED_SANDBOX_WHITELIST };
+    }
+
     if (OUTBOUND_AUTO_DIAL_PAUSED) {
       this.logger.warn(
         `${OUTBOUND_AUTO_DIAL_PAUSED_LOG} lead=${payload.leadId} template=${payload.templateKey}`,
@@ -65,7 +88,6 @@ export class CallChannel implements NurturingChannel {
     const agentId = this.resolveAgentId(payload.templateKey);
 
     if (forceMock || !this.retell || !this.fromNumber || !agentId) {
-      const toNumber = formatE164Spain(payload.phone);
       const mockId = `mock_call_${Date.now()}`;
       this.logger.warn(
         `[MOCK Call/Retell] ${forceMock ? 'NURTURING_MOCK_CHANNELS=true' : 'Retell no configurado'} — simulado OK\n` +
@@ -81,7 +103,6 @@ export class CallChannel implements NurturingChannel {
     }
 
     try {
-      const toNumber = formatE164Spain(payload.phone);
       const dynamicVars: Record<string, string> = {
         nombre: payload.name || '',
         lead_id: payload.leadId,
@@ -99,17 +120,25 @@ export class CallChannel implements NurturingChannel {
         }
       }
 
-      const call = await this.retell.call.createPhoneCall({
-        from_number: this.fromNumber,
-        to_number: toNumber,
-        override_agent_id: agentId,
-        retell_llm_dynamic_variables: dynamicVars,
-      });
+      const guarded = await safeCreatePhoneCall(
+        this.retell,
+        {
+          from_number: this.fromNumber,
+          to_number: toNumber,
+          override_agent_id: agentId,
+          retell_llm_dynamic_variables: dynamicVars,
+        },
+        (msg) => this.logger.warn(msg),
+      );
+
+      if (guarded.skipped) {
+        return { success: true, providerRef: guarded.skipCode };
+      }
 
       this.logger.log(
-        `Retell call started lead=${payload.leadId} call_id=${call.call_id} agent=${agentId} from=${this.fromNumber} to=${toNumber}`,
+        `Retell call started lead=${payload.leadId} call_id=${guarded.call.call_id} agent=${agentId} from=${this.fromNumber} to=${toNumber}`,
       );
-      return { success: true, providerRef: call.call_id };
+      return { success: true, providerRef: guarded.call.call_id };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Retell call failed lead=${payload.leadId}: ${message}`);
