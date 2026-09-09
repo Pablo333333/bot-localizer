@@ -2,21 +2,19 @@
  * Fase 1 — Outbound T+0 (llamadas Retell desde pestaña Localizados).
  * Independiente de Fase 3 (nurturing WA / enroll T+7/T+10).
  *
- * Lunes / lote diario:
+ * Producción:
  *   OUTBOUND_CALLS_ENABLED=true
- *   NURTURING_PHASE3_ENABLED=false   ← pausa nurturing masivo
- *   OUTBOUND_TEST_PHONE_ONLY=        ← vacío (sin filtro Toni)
+ *   NURTURING_PHASE3_ENABLED=false   ← nurturing masivo off
+ *   OUTBOUND_TEST_PHONE_ONLY=        ← vacío (números reales del Sheet)
  *   MAX_DAILY_CALLS=30
+ *   Horario: L-V 10:00-14:00 y 17:00-20:30 Europe/Madrid
  *
  * Si OUTBOUND_CALLS_ENABLED está vacío, hereda NURTURING_PHASE3_ENABLED
  * (compat). Para Fase 1 con Fase 3 off, hay que poner OUTBOUND_CALLS_ENABLED=true.
  *
- * PAUSA TEMPORAL PRE-DEPLOY: con OUTBOUND_AUTO_DIAL_PAUSED=true no se llama
- * a nadie (ni cron Fase 1 ni re-llamadas Fase 3), aunque Railway tenga
- * OUTBOUND_CALLS_ENABLED=true. Webhooks y sync siguen vivos.
- * Para reactivar: poner esta constante en false y descomentar el @Cron.
+ * OUTBOUND_AUTO_DIAL_PAUSED=true bloquea el cron de Fase 1 ( palanca de emergencia ).
  */
-export const OUTBOUND_AUTO_DIAL_PAUSED = true;
+export const OUTBOUND_AUTO_DIAL_PAUSED = false;
 
 export const OUTBOUND_AUTO_DIAL_PAUSED_LOG =
   'Outbound AUTO-DIAL PAUSADO en código — no se lanzan llamadas Retell (Fase 1 / Fase 3). Webhooks y sync siguen activos.';

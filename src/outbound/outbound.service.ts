@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import Retell from 'retell-sdk';
 import { SheetsService } from '../sheets/sheets.service';
 import { resolveRetellFromNumber } from '../nurturing/toni-fase3.constants';
@@ -119,10 +120,10 @@ export class OutboundService {
   }
 
   /**
-   * PAUSA TEMPORAL: cron de lote Fase 1 desactivado para el deploy.
-   * Para reactivar: OUTBOUND_AUTO_DIAL_PAUSED=false y descomentar
-   * `@Cron(CronExpression.EVERY_5_MINUTES)` (import de @nestjs/schedule).
+   * Lote Fase 1 cada 5 min. Solo llama L-V 10:00-14:00 y 17:00-20:30 Madrid,
+   * máximo MAX_DAILY_CALLS (30). Fase 3 no entra aquí.
    */
+  @Cron(CronExpression.EVERY_5_MINUTES)
   async checkPendingCalls(): Promise<void> {
     if (OUTBOUND_AUTO_DIAL_PAUSED) {
       this.logger.warn(OUTBOUND_AUTO_DIAL_PAUSED_LOG);

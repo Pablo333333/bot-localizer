@@ -1,12 +1,11 @@
 import { matchesOutboundTestPhone } from './outbound-test-phone';
 
 /**
- * Sandbox de pruebas: ÚNICO número al que se puede disparar Retell
- * (Fase 1 lote + Fase 3 re-llamadas), da igual lo que haya en Sheets/DB.
- *
- * Desactivar solo al reabrir el lote masivo: OUTBOUND_SANDBOX_WHITELIST_ENABLED=false.
+ * Cortafuegos de prueba (Toni): si está activo, Retell solo llama a
+ * OUTBOUND_SANDBOX_WHITELIST_E164, da igual lo que haya en Sheets/DB.
+ * En producción debe permanecer en false (números reales + horario + cupo diario).
  */
-export const OUTBOUND_SANDBOX_WHITELIST_ENABLED = true;
+export const OUTBOUND_SANDBOX_WHITELIST_ENABLED = false;
 
 /** Número de prueba Toni (E.164). También acepta 644408099 / +34 644 408 099. */
 export const OUTBOUND_SANDBOX_WHITELIST_E164 = '+34644408099';
