@@ -60,4 +60,19 @@ describe('sheet-row-mapper', () => {
     );
     expect(cad.descripcion_propietario).toContain('hostelería');
   });
+
+  it('mapea URL imagen y Carpeta Drive (sin Street View)', () => {
+    const cad = sheetRowToCad(
+      fakeRow({
+        'URL imagen':
+          'https://drive.google.com/file/d/abc123/view?usp=sharing',
+        'Carpeta Drive':
+          'https://drive.google.com/drive/folders/folderXYZ999',
+        'Vista interior StreetView':
+          'https://www.google.com/maps/@39.5,2.6,3a,75y',
+      }),
+    );
+    expect(cad.url_imagen).toContain('drive.google.com/file');
+    expect(cad.carpeta_drive).toContain('folders/folderXYZ999');
+  });
 });

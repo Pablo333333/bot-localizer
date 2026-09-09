@@ -49,6 +49,7 @@ describe('property-mapper (Retell → WP Residence)', () => {
     const payload = buildEstatePropertyPayload(mockCall, {
       status: 'pending',
       featuredMediaId: 99,
+      galleryMediaIds: [99, 100, 101],
     });
     const body = toWordpressRequestBody(payload);
 
@@ -72,6 +73,7 @@ describe('property-mapper (Retell → WP Residence)', () => {
       property_year: '1998',
       property_agent: String(WPRESTENCE_AGENT_ID),
       property_user: String(WPRESTENCE_AUTHOR_ID),
+      property_images: '99,100,101',
       'estado-del-inmueble': 'Buen estado',
       'plantas-del-inmueble': '1',
       'numero-de-escaparates': '3',

@@ -77,6 +77,7 @@ export class WordpressService {
     options: {
       postId?: number;
       featuredMediaId?: number;
+      galleryMediaIds?: number[];
       status?: string;
       commercialContent?: string;
     } = {},
@@ -89,6 +90,7 @@ export class WordpressService {
     const payload = buildEstatePropertyPayload(callData, {
       status,
       featuredMediaId: options.featuredMediaId,
+      galleryMediaIds: options.galleryMediaIds,
       commercialContent: options.commercialContent,
     });
     const body = toWordpressRequestBody(payload);
@@ -96,7 +98,7 @@ export class WordpressService {
     if (options.postId) {
       try {
         this.logger.log(
-          `Actualizando estate_property ${options.postId}: "${payload.title}" (agent=${payload.meta.property_agent} author=${payload.author})`,
+          `Actualizando estate_property ${options.postId}: "${payload.title}" (agent=${payload.meta.property_agent} author=${payload.author} featured=${options.featuredMediaId || '-'} gallery=${options.galleryMediaIds?.length || 0})`,
         );
         const response = await lastValueFrom(
           this.httpService.post(
@@ -121,6 +123,7 @@ export class WordpressService {
       options.featuredMediaId,
       status,
       options.commercialContent,
+      options.galleryMediaIds,
     );
     return { id: created.id, created: true };
   }
@@ -134,6 +137,7 @@ export class WordpressService {
     featuredMediaId?: number,
     statusOverride?: string,
     commercialContent?: string,
+    galleryMediaIds?: number[],
   ): Promise<any> {
     const status =
       statusOverride ||
@@ -143,6 +147,7 @@ export class WordpressService {
     const payload = buildEstatePropertyPayload(data, {
       status,
       featuredMediaId,
+      galleryMediaIds,
       commercialContent,
     });
     const body = toWordpressRequestBody(payload);
@@ -267,12 +272,19 @@ export class WordpressService {
     buffer: Buffer,
     fileName: string,
     mimeType = 'image/jpeg',
+    options: { postId?: number } = {},
   ): Promise<number> {
     try {
-      this.logger.log(`Subiendo imagen a WordPress: ${fileName}`);
+      this.logger.log(
+        `Subiendo imagen a WordPress: ${fileName}${options.postId ? ` (post=${options.postId})` : ''}`,
+      );
+
+      const url = options.postId
+        ? `${this.apiUrl}/wp/v2/media?post=${options.postId}`
+        : `${this.apiUrl}/wp/v2/media`;
 
       const response = await lastValueFrom(
-        this.httpService.post(`${this.apiUrl}/wp/v2/media`, buffer, {
+        this.httpService.post(url, buffer, {
           headers: this.getAuthHeaders({
             'Content-Type': mimeType,
             'Content-Disposition': `attachment; filename="${fileName}"`,
@@ -291,6 +303,17 @@ export class WordpressService {
       );
       throw error;
     }
+  }
+
+  /** Asocia un adjunto existente como hijo del estate_property (galería WPResidence). */
+  async attachMediaToPost(mediaId: number, postId: number): Promise<void> {
+    await lastValueFrom(
+      this.httpService.post(
+        `${this.apiUrl}/wp/v2/media/${mediaId}`,
+        { post: postId },
+        { headers: this.getAuthHeaders() },
+      ),
+    );
   }
 
   /**

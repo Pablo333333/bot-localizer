@@ -8,6 +8,10 @@ import {
   looksLikeTechnicalDump,
 } from './commercial-description';
 import {
+  extractFirstImageUrlFromCad,
+  formatPropertyImagesMeta,
+} from './property-media-sources';
+import {
   WPRESTENCE_AGENT_ID,
   WPRESTENCE_AUTHOR_ID,
 } from './wpresidence.constants';
@@ -17,6 +21,12 @@ import {
 } from './wpresidence-taxonomies';
 
 export { resolveCategorySlug } from './wpresidence-taxonomies';
+export {
+  extractDriveFolderIdFromCad,
+  extractFirstImageUrlFromCad,
+  extractImageUrlsFromCad,
+  formatPropertyImagesMeta,
+} from './property-media-sources';
 
 export type RetellCad = Record<string, unknown>;
 
@@ -36,16 +46,12 @@ export interface EstatePropertyPayload {
   };
 }
 
-const IMAGE_URL_KEYS = [
-  'url_imagen',
-  'imagen_url',
-  'imagen_drive',
-  'google_drive_url',
-  'drive_url',
-  'foto_url',
-  'url_foto',
-  'image_url',
-] as const;
+/** Compat: primera URL de imagen Drive del CAD. */
+export function extractImageUrlFromCad(
+  cad: RetellCad | undefined,
+): string | undefined {
+  return extractFirstImageUrlFromCad(cad);
+}
 
 export function sanitizeValue(
   v: unknown,
@@ -109,17 +115,6 @@ export function formatSurfaceDisplay(v: unknown): string {
 /** Extrae número limpio para meta WP Residence (property_price, property_size, …). */
 export function toNumericMeta(v: unknown): string {
   return sanitizeValue(v, true);
-}
-
-export function extractImageUrlFromCad(cad: RetellCad | undefined): string | undefined {
-  if (!cad) return undefined;
-  for (const key of IMAGE_URL_KEYS) {
-    const raw = sanitizeValue(cad[key]);
-    if (raw && /^https?:\/\//i.test(raw)) {
-      return raw;
-    }
-  }
-  return undefined;
 }
 
 export function resolveOperation(
@@ -247,6 +242,8 @@ export function buildEstatePropertyPayload(
   options: {
     status?: string;
     featuredMediaId?: number;
+    /** IDs de adjuntos WP para la galería WPResidence (meta.property_images). */
+    galleryMediaIds?: number[];
     commercialContent?: string;
     authorId?: number;
     agentId?: number;
@@ -266,7 +263,7 @@ export function buildEstatePropertyPayload(
     cad?.certificado_energetico || cad?.certificacion,
   );
   const yearBuilt = sanitizeValue(cad?.anio_construccion);
-  const imageUrl = extractImageUrlFromCad(cad);
+  const imageUrl = extractFirstImageUrlFromCad(cad);
   const taxonomies = buildWpResidenceTaxonomies(cad);
   const agentId = options.agentId ?? WPRESTENCE_AGENT_ID;
   const authorId = options.authorId ?? WPRESTENCE_AUTHOR_ID;
@@ -355,6 +352,17 @@ export function buildEstatePropertyPayload(
 
   if (options.featuredMediaId) {
     payload.featured_media = options.featuredMediaId;
+  }
+
+  const galleryIds =
+    options.galleryMediaIds && options.galleryMediaIds.length > 0
+      ? options.galleryMediaIds
+      : options.featuredMediaId
+        ? [options.featuredMediaId]
+        : [];
+  const galleryMeta = formatPropertyImagesMeta(galleryIds);
+  if (galleryMeta) {
+    payload.meta.property_images = galleryMeta;
   }
 
   return payload;

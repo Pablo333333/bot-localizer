@@ -93,6 +93,10 @@ function main() {
   assert(body.status === status, `status debe ser ${status}`);
   assert(body.featured_media === featuredMediaId, 'featured_media asignado');
   assert(
+    (body.meta as any).property_images === String(featuredMediaId),
+    'property_images con ID de adjunto (galería WPResidence)',
+  );
+  assert(
     (body.meta as any)?.property_price === '1500',
     'property_price mapeado',
   );

@@ -2,15 +2,14 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { GoogleSpreadsheetRow } from 'google-spreadsheet';
-import { GoogleDriveService } from '../../google/google-drive.service';
 import { SheetsService } from '../../sheets/sheets.service';
-import { extractImageUrlFromCad } from '../../wordpress/property-mapper';
 import {
   readWpPostIdFromSheetRow,
   sheetRowToCallData,
 } from '../../wordpress/sheet-row-mapper';
 import { WordpressService } from '../../wordpress/wordpress.service';
 import { CommercialDescriptionService } from '../../wordpress/commercial-description.service';
+import { PropertyMediaService } from '../../wordpress/property-media.service';
 import {
   COL_DESCRIPCION_PROPIETARIO,
   COL_DESCRIPCION_PROPIETARIO_ALT,
@@ -45,7 +44,7 @@ export class SheetsReviewedSyncService {
   constructor(
     private readonly sheetsService: SheetsService,
     private readonly wordpress: WordpressService,
-    private readonly googleDrive: GoogleDriveService,
+    private readonly propertyMedia: PropertyMediaService,
     private readonly config: ConfigService,
     private readonly commercialDescription: CommercialDescriptionService,
   ) {}
@@ -226,9 +225,10 @@ export class SheetsReviewedSyncService {
       [COL_DESCRIPCION_PROPIETARIO_ALT]: commercialContent,
     });
 
-    const featuredMediaId = await this.resolveFeaturedMediaId(
+    const media = await this.propertyMedia.resolveAndUploadPropertyMedia(
       cad,
       callData.call_id,
+      { postId: existingPostId },
     );
 
     const status =
@@ -240,7 +240,8 @@ export class SheetsReviewedSyncService {
       callData,
       {
         postId: existingPostId,
-        featuredMediaId,
+        featuredMediaId: media.featuredMediaId,
+        galleryMediaIds: media.galleryMediaIds,
         status,
         commercialContent,
       },
@@ -251,6 +252,14 @@ export class SheetsReviewedSyncService {
       return 'skipped';
     }
 
+    // Si el post se creó ahora, los medios se subieron sin parent → asociarlos.
+    if (created && media.galleryMediaIds.length > 0) {
+      await this.propertyMedia.attachGalleryToProperty(
+        postId,
+        media.galleryMediaIds,
+      );
+    }
+
     await this.sheetsService.writeWordPressPublishWriteback(
       sheet,
       row.rowNumber,
@@ -258,53 +267,8 @@ export class SheetsReviewedSyncService {
     );
 
     this.logger.log(
-      `Fila ${row.rowNumber} Reviewed→WP ${created ? 'CREADO' : 'ACTUALIZADO'} post_id=${postId} | Propietario contactado?=SI`,
+      `Fila ${row.rowNumber} Reviewed→WP ${created ? 'CREADO' : 'ACTUALIZADO'} post_id=${postId} featured=${media.featuredMediaId || '-'} gallery=${media.galleryMediaIds.length} | Propietario contactado?=SI`,
     );
     return created ? 'created' : 'updated';
-  }
-
-  private async resolveFeaturedMediaId(
-    cad: Record<string, unknown> | undefined,
-    callId?: string,
-  ): Promise<number | undefined> {
-    const imageUrl = extractImageUrlFromCad(cad);
-    if (imageUrl) {
-      try {
-        const { buffer, fileName, mimeType } =
-          await this.googleDrive.downloadImageFromUrl(imageUrl);
-        return await this.wordpress.uploadMedia(
-          buffer,
-          fileName || `sheet_row_${callId || 'img'}.jpg`,
-          mimeType,
-        );
-      } catch (err: any) {
-        this.logger.warn(
-          `No se pudo subir imagen desde URL del Sheet: ${err.message}`,
-        );
-      }
-    }
-
-    const rootFolderId = this.config.get<string>('DRIVE_ROOT_FOLDER_ID');
-    if (!rootFolderId || !callId) {
-      return undefined;
-    }
-
-    try {
-      const images = await this.googleDrive.getImagesFromFolder(
-        rootFolderId,
-        callId,
-      );
-      if (images.length === 0) {
-        return undefined;
-      }
-      const buffer = await this.googleDrive.downloadImageBuffer(images[0].id!);
-      return await this.wordpress.uploadMedia(
-        buffer,
-        images[0].name || `call_${callId}.jpg`,
-      );
-    } catch (err: any) {
-      this.logger.warn(`Fallback Drive por call_id falló: ${err.message}`);
-      return undefined;
-    }
   }
 }

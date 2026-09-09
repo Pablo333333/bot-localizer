@@ -1,11 +1,10 @@
 import { Body, Controller, Logger, Post } from '@nestjs/common';
 import { SheetsService } from './sheets.service';
 import { WordpressService } from '../wordpress/wordpress.service';
-import { GoogleDriveService } from '../google/google-drive.service';
 import { ConfigService } from '@nestjs/config';
-import { extractImageUrlFromCad } from '../wordpress/property-mapper';
 import { preferCallCad } from '../wordpress/call-cad-priority';
 import { CommercialDescriptionService } from '../wordpress/commercial-description.service';
+import { PropertyMediaService } from '../wordpress/property-media.service';
 import {
   COL_DESCRIPCION_PROPIETARIO,
   COL_DESCRIPCION_PROPIETARIO_ALT,
@@ -20,7 +19,7 @@ export class SheetsController {
   constructor(
     private readonly sheetsService: SheetsService,
     private readonly wordpressService: WordpressService,
-    private readonly googleDriveService: GoogleDriveService,
+    private readonly propertyMedia: PropertyMediaService,
     private readonly configService: ConfigService,
     private readonly propertyPublishEmail: PropertyPublishEmailService,
     private readonly noAnswerFollowup: NoAnswerFollowupService,
@@ -34,87 +33,6 @@ export class SheetsController {
     this.logger.log(
       `[verifyDocAccess] Documento accesible desde el controlador: ${doc?.title ?? 'aún no cargado'}`,
     );
-  }
-
-  /**
-   * Resuelve imagen destacada: 1) URL Drive en el CAD, 2) búsqueda en carpeta Drive.
-   */
-  private async resolveFeaturedMediaId(
-    cad: Record<string, unknown> | undefined,
-    callId: string | undefined,
-  ): Promise<number | undefined> {
-    const imageUrl = extractImageUrlFromCad(cad);
-    if (imageUrl) {
-      try {
-        this.logger.log(`Imagen desde URL del registro: ${imageUrl}`);
-        const { buffer, fileName, mimeType } =
-          await this.googleDriveService.downloadImageFromUrl(imageUrl);
-        return await this.wordpressService.uploadMedia(
-          buffer,
-          fileName || `call_${callId || 'img'}.jpg`,
-          mimeType,
-        );
-      } catch (urlErr: any) {
-        this.logger.error(
-          `Error descargando imagen por URL Drive: ${urlErr.message}. Se intenta fallback por carpeta.`,
-        );
-      }
-    }
-
-    const rootFolderId = this.configService.get<string>('DRIVE_ROOT_FOLDER_ID');
-    if (!rootFolderId || !callId) {
-      return undefined;
-    }
-
-    try {
-      this.logger.log(`Buscando imágenes en Drive para call_id: ${callId}`);
-      let images = await this.googleDriveService.getImagesFromFolder(
-        rootFolderId,
-        callId,
-      );
-
-      if (images.length === 0 && cad?.municipio) {
-        this.logger.log(
-          `No se encontró imagen para call_id ${callId}. Fallback municipio: ${cad.municipio}`,
-        );
-        images = await this.googleDriveService.getImagesFromFolder(
-          rootFolderId,
-          String(cad.municipio),
-        );
-      }
-
-      if (images.length === 0 && cad?.tipo_inmueble) {
-        this.logger.log(
-          `Fallback por tipo de inmueble: ${cad.tipo_inmueble}`,
-        );
-        images = await this.googleDriveService.getImagesFromFolder(
-          rootFolderId,
-          String(cad.tipo_inmueble),
-        );
-      }
-
-      if (images.length === 0) {
-        this.logger.log(
-          'Sin coincidencias; usando primera imagen de la carpeta raíz.',
-        );
-        images = await this.googleDriveService.getImagesFromFolder(rootFolderId);
-      }
-
-      if (images.length > 0) {
-        this.logger.log(`Imagen seleccionada: ${images[0].name}. Descargando...`);
-        const buffer = await this.googleDriveService.downloadImageBuffer(
-          images[0].id!,
-        );
-        return await this.wordpressService.uploadMedia(
-          buffer,
-          images[0].name || `call_${callId}.jpg`,
-        );
-      }
-    } catch (driveError: any) {
-      this.logger.error(`Error en Drive: ${driveError.message}`);
-    }
-
-    return undefined;
   }
 
   @Post('retell')
@@ -274,19 +192,27 @@ export class SheetsController {
           this.logger.log(
             'Iniciando flujo WordPress con CAD de llamada (Sheet ya actualizado)...',
           );
-          const featuredMediaId = await this.resolveFeaturedMediaId(
+          const existingPostId = sheetWrite.wpPostId;
+          const media = await this.propertyMedia.resolveAndUploadPropertyMedia(
             mergedCad,
             callId,
+            { postId: existingPostId },
           );
-          const existingPostId = sheetWrite.wpPostId;
           const upserted = await this.wordpressService.upsertPropertyFromCallData(
             callData,
             {
               postId: existingPostId,
-              featuredMediaId,
+              featuredMediaId: media.featuredMediaId,
+              galleryMediaIds: media.galleryMediaIds,
               commercialContent,
             },
           );
+          if (upserted.created && media.galleryMediaIds.length > 0) {
+            await this.propertyMedia.attachGalleryToProperty(
+              upserted.id,
+              media.galleryMediaIds,
+            );
+          }
           publicadoWordpress = 'SI';
           wpPostId = upserted.id;
 

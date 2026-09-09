@@ -89,7 +89,21 @@ const SHEET_TO_CAD: ReadonlyArray<{
       'Url imagen',
       'url_imagen',
       'Imagen URL',
-      'Vista interior StreetView',
+      'URLs imagenes',
+      'URLs imágenes',
+      'Imagenes Drive',
+      'Imágenes Drive',
+    ],
+  },
+  {
+    cadKey: 'carpeta_drive',
+    columns: [
+      'Carpeta Drive',
+      'Drive folder',
+      'Drive Folder ID',
+      'ID carpeta Drive',
+      'carpeta_drive',
+      'Google Drive Folder',
     ],
   },
 ];
