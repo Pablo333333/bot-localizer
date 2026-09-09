@@ -431,7 +431,7 @@ export class SheetsService implements OnModuleInit {
 
   /**
    * Write-back tras publicar en WordPress (reviewed sync).
-   * Escribe ID_WP, WP Post ID, Referencia, Propietario contactado?=SI (columna K) y columna D.
+   * Escribe ID_WP / Referencia / Propietario contactado?=SI por nombre de cabecera.
    */
   async writeWordPressPublishWriteback(
     sheet: GoogleSpreadsheetWorksheet,
@@ -537,13 +537,36 @@ export class SheetsService implements OnModuleInit {
     }
   }
 
-  /** Columna D = Referencia / WP Post ID (Toni). Escritura A1 puntual. */
+  /**
+   * Escribe ID_WP / Referencia por nombre de cabecera (nunca columna D fija).
+   */
   async writeWpPostIdColumnD(
     sheet: GoogleSpreadsheetWorksheet,
     rowNumber: number,
     wpPostId: number | string,
   ): Promise<void> {
-    const a1 = `D${rowNumber}`;
+    await sheet.loadHeaderRow();
+    const headers = sheet.headerValues || [];
+    const candidates = [
+      'ID_WP',
+      'WP Post ID',
+      'Wp Post ID',
+      'Referencia',
+      'Referencia / WP Post ID',
+    ];
+    const header =
+      candidates.find((h) => headers.includes(h)) ||
+      headers.find((h) =>
+        /id[_\s]?wp|wp\s*post\s*id|referencia/i.test(String(h || '')),
+      );
+    if (!header) {
+      this.logger.warn(
+        `[WP Post ID] No hay cabecera ID_WP/Referencia en Localizados — no se escribe ${wpPostId}`,
+      );
+      return;
+    }
+    const a1 = a1ForHeader(header, headers, rowNumber);
+    if (!a1) return;
     await sheet.loadCells(a1);
     const cell = sheet.getCellByA1(a1);
     const next = String(wpPostId).trim();
@@ -552,15 +575,31 @@ export class SheetsService implements OnModuleInit {
     }
     cell.value = next;
     await sheet.saveUpdatedCells();
-    this.logger.log(`[WP Post ID] ${a1} ← ${next}`);
+    this.logger.log(`[WP Post ID] header="${header}" ${a1} ← ${next}`);
   }
 
-  /** Columna K = Propietario contactado?. Escritura A1 puntual. */
+  /**
+   * Escribe "Propietario contactado?" por nombre de cabecera (nunca columna K fija).
+   */
   async writePropietarioContactadoColumnK(
     sheet: GoogleSpreadsheetWorksheet,
     rowNumber: number,
   ): Promise<void> {
-    const a1 = `K${rowNumber}`;
+    await sheet.loadHeaderRow();
+    const headers = sheet.headerValues || [];
+    const header =
+      headers.find((h) => h === 'Propietario contactado?') ||
+      headers.find((h) =>
+        /propietario\s*contactad/i.test(String(h || '')),
+      );
+    if (!header) {
+      this.logger.warn(
+        '[Propietario contactado?] Cabecera no encontrada — no se escribe SI',
+      );
+      return;
+    }
+    const a1 = a1ForHeader(header, headers, rowNumber);
+    if (!a1) return;
     await sheet.loadCells(a1);
     const cell = sheet.getCellByA1(a1);
     const next = WP_PUBLISH_CONTACTED_VALUE;
@@ -569,7 +608,7 @@ export class SheetsService implements OnModuleInit {
     }
     cell.value = next;
     await sheet.saveUpdatedCells();
-    this.logger.log(`[Propietario contactado?] ${a1} ← ${next}`);
+    this.logger.log(`[Propietario contactado?] header="${header}" ${a1} ← ${next}`);
   }
 
   async testUpdateAsNewRow(data: RetellPayload, publicadoWP: string = 'NO'): Promise<void> {

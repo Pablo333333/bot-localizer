@@ -1,5 +1,4 @@
-/** Columna J (1-based) = índice 0-based 9. */
-export const COL_ANUNCIO_REVISADO_INDEX0 = 9;
+/** Lectura por nombre de cabecera únicamente (nunca por índice de columna). */
 
 export const COL_ANUNCIO_REVISADO = 'Anuncio Revisado?';
 export const COL_ANUNCIO_REVISADO_ALT = 'Anuncio revisado?';
@@ -30,8 +29,7 @@ export function findAnuncioRevisadoHeader(
     }
   }
 
-  const colJ = headerValues[COL_ANUNCIO_REVISADO_INDEX0];
-  return colJ ? colJ : null;
+  return null;
 }
 
 export function readAnuncioRevisadoRaw(
@@ -60,7 +58,7 @@ export function readAnuncioRevisadoRaw(
   return named ?? '';
 }
 
-/** true solo si la celda es estrictamente SI (columna J / "Anuncio Revisado?"). */
+/** true solo si la celda es estrictamente SI ("Anuncio Revisado?" por nombre). */
 export function isAnuncioRevisadoSi(
   row: { get: (header: string) => unknown },
   headerValues?: string[],

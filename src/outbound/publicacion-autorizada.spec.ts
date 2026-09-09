@@ -8,7 +8,7 @@ function fakeRow(values: Record<string, string | undefined>) {
   return { get: (h: string) => values[h] };
 }
 
-describe('isPublicacionAutorizadaSi (columna N)', () => {
+describe('isPublicacionAutorizadaSi (por nombre de cabecera)', () => {
   it('acepta SI ignorando mayúsculas, acentos y espacios', () => {
     expect(
       isPublicacionAutorizadaSi(fakeRow({ 'Publicacion Autorizada?': 'SI' })),
@@ -36,33 +36,21 @@ describe('isPublicacionAutorizadaSi (columna N)', () => {
     ).toBe(false);
   });
 
-  it('lee columna N (índice 13) si el header no coincide', () => {
+  it('no usa índice de columna: sin cabecera por nombre → false', () => {
     const headers = Array.from({ length: 14 }, (_, i) => `Col${i}`);
     headers[13] = 'ColN';
     expect(isPublicacionAutorizadaSi(fakeRow({ ColN: 'SI' }), headers)).toBe(
-      true,
-    );
-    expect(isPublicacionAutorizadaSi(fakeRow({ ColN: 'NO' }), headers)).toBe(
       false,
     );
+    expect(findPublicacionAutorizadaHeader(headers)).toBeNull();
   });
 
-  it('resuelve header fuzzy (espacios / tipografía distinta)', () => {
+  it('resuelve header fuzzy por nombre aunque cambie de posición', () => {
     const headers = [
-      'A',
-      'B',
-      'C',
-      'D',
-      'E',
-      'F',
-      'G',
-      'H',
-      'I',
-      'J',
-      'K',
-      'L',
-      'M',
+      'Call ID',
+      'Municipio',
       'Publicacion Autorizada ?',
+      'Otra',
     ];
     expect(findPublicacionAutorizadaHeader(headers)).toBe(
       'Publicacion Autorizada ?',

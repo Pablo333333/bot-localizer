@@ -16,6 +16,12 @@ import {
   TONI_TEST_WP_POST_IDS,
 } from '../../wordpress/wpresidence.constants';
 import {
+  isWpSyncProtectPublishedEnabled,
+  readBloquearSyncWp,
+  readForzarSyncWp,
+  shouldSkipWpOverwrite,
+} from '../../wordpress/wp-sync-guard';
+import {
   findAnuncioRevisadoHeader,
   isAnuncioRevisadoSi,
 } from './anuncio-revisado';
@@ -33,8 +39,8 @@ export type ReviewedWpSyncStats = {
 };
 
 /**
- * Localizados → WordPress cuando "Anuncio Revisado?" (columna J) = SI.
- * Crea el post si no hay ID_WP / WP Post ID; si existe, actualiza (idempotente).
+ * Localizados → WordPress cuando "Anuncio Revisado?" = SI (por nombre de cabecera).
+ * Crea el post si no hay ID_WP; si existe, actualiza salvo protección de publicados.
  */
 @Injectable()
 export class SheetsReviewedSyncService {
@@ -107,7 +113,7 @@ export class SheetsReviewedSyncService {
 
       if (!reviewHeader) {
         this.logger.warn(
-          'Columna "Anuncio Revisado?" (J) no encontrada — sync omitido.',
+          'Columna "Anuncio Revisado?" no encontrada por nombre — sync omitido.',
         );
         return stats;
       }
@@ -128,7 +134,9 @@ export class SheetsReviewedSyncService {
         stats.eligible += 1;
 
         try {
-          const result = await this.processReviewedRow(sheet, row, headers);
+          const result = await this.processReviewedRow(sheet, row, headers, {
+            force: false,
+          });
           if (result === 'created') stats.created += 1;
           else if (result === 'updated') stats.updated += 1;
           else stats.skipped += 1;
@@ -152,11 +160,12 @@ export class SheetsReviewedSyncService {
   }
 
   /**
-   * Reprocesa estate_property concretos (p.ej. IDs de prueba de Toni)
-   * a partir de la fila Localizados con ese ID_WP, aunque Anuncio Revisado? no sea SI.
+   * Reprocesa estate_property concretos (p.ej. IDs de prueba de Toni).
+   * @param force si true, permite sobrescribir posts publicados (query ?force=1).
    */
   async syncWordpressPostsByIds(
     postIds: number[] = [...TONI_TEST_WP_POST_IDS],
+    options: { force?: boolean } = {},
   ): Promise<ReviewedWpSyncStats> {
     const stats: ReviewedWpSyncStats = {
       scanned: 0,
@@ -186,7 +195,9 @@ export class SheetsReviewedSyncService {
 
       stats.eligible += 1;
       try {
-        const result = await this.processReviewedRow(sheet, row, headers);
+        const result = await this.processReviewedRow(sheet, row, headers, {
+          force: options.force === true,
+        });
         if (result === 'created') stats.created += 1;
         else if (result === 'updated') stats.updated += 1;
         else stats.skipped += 1;
@@ -201,7 +212,7 @@ export class SheetsReviewedSyncService {
     }
 
     this.logger.log(
-      `WP IDs sync: ids=${uniqueIds.join(',')} created=${stats.created} updated=${stats.updated} missing=${stats.missing?.join(',') || '-'} errors=${stats.errors}`,
+      `WP IDs sync: ids=${uniqueIds.join(',')} force=${!!options.force} created=${stats.created} updated=${stats.updated} skipped=${stats.skipped} missing=${stats.missing?.join(',') || '-'} errors=${stats.errors}`,
     );
     return stats;
   }
@@ -210,10 +221,36 @@ export class SheetsReviewedSyncService {
     sheet: Parameters<SheetsService['updateTrackingCells']>[0],
     row: GoogleSpreadsheetRow,
     headers: string[],
+    options: { force?: boolean } = {},
   ): Promise<'created' | 'updated' | 'skipped'> {
     const callData = sheetRowToCallData(row);
     const cad = callData.call_analysis.custom_analysis_data;
     const existingPostId = readWpPostIdFromSheetRow(row);
+
+    const forzarSync = options.force === true || readForzarSyncWp(row);
+    const bloquearSync = readBloquearSyncWp(row);
+    const protectPublished = isWpSyncProtectPublishedEnabled(
+      this.config.get('WP_SYNC_PROTECT_PUBLISHED'),
+    );
+
+    let wpStatus: string | null = null;
+    if (existingPostId) {
+      const brief = await this.wordpress.getEstatePropertyBrief(existingPostId);
+      wpStatus = brief?.status ?? null;
+      const guard = shouldSkipWpOverwrite({
+        existingPostId,
+        wpStatus,
+        protectPublished,
+        forzarSync,
+        bloquearSync,
+      });
+      if (guard.skip) {
+        this.logger.warn(
+          `Fila ${row.rowNumber}: ${guard.reason} — cambios manuales en WP protegidos`,
+        );
+        return 'skipped';
+      }
+    }
 
     const commercialContent = await this.commercialDescription.resolve(
       cad,
@@ -236,24 +273,28 @@ export class SheetsReviewedSyncService {
       this.config.get<string>('WP_POST_STATUS') ||
       'pending';
 
-    const { id: postId, created } = await this.wordpress.upsertPropertyFromCallData(
-      callData,
-      {
+    const preserveStatus =
+      !!existingPostId &&
+      (wpStatus === 'publish' || forzarSync);
+
+    const { id: postId, created } =
+      await this.wordpress.upsertPropertyFromCallData(callData, {
         postId: existingPostId,
         featuredMediaId: media.featuredMediaId,
         galleryMediaIds: media.galleryMediaIds,
         status,
+        preserveStatus,
         commercialContent,
-      },
-    );
+      });
 
     if (!postId) {
-      this.logger.warn(`Fila ${row.rowNumber}: WP no devolvió ID — omitiendo write-back`);
+      this.logger.warn(
+        `Fila ${row.rowNumber}: WP no devolvió ID — omitiendo write-back`,
+      );
       return 'skipped';
     }
 
-    // Si el post se creó ahora, los medios se subieron sin parent → asociarlos.
-    if (created && media.galleryMediaIds.length > 0) {
+    if (media.galleryMediaIds.length > 0) {
       await this.propertyMedia.attachGalleryToProperty(
         postId,
         media.galleryMediaIds,

@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GoogleDriveService } from '../google/google-drive.service';
 import {
-  extractDriveFolderIdFromCad,
+  extractDriveFolderIdsFromCad,
   extractImageUrlsFromCad,
   MAX_PROPERTY_IMAGES,
 } from './property-media-sources';
@@ -43,14 +43,18 @@ export class PropertyMediaService {
     options: { postId?: number } = {},
   ): Promise<PropertyMediaResult> {
     const empty: PropertyMediaResult = { galleryMediaIds: [] };
-    const driveFiles = await this.collectDriveImageFiles(cad, callId);
+    const driveFiles = await this.collectDriveImageFiles(cad, callId, options.postId);
 
     if (driveFiles.length === 0) {
       this.logger.warn(
-        `Sin imágenes Drive para call_id=${callId || 'n/a'} post=${options.postId || 'n/a'}`,
+        `[PropertyMedia] Sin imágenes Drive | call_id=${callId || 'n/a'} post=${options.postId || 'n/a'} url_imagen=${String(cad?.url_imagen || '').slice(0, 80)} carpeta=${String(cad?.carpeta_drive || '').slice(0, 80)}`,
       );
       return empty;
     }
+
+    this.logger.log(
+      `[PropertyMedia] ${driveFiles.length} archivo(s) Drive a subir → WP post=${options.postId || 'nuevo'}`,
+    );
 
     const galleryMediaIds: number[] = [];
     for (const file of driveFiles.slice(0, MAX_PROPERTY_IMAGES)) {
@@ -63,19 +67,25 @@ export class PropertyMediaService {
           { postId: options.postId },
         );
         galleryMediaIds.push(mediaId);
+        this.logger.log(
+          `[PropertyMedia] OK media_id=${mediaId} drive=${file.id} name=${file.name}`,
+        );
       } catch (err: any) {
         this.logger.warn(
-          `No se pudo subir Drive file=${file.id} (${file.name}): ${err.message}`,
+          `[PropertyMedia] Fallo subir Drive file=${file.id} (${file.name}): ${err.message}`,
         );
       }
     }
 
     if (galleryMediaIds.length === 0) {
+      this.logger.error(
+        `[PropertyMedia] Había ${driveFiles.length} archivo(s) Drive pero ninguna subida a WP tuvo éxito`,
+      );
       return empty;
     }
 
     this.logger.log(
-      `Medios WP listos: ${galleryMediaIds.length} adjunto(s) → featured=${galleryMediaIds[0]} gallery=[${galleryMediaIds.join(',')}]`,
+      `[PropertyMedia] Listo: featured=${galleryMediaIds[0]} gallery=[${galleryMediaIds.join(',')}]`,
     );
 
     return {
@@ -85,7 +95,8 @@ export class PropertyMediaService {
   }
 
   /**
-   * Tras crear el post, asocia los adjuntos como hijos (galería WPResidence).
+   * Asocia adjuntos como hijos del estate_property (galería WPResidence).
+   * Llamar siempre tras upsert (create y update).
    */
   async attachGalleryToProperty(
     postId: number,
@@ -94,9 +105,12 @@ export class PropertyMediaService {
     for (const mediaId of mediaIds) {
       try {
         await this.wordpress.attachMediaToPost(mediaId, postId);
+        this.logger.log(
+          `[PropertyMedia] Adjunto ${mediaId} → post_parent=${postId}`,
+        );
       } catch (err: any) {
         this.logger.warn(
-          `No se pudo asociar media ${mediaId} → post ${postId}: ${err.message}`,
+          `[PropertyMedia] No se pudo asociar media ${mediaId} → post ${postId}: ${err.message}`,
         );
       }
     }
@@ -105,6 +119,7 @@ export class PropertyMediaService {
   private async collectDriveImageFiles(
     cad: RetellCad | undefined,
     callId?: string,
+    postId?: number,
   ): Promise<DriveFileRef[]> {
     const seen = new Set<string>();
     const out: DriveFileRef[] = [];
@@ -118,21 +133,26 @@ export class PropertyMediaService {
     };
 
     // 1) URLs / IDs de archivo en el CAD (Sheet)
-    for (const url of extractImageUrlsFromCad(cad)) {
+    const fileUrls = extractImageUrlsFromCad(cad);
+    this.logger.log(
+      `[PropertyMedia] Fuentes URL archivo: ${fileUrls.length} | carpetas CAD: ${extractDriveFolderIdsFromCad(cad).join(',') || '-'}`,
+    );
+
+    for (const url of fileUrls) {
       const fileId = this.googleDrive.extractFileIdFromUrl(url);
-      if (!fileId) continue;
+      if (!fileId) {
+        this.logger.warn(`[PropertyMedia] URL sin fileId (¿carpeta?): ${url}`);
+        continue;
+      }
       try {
         const meta = await this.googleDrive.getFileMetadata(fileId);
         if (meta.mimeType?.startsWith('image/')) {
           pushUnique([
-            {
-              id: fileId,
-              name: meta.name,
-              mimeType: meta.mimeType,
-            },
+            { id: fileId, name: meta.name, mimeType: meta.mimeType },
           ]);
         } else if (meta.mimeType === 'application/vnd.google-apps.folder') {
-          const folderImages = await this.googleDrive.getImagesFromFolder(fileId);
+          const folderImages =
+            await this.googleDrive.getImagesFromFolder(fileId);
           pushUnique(
             folderImages.map((f) => ({
               id: f.id!,
@@ -141,11 +161,17 @@ export class PropertyMediaService {
             })),
           );
         } else {
-          // Intentar como imagen de todas formas (mime desconocido)
-          pushUnique([{ id: fileId, name: meta.name, mimeType: meta.mimeType }]);
+          pushUnique([
+            { id: fileId, name: meta.name, mimeType: meta.mimeType },
+          ]);
         }
-      } catch {
-        pushUnique([{ id: fileId, name: `drive_${fileId}.jpg`, mimeType: 'image/jpeg' }]);
+      } catch (err: any) {
+        this.logger.warn(
+          `[PropertyMedia] Metadata Drive falló ${fileId}: ${err.message} — se intenta descarga directa`,
+        );
+        pushUnique([
+          { id: fileId, name: `drive_${fileId}.jpg`, mimeType: 'image/jpeg' },
+        ]);
       }
     }
 
@@ -153,13 +179,12 @@ export class PropertyMediaService {
       return out.slice(0, MAX_PROPERTY_IMAGES);
     }
 
-    // 2) Carpeta explícita del CAD / Sheet
-    const folderFromCad = extractDriveFolderIdFromCad(cad);
-    if (folderFromCad) {
+    // 2) Carpetas explícitas (columna + URLs /folders/ en campos imagen)
+    for (const folderId of extractDriveFolderIdsFromCad(cad)) {
       try {
-        const images = await this.googleDrive.getImagesFromFolder(folderFromCad);
+        const images = await this.googleDrive.getImagesFromFolder(folderId);
         this.logger.log(
-          `Carpeta Drive CAD ${folderFromCad}: ${images.length} imagen(es)`,
+          `[PropertyMedia] Carpeta ${folderId}: ${images.length} imagen(es)`,
         );
         pushUnique(
           images.map((f) => ({
@@ -170,7 +195,7 @@ export class PropertyMediaService {
         );
       } catch (err: any) {
         this.logger.warn(
-          `No se pudo listar carpeta Drive CAD ${folderFromCad}: ${err.message}`,
+          `[PropertyMedia] No se pudo listar carpeta ${folderId}: ${err.message}`,
         );
       }
     }
@@ -179,47 +204,63 @@ export class PropertyMediaService {
       return out.slice(0, MAX_PROPERTY_IMAGES);
     }
 
-    // 3) Fallback: DRIVE_ROOT_FOLDER_ID (+ subcarpeta / archivos por call_id)
+    // 3) Fallback: DRIVE_ROOT_FOLDER_ID por call_id y/o postId
     const rootFolderId = this.config.get<string>('DRIVE_ROOT_FOLDER_ID');
-    if (!rootFolderId || !callId) {
+    const searchTerms = [callId, postId ? String(postId) : '']
+      .map((s) => String(s || '').trim())
+      .filter(Boolean);
+
+    if (!rootFolderId || searchTerms.length === 0) {
+      if (!rootFolderId) {
+        this.logger.warn(
+          '[PropertyMedia] DRIVE_ROOT_FOLDER_ID vacío — sin fallback por carpeta raíz',
+        );
+      }
       return out.slice(0, MAX_PROPERTY_IMAGES);
     }
 
     try {
-      const subfolderId = await this.googleDrive.findSubfolderByName(
-        rootFolderId,
-        callId,
-      );
-      if (subfolderId) {
-        const images = await this.googleDrive.getImagesFromFolder(subfolderId);
-        this.logger.log(
-          `Subcarpeta Drive call_id=${callId} → ${images.length} imagen(es)`,
-        );
-        pushUnique(
-          images.map((f) => ({
-            id: f.id!,
-            name: f.name,
-            mimeType: f.mimeType,
-          })),
-        );
-      }
-
-      if (out.length === 0) {
-        const named = await this.googleDrive.getImagesFromFolder(
+      for (const term of searchTerms) {
+        if (out.length > 0) break;
+        const subfolderId = await this.googleDrive.findSubfolderByName(
           rootFolderId,
-          callId,
+          term,
         );
-        pushUnique(
-          named.map((f) => ({
-            id: f.id!,
-            name: f.name,
-            mimeType: f.mimeType,
-          })),
-        );
+        if (subfolderId) {
+          const images =
+            await this.googleDrive.getImagesFromFolder(subfolderId);
+          this.logger.log(
+            `[PropertyMedia] Subcarpeta term=${term} → ${images.length} imagen(es)`,
+          );
+          pushUnique(
+            images.map((f) => ({
+              id: f.id!,
+              name: f.name,
+              mimeType: f.mimeType,
+            })),
+          );
+        }
+
+        if (out.length === 0) {
+          const named = await this.googleDrive.getImagesFromFolder(
+            rootFolderId,
+            term,
+          );
+          this.logger.log(
+            `[PropertyMedia] Archivos en root name~${term}: ${named.length}`,
+          );
+          pushUnique(
+            named.map((f) => ({
+              id: f.id!,
+              name: f.name,
+              mimeType: f.mimeType,
+            })),
+          );
+        }
       }
     } catch (err: any) {
       this.logger.warn(
-        `Fallback Drive root/call_id falló (${callId}): ${err.message}`,
+        `[PropertyMedia] Fallback root falló (${searchTerms.join(',')}): ${err.message}`,
       );
     }
 

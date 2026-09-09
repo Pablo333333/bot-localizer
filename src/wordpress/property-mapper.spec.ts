@@ -73,6 +73,7 @@ describe('property-mapper (Retell → WP Residence)', () => {
       property_year: '1998',
       property_agent: String(WPRESTENCE_AGENT_ID),
       property_user: String(WPRESTENCE_AUTHOR_ID),
+      agent_display_option: 'agent_agency',
       property_images: '99,100,101',
       'estado-del-inmueble': 'Buen estado',
       'plantas-del-inmueble': '1',
@@ -140,6 +141,26 @@ describe('property-mapper (Retell → WP Residence)', () => {
     );
     expect(url).toContain('drive.google.com');
     expect(url).toContain('1AbCdEfGhIjKlMnOpQrStUvWxYz');
+  });
+
+  it('mapea latitud/longitud a meta del mapa WPResidence', () => {
+    const withGeo = {
+      ...mockCall,
+      call_analysis: {
+        ...mockCall.call_analysis,
+        custom_analysis_data: {
+          ...mockCall.call_analysis.custom_analysis_data,
+          latitud: '39,5696',
+          longitud: '2,6502',
+          codigo_postal: '07001',
+        },
+      },
+    };
+    const payload = buildEstatePropertyPayload(withGeo);
+    expect(payload.meta.property_latitude).toBe('39.5696');
+    expect(payload.meta.property_longitude).toBe('2.6502');
+    expect(payload.meta.property_zip).toBe('07001');
+    expect(payload.meta.property_google_view).toBe('1');
   });
 
   it('el body final apunta a campos esperados por POST /wp/v2/estate_property', () => {

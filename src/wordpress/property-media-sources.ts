@@ -106,7 +106,7 @@ function isLikelyDriveUrl(value: string): boolean {
 
 /**
  * URLs/IDs de archivos de imagen en el CAD (pueden ser varias, separadas por coma/salto).
- * Ignora Street View / Maps que no sean Drive.
+ * Ignora Street View / Maps y URLs de carpeta Drive (esas van a extractDriveFolderIdsFromCad).
  */
 export function extractImageUrlsFromCad(cad: CadLike): string[] {
   if (!cad) return [];
@@ -117,6 +117,9 @@ export function extractImageUrlsFromCad(cad: CadLike): string[] {
     const raw = sanitizeRaw(cad[key]);
     if (!raw) continue;
     for (const part of splitMultiValue(raw)) {
+      if (extractDriveFolderId(part) && /\/(?:drive\/)?folders\//i.test(part)) {
+        continue; // carpeta → extractDriveFolderIdsFromCad
+      }
       if (!isHttpUrl(part) && !extractDriveFileId(part)) continue;
       if (
         isHttpUrl(part) &&
@@ -140,15 +143,43 @@ export function extractFirstImageUrlFromCad(cad: CadLike): string | undefined {
   return extractImageUrlsFromCad(cad)[0];
 }
 
-/** Carpeta Drive asociada al inmueble (columna Sheet / CAD). */
-export function extractDriveFolderIdFromCad(cad: CadLike): string | null {
-  if (!cad) return null;
+/**
+ * Todas las carpetas Drive del CAD: columnas dedicadas + URLs /folders/ en campos de imagen.
+ */
+export function extractDriveFolderIdsFromCad(cad: CadLike): string[] {
+  if (!cad) return [];
+  const ids: string[] = [];
+  const seen = new Set<string>();
+
+  const push = (raw: string) => {
+    const id = extractDriveFolderId(raw);
+    if (!id || seen.has(id)) return;
+    // Si es URL de archivo, no es carpeta
+    if (/\/file\/d\//i.test(raw)) return;
+    seen.add(id);
+    ids.push(id);
+  };
+
   for (const key of DRIVE_FOLDER_KEYS) {
     const raw = sanitizeRaw(cad[key]);
-    const id = extractDriveFolderId(raw);
-    if (id) return id;
+    if (!raw) continue;
+    for (const part of splitMultiValue(raw)) push(part);
   }
-  return null;
+
+  for (const key of IMAGE_URL_KEYS) {
+    const raw = sanitizeRaw(cad[key]);
+    if (!raw) continue;
+    for (const part of splitMultiValue(raw)) {
+      if (/\/(?:drive\/)?folders\//i.test(part)) push(part);
+    }
+  }
+
+  return ids;
+}
+
+/** Carpeta Drive asociada al inmueble (primera encontrada). */
+export function extractDriveFolderIdFromCad(cad: CadLike): string | null {
+  return extractDriveFolderIdsFromCad(cad)[0] ?? null;
 }
 
 /** Meta WPResidence: IDs de adjuntos separados por coma. */

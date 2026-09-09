@@ -43,13 +43,19 @@ describe('property-media-sources', () => {
     ]);
   });
 
-  it('lee carpeta Drive del CAD', () => {
+  it('lee carpeta Drive del CAD y también desde URL imagen tipo /folders/', () => {
     expect(
       extractDriveFolderIdFromCad({
         carpeta_drive:
           'https://drive.google.com/drive/folders/1PropFolderABCDEFG',
       }),
     ).toBe('1PropFolderABCDEFG');
+    expect(
+      extractDriveFolderIdFromCad({
+        url_imagen:
+          'https://drive.google.com/drive/folders/1FromUrlImagenFolder',
+      }),
+    ).toBe('1FromUrlImagenFolder');
   });
 
   it('formatea meta property_images', () => {

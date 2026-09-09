@@ -79,6 +79,8 @@ export class WordpressService {
       featuredMediaId?: number;
       galleryMediaIds?: number[];
       status?: string;
+      /** Si true, no envía `status` en update (protege publish frente a pending). */
+      preserveStatus?: boolean;
       commercialContent?: string;
     } = {},
   ): Promise<{ id: number; created: boolean }> {
@@ -96,9 +98,12 @@ export class WordpressService {
     const body = toWordpressRequestBody(payload);
 
     if (options.postId) {
+      if (options.preserveStatus) {
+        delete body.status;
+      }
       try {
         this.logger.log(
-          `Actualizando estate_property ${options.postId}: "${payload.title}" (agent=${payload.meta.property_agent} author=${payload.author} featured=${options.featuredMediaId || '-'} gallery=${options.galleryMediaIds?.length || 0})`,
+          `Actualizando estate_property ${options.postId}: "${payload.title}" (agent=${payload.meta.property_agent} author=${payload.author} featured=${options.featuredMediaId || '-'} gallery=${options.galleryMediaIds?.length || 0} preserveStatus=${!!options.preserveStatus})`,
         );
         const response = await lastValueFrom(
           this.httpService.post(
@@ -126,6 +131,35 @@ export class WordpressService {
       options.galleryMediaIds,
     );
     return { id: created.id, created: true };
+  }
+
+  /** Lectura ligera de estado WP (para protección de publicados). */
+  async getEstatePropertyBrief(
+    postId: number,
+  ): Promise<{ id: number; status: string; modified?: string } | null> {
+    try {
+      const response = await lastValueFrom(
+        this.httpService.get(
+          `${this.apiUrl}/wp/v2/estate_property/${postId}?_fields=id,status,modified`,
+          { headers: this.getAuthHeaders() },
+        ),
+      );
+      return {
+        id: response.data.id,
+        status: String(response.data.status || ''),
+        modified: response.data.modified,
+      };
+    } catch (error: any) {
+      if (error.response?.status === 404) {
+        return null;
+      }
+      this.logger.warn(
+        `No se pudo leer estate_property ${postId}: ${
+          error.response?.data?.message || error.message
+        }`,
+      );
+      return null;
+    }
   }
 
   /**

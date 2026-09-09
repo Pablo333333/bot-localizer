@@ -117,6 +117,19 @@ export function toNumericMeta(v: unknown): string {
   return sanitizeValue(v, true);
 }
 
+/** Lat/lng: admite "39,572" o "39.572" sin convertir coma de miles. */
+export function sanitizeCoordinate(v: unknown): string {
+  if (v === undefined || v === null) return '';
+  let s = String(v).trim().replace(/\s+/g, '');
+  if (!s) return '';
+  if (s.includes(',') && !s.includes('.')) {
+    s = s.replace(',', '.');
+  }
+  const n = Number.parseFloat(s);
+  if (!Number.isFinite(n)) return '';
+  return String(n);
+}
+
 export function resolveOperation(
   cad: RetellCad | undefined,
 ): 'alquiler' | 'venta' | 'traspaso' {
@@ -310,6 +323,20 @@ export function buildEstatePropertyPayload(
   if (state) meta.property_state = state;
   meta.property_country = 'Spain';
 
+  const zip = sanitizeValue(cad?.codigo_postal || cad?.cp || cad?.zip);
+  if (zip) meta.property_zip = zip;
+
+  const lat = sanitizeCoordinate(cad?.latitud || cad?.latitude || cad?.property_latitude);
+  const lng = sanitizeCoordinate(
+    cad?.longitud || cad?.longitude || cad?.property_longitude,
+  );
+  if (lat) meta.property_latitude = lat;
+  if (lng) meta.property_longitude = lng;
+  if (lat && lng) {
+    meta.property_google_view = '1';
+    meta.page_custom_zoom = '16';
+  }
+
   const statusProp = sanitizeValue(cad?.estado) || sanitizeValue(cad?.disponibilidad);
   if (statusProp) meta.property_status = statusProp;
 
@@ -327,8 +354,10 @@ export function buildEstatePropertyPayload(
   if (energy) meta.energy_class = energy;
   if (yearBuilt) meta.property_year = yearBuilt;
 
+  // WPResidence: agent_display_option=agent_agency fuerza el CPT estate_agent (no el autor).
   meta.property_agent = String(agentId);
   meta.property_user = String(authorId);
+  meta.agent_display_option = 'agent_agency';
 
   Object.assign(meta, buildWpResidenceCustomFields(cad));
 

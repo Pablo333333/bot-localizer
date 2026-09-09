@@ -4,6 +4,17 @@ import { JWT } from 'google-auth-library';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/** Flags necesarios para Shared Drives / unidades compartidas. */
+const DRIVE_LIST_OPTS = {
+  supportsAllDrives: true,
+  includeItemsFromAllDrives: true,
+  corpora: 'allDrives' as const,
+};
+
+const DRIVE_FILE_OPTS = {
+  supportsAllDrives: true,
+};
+
 @Injectable()
 export class GoogleDriveService implements OnModuleInit {
   private readonly logger = new Logger(GoogleDriveService.name);
@@ -41,7 +52,9 @@ export class GoogleDriveService implements OnModuleInit {
     });
 
     this.driveClient = drive({ version: 'v3', auth });
-    this.logger.log('Google Drive Service inicializado correctamente');
+    this.logger.log(
+      'Google Drive Service inicializado (supportsAllDrives=true)',
+    );
   }
 
   async getImagesFromFolder(
@@ -62,6 +75,7 @@ export class GoogleDriveService implements OnModuleInit {
         fields: 'files(id, name, mimeType)',
         orderBy: 'name',
         pageSize: 100,
+        ...DRIVE_LIST_OPTS,
       });
 
       const files = response.data.files || [];
@@ -80,7 +94,7 @@ export class GoogleDriveService implements OnModuleInit {
   }
 
   /**
-   * Busca una subcarpeta cuyo nombre contenga el término (p.ej. Call ID).
+   * Busca una subcarpeta cuyo nombre contenga el término (p.ej. Call ID / ID_WP).
    */
   async findSubfolderByName(
     parentFolderId: string,
@@ -96,6 +110,7 @@ export class GoogleDriveService implements OnModuleInit {
         q: `'${parentFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and name contains '${safeTerm}' and trashed = false`,
         fields: 'files(id, name)',
         pageSize: 10,
+        ...DRIVE_LIST_OPTS,
       });
       const folder = response.data.files?.[0];
       return folder?.id || null;
@@ -113,6 +128,7 @@ export class GoogleDriveService implements OnModuleInit {
     const meta = await this.driveClient.files.get({
       fileId,
       fields: 'id, name, mimeType',
+      ...DRIVE_FILE_OPTS,
     });
     return {
       id: meta.data.id || fileId,
@@ -124,7 +140,7 @@ export class GoogleDriveService implements OnModuleInit {
   async downloadImageBuffer(fileId: string): Promise<Buffer> {
     try {
       const response = await this.driveClient.files.get(
-        { fileId, alt: 'media' },
+        { fileId, alt: 'media', ...DRIVE_FILE_OPTS },
         { responseType: 'arraybuffer' },
       );
 
@@ -139,7 +155,6 @@ export class GoogleDriveService implements OnModuleInit {
 
   /**
    * Extrae el fileId de URLs típicas de Google Drive (archivo, no carpeta).
-   * Soporta: /file/d/ID/, open?id=, uc?id=, drive.google.com/uc?export=download&id=
    */
   extractFileIdFromUrl(url: string): string | null {
     if (!url) return null;
@@ -159,7 +174,6 @@ export class GoogleDriveService implements OnModuleInit {
       if (m?.[1]) return m[1];
     }
 
-    // Si ya parece un ID crudo
     if (/^[a-zA-Z0-9_-]{20,}$/.test(trimmed)) {
       return trimmed;
     }
@@ -184,22 +198,25 @@ export class GoogleDriveService implements OnModuleInit {
     return null;
   }
 
-  /** Convierte un link de Drive a URL de descarga directa (útil para logs / fallback HTTP). */
   toDirectDownloadUrl(fileIdOrUrl: string): string {
     const fileId =
       this.extractFileIdFromUrl(fileIdOrUrl) || fileIdOrUrl.trim();
     return `https://drive.google.com/uc?export=download&id=${fileId}`;
   }
 
-  /**
-   * Descarga una imagen desde una URL de Google Drive (o ID) usando la API de Drive.
-   */
   async downloadImageFromUrl(
     driveUrl: string,
-  ): Promise<{ buffer: Buffer; fileId: string; fileName: string; mimeType: string }> {
+  ): Promise<{
+    buffer: Buffer;
+    fileId: string;
+    fileName: string;
+    mimeType: string;
+  }> {
     const fileId = this.extractFileIdFromUrl(driveUrl);
     if (!fileId) {
-      throw new Error(`No se pudo extraer fileId de la URL de Drive: ${driveUrl}`);
+      throw new Error(
+        `No se pudo extraer fileId de la URL de Drive: ${driveUrl}`,
+      );
     }
 
     this.logger.log(`Descargando imagen de Drive por URL. fileId=${fileId}`);
@@ -208,12 +225,9 @@ export class GoogleDriveService implements OnModuleInit {
     let mimeType = 'image/jpeg';
 
     try {
-      const meta = await this.driveClient.files.get({
-        fileId,
-        fields: 'id, name, mimeType',
-      });
-      if (meta.data.name) fileName = meta.data.name;
-      if (meta.data.mimeType) mimeType = meta.data.mimeType;
+      const meta = await this.getFileMetadata(fileId);
+      if (meta.name) fileName = meta.name;
+      if (meta.mimeType) mimeType = meta.mimeType;
     } catch (metaErr: any) {
       this.logger.warn(
         `No se pudo leer metadata de Drive (${fileId}): ${metaErr.message}. Se usará nombre por defecto.`,

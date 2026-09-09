@@ -193,33 +193,78 @@ export class SheetsController {
             'Iniciando flujo WordPress con CAD de llamada (Sheet ya actualizado)...',
           );
           const existingPostId = sheetWrite.wpPostId;
-          const media = await this.propertyMedia.resolveAndUploadPropertyMedia(
-            mergedCad,
-            callId,
-            { postId: existingPostId },
-          );
-          const upserted = await this.wordpressService.upsertPropertyFromCallData(
-            callData,
-            {
-              postId: existingPostId,
-              featuredMediaId: media.featuredMediaId,
-              galleryMediaIds: media.galleryMediaIds,
-              commercialContent,
-            },
-          );
-          if (upserted.created && media.galleryMediaIds.length > 0) {
-            await this.propertyMedia.attachGalleryToProperty(
-              upserted.id,
-              media.galleryMediaIds,
-            );
-          }
-          publicadoWordpress = 'SI';
-          wpPostId = upserted.id;
 
-          const created = upserted;
-          const propertyTitle = `Inmueble ${created.id}`;
-          const propertyUrl = created?.id
-            ? `${this.configService.get('WP_URL')?.replace(/\/$/, '')}/?p=${created.id}`
+          if (existingPostId) {
+            const brief =
+              await this.wordpressService.getEstatePropertyBrief(existingPostId);
+            const protect = !['false', '0', 'no', 'off'].includes(
+              String(
+                this.configService.get('WP_SYNC_PROTECT_PUBLISHED') ?? 'true',
+              )
+                .trim()
+                .toLowerCase(),
+            );
+            if (protect && brief?.status === 'publish') {
+              this.logger.warn(
+                `Webhook Retell: post ${existingPostId} ya publicado — no se sobrescribe WP (Sheet sí se actualizó). Usa Forzar sync WP=SI o ?force=1.`,
+              );
+              publicadoWordpress = 'SI';
+              wpPostId = existingPostId;
+            } else {
+              const media =
+                await this.propertyMedia.resolveAndUploadPropertyMedia(
+                  mergedCad,
+                  callId,
+                  { postId: existingPostId },
+                );
+              const upserted =
+                await this.wordpressService.upsertPropertyFromCallData(
+                  callData,
+                  {
+                    postId: existingPostId,
+                    featuredMediaId: media.featuredMediaId,
+                    galleryMediaIds: media.galleryMediaIds,
+                    commercialContent,
+                    preserveStatus: brief?.status === 'publish',
+                  },
+                );
+              if (media.galleryMediaIds.length > 0) {
+                await this.propertyMedia.attachGalleryToProperty(
+                  upserted.id,
+                  media.galleryMediaIds,
+                );
+              }
+              publicadoWordpress = 'SI';
+              wpPostId = upserted.id;
+            }
+          } else {
+            const media =
+              await this.propertyMedia.resolveAndUploadPropertyMedia(
+                mergedCad,
+                callId,
+              );
+            const upserted =
+              await this.wordpressService.upsertPropertyFromCallData(
+                callData,
+                {
+                  featuredMediaId: media.featuredMediaId,
+                  galleryMediaIds: media.galleryMediaIds,
+                  commercialContent,
+                },
+              );
+            if (media.galleryMediaIds.length > 0) {
+              await this.propertyMedia.attachGalleryToProperty(
+                upserted.id,
+                media.galleryMediaIds,
+              );
+            }
+            publicadoWordpress = 'SI';
+            wpPostId = upserted.id;
+          }
+
+          const propertyTitle = `Inmueble ${wpPostId}`;
+          const propertyUrl = wpPostId
+            ? `${this.configService.get('WP_URL')?.replace(/\/$/, '')}/?p=${wpPostId}`
             : undefined;
 
           const notifyTo =
@@ -229,7 +274,7 @@ export class SheetsController {
             this.configService.get<string>('PROPERTY_PUBLISH_NOTIFY_TO') ||
             'somos@localicer.com';
 
-          if (propertyUrl) {
+          if (propertyUrl && wpPostId) {
             await this.propertyPublishEmail.sendPropertyPublishedEmail({
               to: String(notifyTo),
               propertyTitle,

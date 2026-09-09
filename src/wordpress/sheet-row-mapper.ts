@@ -62,6 +62,18 @@ const SHEET_TO_CAD: ReadonlyArray<{
   { cadKey: 'pueblo_barrio', columns: ['Pueblo/Barrio/distrito'] },
   { cadKey: 'municipio', columns: ['Municipio'] },
   { cadKey: 'provincia', columns: ['Provincia'] },
+  {
+    cadKey: 'latitud',
+    columns: ['Latitud', 'Latitude', 'property_latitude', 'Lat'],
+  },
+  {
+    cadKey: 'longitud',
+    columns: ['Longitud', 'Longitude', 'property_longitude', 'Lng', 'Lon'],
+  },
+  {
+    cadKey: 'codigo_postal',
+    columns: ['Codigo postal', 'Código postal', 'CP', 'Zip', 'property_zip'],
+  },
   { cadKey: 'precio_venta', columns: ['Precio VENTA'], cleanSymbols: true },
   { cadKey: 'precio_traspaso', columns: ['Precio TRASPASO'], cleanSymbols: true },
   {

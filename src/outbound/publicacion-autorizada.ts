@@ -1,5 +1,4 @@
-/** Columna N (1-based 14 → index 0 = 13). */
-export const COL_N_INDEX0 = 13;
+/** Lectura por nombre de cabecera únicamente (nunca por índice de columna). */
 
 export const COL_PUBLICACION_AUTORIZADA = 'Publicacion Autorizada?';
 export const COL_PUBLICACION_AUTORIZADA_ALT = 'Publicación Autorizada?';
@@ -14,7 +13,7 @@ export function normalizeSiToken(raw: unknown): string {
 
 /**
  * Resuelve el header real de "Publicación Autorizada?" en la hoja
- * (exacto, fuzzy por nombre, o columna N / índice 13).
+ * (exacto o fuzzy por nombre — sin fallback a columna fija).
  */
 export function findPublicacionAutorizadaHeader(
   headerValues?: string[],
@@ -37,8 +36,7 @@ export function findPublicacionAutorizadaHeader(
     }
   }
 
-  const colN = headerValues[COL_N_INDEX0];
-  return colN ? colN : null;
+  return null;
 }
 
 /** Valor crudo de la celda (para logs de descarte). */
@@ -70,8 +68,7 @@ export function readPublicacionAutorizadaRaw(
 }
 
 /**
- * Columna N / "Publicacion Autorizada?" debe ser estrictamente SI
- * (ignora mayúsculas, acentos y espacios). Vacío, NO u otro valor → false.
+ * "Publicacion Autorizada?" debe ser estrictamente SI (por nombre de cabecera).
  */
 export function isPublicacionAutorizadaSi(
   row: { get: (header: string) => unknown },

@@ -8,21 +8,21 @@ describe('anuncio-revisado', () => {
     return { get: (h: string) => values[h] };
   }
 
-  it('detecta cabecera exacta y columna J', () => {
+  it('detecta cabecera por nombre (no por índice de columna)', () => {
     expect(
       findAnuncioRevisadoHeader([
-        'A',
-        'B',
-        'C',
-        'D',
-        'E',
-        'F',
-        'G',
-        'H',
-        'I',
+        'Call ID',
+        'Municipio',
         'Anuncio Revisado?',
+        'Otra',
       ]),
     ).toBe('Anuncio Revisado?');
+    // Si Toni mueve la columna, sigue encontrándola por nombre
+    expect(
+      findAnuncioRevisadoHeader(['X', 'Y', 'Anuncio revisado?', 'Z']),
+    ).toBe('Anuncio revisado?');
+    // Sin cabecera por nombre → null (nunca asume columna J)
+    expect(findAnuncioRevisadoHeader(['A', 'B', 'C'])).toBeNull();
   });
 
   it('solo procesa filas con SI', () => {

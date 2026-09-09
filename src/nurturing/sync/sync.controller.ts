@@ -44,16 +44,26 @@ export class SyncController {
 
   /**
    * Reprocesa los estate_property de prueba de Toni (o ?ids=33595,33597).
-   * Usa la fila Localizados con ese ID_WP y el mapeo estructurado WPResidence.
+   * Por defecto NO pisa anuncios ya publicados (protección).
+   * ?force=1 autoriza sobrescritura (o celda Sheet "Forzar sync WP"=SI).
    */
   @Post('toni-test-properties')
-  syncToniTestProperties(@Query('ids') ids?: string) {
+  syncToniTestProperties(
+    @Query('ids') ids?: string,
+    @Query('force') force?: string,
+  ) {
     const parsed = String(ids || '')
       .split(',')
       .map((v) => Number.parseInt(v.trim(), 10))
       .filter((n) => Number.isFinite(n));
+    const forceSync = ['1', 'true', 'yes', 'si', 'sí'].includes(
+      String(force || '')
+        .trim()
+        .toLowerCase(),
+    );
     return this.sheetsReviewedSync.syncWordpressPostsByIds(
       parsed.length ? parsed : undefined,
+      { force: forceSync },
     );
   }
 

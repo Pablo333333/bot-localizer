@@ -1,11 +1,7 @@
-/** Columna K (1-based) = índice 0-based 10. */
-export const COL_PROPIETARIO_CONTACTADO_INDEX0 = 10;
-
-/** Valor escrito en "Propietario contactado?" (columna K) tras publicar en WordPress. */
+/** Valor escrito en "Propietario contactado?" tras publicar en WordPress. */
 export const COL_PROPIETARIO_CONTACTADO = 'Propietario contactado?';
 
 export const WP_PUBLISH_CONTACTED_VALUE = 'SI';
-
 export function buildWpPublishWritebackFields(
   postId: number | string,
 ): Record<string, string | number> {
