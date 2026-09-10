@@ -740,6 +740,31 @@ export class SheetsService implements OnModuleInit {
     await sheet.addRow(rowValue as any);
     this.logger.log(`Fila de TEST agregada correctamente en Localizados para call_id: ${data.call_id}`);
   }
+
+  /**
+   * Lee el texto de una celda A1 en una pestaña concreta (p. ej. Config_X!B2).
+   * Devuelve null si la pestaña no existe o la celda está vacía.
+   */
+  async getCellText(
+    sheetTitle: string,
+    a1: string,
+  ): Promise<string | null> {
+    await this.doc.loadInfo();
+    const sheet = this.doc.sheetsByTitle[sheetTitle];
+    if (!sheet) {
+      this.logger.warn(
+        `[getCellText] Pestaña "${sheetTitle}" no encontrada`,
+      );
+      return null;
+    }
+
+    await sheet.loadCells(a1);
+    const cell = sheet.getCellByA1(a1);
+    const raw = cell.formattedValue ?? cell.value;
+    if (raw === undefined || raw === null) return null;
+    const text = String(raw).trim().replace(/\\n/g, '\n');
+    return text || null;
+  }
 }
 
 interface RetellPayload {

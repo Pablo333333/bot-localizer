@@ -5,7 +5,7 @@ import { XService } from './x.service';
 
 /**
  * X (Twitter) Direct Messages → Localisto.
- * Prompt provisional: env X_DM_SYSTEM_PROMPT o fallback genérico (luego Sheets/DB).
+ * Prompt: Google Sheets Config_X!B2 (caché 60s); env/fallback solo si Sheets vacío.
  */
 @Module({
   controllers: [XController],

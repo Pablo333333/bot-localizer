@@ -98,17 +98,17 @@ export class XController {
   }
 
   /**
-   * Exporta el System Prompt de DMs (Toni: auditar / copiar a Retell).
+   * Exporta el System Prompt de DMs (fuente: Config_X!B2).
    * GET /x/prompt
    */
   @Get('prompt')
-  getPrompt() {
+  async getPrompt() {
     return this.xChat.getSystemPromptForAudit();
   }
 
   /** Health / diagnóstico de credenciales (sin secretos). */
   @Get('health')
-  health() {
+  async health() {
     const creds = this.xService.getCredentials();
     const secretConfigured = Boolean(
       this.config.get<string>('X_API_SECRET') ||
@@ -120,7 +120,7 @@ export class XController {
       credentialsConfigured: Boolean(creds),
       crcSecretConfigured: secretConfigured,
       agentIdConfigured: Boolean(this.config.get<string>('X_AGENT_ID')?.trim()),
-      prompt: this.xChat.getSystemPromptForAudit(),
+      prompt: await this.xChat.getSystemPromptForAudit(),
       webhookUrlHint: 'GET|POST /x/webhook',
     };
   }

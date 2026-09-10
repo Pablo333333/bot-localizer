@@ -2,13 +2,21 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import Retell from 'retell-sdk';
-import { loadLocalistoXDmSystemPrompt } from './x-dm-prompt';
+import { SheetsService } from '../sheets/sheets.service';
+import {
+  X_DM_PROMPT_CELL,
+  X_DM_PROMPT_SHEET,
+  resolveXDmSystemPrompt,
+  type XDmPromptPayload,
+} from './x-dm-prompt';
+
+/** TTL caché del prompt Sheets: Toni ve cambios en ~1 min sin martillar la API. */
+const PROMPT_CACHE_TTL_MS = 60_000;
 
 /**
  * Motor de respuesta para DMs de X:
  * 1) Retell si X_AGENT_ID + RETELL_API_KEY
- * 2) OpenAI + prompt provisional (X_DM_SYSTEM_PROMPT o fallback genérico)
- *    — sin archivo .txt; Toni editará luego vía Sheets/DB.
+ * 2) OpenAI + prompt desde Config_X!B2 (Sheets), env legacy o fallback
  */
 @Injectable()
 export class XChatService {
@@ -20,8 +28,12 @@ export class XChatService {
     string,
     Array<{ role: 'user' | 'assistant'; content: string }>
   >();
+  private promptCache: { at: number; payload: XDmPromptPayload } | null = null;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly sheets: SheetsService,
+  ) {
     const retellKey = this.config.get<string>('RETELL_API_KEY');
     this.retell = retellKey ? new Retell({ apiKey: retellKey }) : null;
     const openaiKey = this.config.get<string>('OPENAI_API_KEY');
@@ -33,11 +45,51 @@ export class XChatService {
     return id || undefined;
   }
 
-  /** Prompt provisional — GET /x/prompt */
-  getSystemPromptForAudit() {
-    return loadLocalistoXDmSystemPrompt(
-      this.config.get<string>('X_DM_SYSTEM_PROMPT'),
-    );
+  /** Prompt actual — GET /x/prompt (lee Sheets con caché corta). */
+  async getSystemPromptForAudit(): Promise<XDmPromptPayload> {
+    const now = Date.now();
+    if (
+      this.promptCache &&
+      now - this.promptCache.at < PROMPT_CACHE_TTL_MS
+    ) {
+      return this.promptCache.payload;
+    }
+
+    let sheetsText: string | null = null;
+    try {
+      sheetsText = await this.sheets.getCellText(
+        X_DM_PROMPT_SHEET,
+        X_DM_PROMPT_CELL,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `No se pudo leer ${X_DM_PROMPT_SHEET}!${X_DM_PROMPT_CELL}: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+    }
+
+    const payload = resolveXDmSystemPrompt({
+      sheetsText,
+      envValue: this.config.get<string>('X_DM_SYSTEM_PROMPT'),
+    });
+
+    this.promptCache = { at: now, payload };
+    if (payload.source.startsWith('sheets:')) {
+      this.logger.log(
+        `X DM prompt cargado desde ${payload.source} (${payload.prompt.length} chars)`,
+      );
+    } else if (payload.source === 'env:X_DM_SYSTEM_PROMPT') {
+      this.logger.warn(
+        `X DM prompt desde env (legacy). Preferible editar ${X_DM_PROMPT_SHEET}!${X_DM_PROMPT_CELL}`,
+      );
+    } else {
+      this.logger.warn(
+        `X DM prompt fallback genérico — rellenar ${X_DM_PROMPT_SHEET}!${X_DM_PROMPT_CELL}`,
+      );
+    }
+
+    return payload;
   }
 
   async generateReply(senderId: string, text: string): Promise<string> {
@@ -74,7 +126,7 @@ export class XChatService {
       );
     }
 
-    const { prompt: system, source } = this.getSystemPromptForAudit();
+    const { prompt: system, source } = await this.getSystemPromptForAudit();
     const history = this.openAiHistory.get(senderId) || [];
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: 'system', content: system },
