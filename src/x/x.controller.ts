@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
+import { isXInboundAutoReplyEnabled } from './x-inbound-enabled';
 import { XChatService } from './x-chat.service';
 import { XService } from './x.service';
 
@@ -114,14 +115,36 @@ export class XController {
       this.config.get<string>('X_API_SECRET') ||
         this.config.get<string>('X_CONSUMER_SECRET'),
     );
+    const agentIdConfigured = Boolean(
+      this.config.get<string>('X_AGENT_ID')?.trim(),
+    );
+    const openaiConfigured = Boolean(
+      this.config.get<string>('OPENAI_API_KEY')?.trim(),
+    );
+    const autoReplyRaw = this.config.get('X_INBOUND_AUTO_REPLY');
+    const autoReplyEnabled = isXInboundAutoReplyEnabled(
+      autoReplyRaw,
+      agentIdConfigured || openaiConfigured,
+    );
     return {
       ok: true,
       service: 'x-dm',
       credentialsConfigured: Boolean(creds),
       crcSecretConfigured: secretConfigured,
-      agentIdConfigured: Boolean(this.config.get<string>('X_AGENT_ID')?.trim()),
+      agentIdConfigured,
+      openaiConfigured,
+      autoReplyEnabled,
+      botUserIdConfigured: Boolean(
+        this.config.get<string>('X_BOT_USER_ID')?.trim(),
+      ),
+      dmEngine:
+        String(this.config.get('X_DM_ENGINE') || '')
+          .trim()
+          .toLowerCase() || (agentIdConfigured ? 'retell-preferred' : 'local'),
       prompt: await this.xChat.getSystemPromptForAudit(),
-      webhookUrlHint: 'GET|POST /x/webhook',
+      webhookUrlHint:
+        'https://bot-localicer-production.up.railway.app/x/webhook',
+      listenMode: 'webhook-only (no polling worker)',
     };
   }
 }
