@@ -22,7 +22,9 @@ import {
   OUTBOUND_HOURS_DESCRIPTION,
   OUTBOUND_TIMEZONE,
   isWithinOutboundCallHours,
+  pickOutboundInterCallDelayMs,
   resolveMaxDailyCalls,
+  resolveOutboundDelayRangeMs,
 } from './outbound-schedule';
 import {
   matchesOutboundTestPhone,
@@ -53,7 +55,6 @@ const COL_C2_TEL = 'Telefono2';
 const COL_C3_ROL = 'Contacto3 por';
 const COL_C3_TEL = 'Telefono3';
 
-const DELAY_BETWEEN_CALLS_MS = 90_000;
 const ANTI_REPEAT_MS = 12 * 60 * 60 * 1000;
 const TIMEZONE = OUTBOUND_TIMEZONE;
 
@@ -70,6 +71,8 @@ export class OutboundService {
   private readonly lastAttemptByPhone = new Map<string, number>();
   private dailyAttemptCount = 0;
   private dailyAttemptDateKey = '';
+  /** Próximo instante permitido para discar (ritmo orgánico 5–10 min). */
+  private nextAllowedDialAt = 0;
 
   constructor(
     private readonly sheetsService: SheetsService,
@@ -86,8 +89,12 @@ export class OutboundService {
       this.configService.get<string>('RETELL_FROM_NUMBER'),
     );
     const mode = this.resolveMode();
+    const delayRange = resolveOutboundDelayRangeMs({
+      minRaw: this.configService.get('OUTBOUND_DELAY_MIN_MS'),
+      maxRaw: this.configService.get('OUTBOUND_DELAY_MAX_MS'),
+    });
     this.logger.log(
-      `[OutboundService] Arranque mode=${JSON.stringify(mode)} horario=${OUTBOUND_HOURS_DESCRIPTION}`,
+      `[OutboundService] Arranque mode=${JSON.stringify(mode)} horario=${OUTBOUND_HOURS_DESCRIPTION} espaciado=${Math.round(delayRange.minMs / 60_000)}–${Math.round(delayRange.maxMs / 60_000)} min entre llamadas`,
     );
     if (OUTBOUND_SANDBOX_WHITELIST_ENABLED) {
       this.logger.warn(OUTBOUND_SANDBOX_WHITELIST_LOG);
@@ -121,7 +128,8 @@ export class OutboundService {
 
   /**
    * Lote Fase 1 cada 5 min. Solo llama L-V 10:00-14:00 y 17:00-20:30 Madrid,
-   * máximo MAX_DAILY_CALLS (30). Fase 3 no entra aquí.
+   * máximo MAX_DAILY_CALLS (30). Máx. 1 llamada por ciclo, espaciadas 5–10 min
+   * al azar (anti-ráfaga). Fase 3 no entra aquí.
    */
   @Cron(CronExpression.EVERY_5_MINUTES)
   async checkPendingCalls(): Promise<void> {
@@ -219,6 +227,15 @@ export class OutboundService {
     if (attemptsToday >= maxDailyCalls) {
       this.logger.log(
         `[OutboundService] Descartado ciclo: Límite alcanzado (${attemptsToday}/${maxDailyCalls}).`,
+      );
+      return;
+    }
+
+    const now = Date.now();
+    if (this.nextAllowedDialAt > now) {
+      const waitSec = Math.ceil((this.nextAllowedDialAt - now) / 1000);
+      this.logger.log(
+        `[OutboundService] Descartado ciclo: ritmo orgánico — próxima llamada en ~${waitSec}s (anti-ráfaga operadoras).`,
       );
       return;
     }
@@ -334,18 +351,13 @@ export class OutboundService {
       const nowLabel = this.formatMadridDateTime(new Date());
 
       try {
+        // Ritmo orgánico: como máximo 1 disparo Retell por ciclo de cron.
+        // El espaciado 5–10 min se aplica vía nextAllowedDialAt (no ráfaga 90s).
         if (callsLaunchedThisRun > 0) {
           this.logger.log(
-            `[OutboundService] Esperando ${DELAY_BETWEEN_CALLS_MS / 1000}s antes del siguiente intento...`,
+            `[OutboundService] Ya se lanzó 1 llamada en este ciclo — resto queda para el siguiente hueco orgánico.`,
           );
-          await this.delay(DELAY_BETWEEN_CALLS_MS);
-
-          if (!this.isWithinBusinessHours()) {
-            this.logger.log(
-              `[OutboundService] Fila ${rowNumber} descartada: Fuera de horario (${OUTBOUND_HOURS_DESCRIPTION}). Deteniendo lote.`,
-            );
-            break;
-          }
+          break;
         }
 
         this.logger.log(
@@ -380,6 +392,7 @@ export class OutboundService {
         this.dailyAttemptCount++;
         remainingToday--;
         callsLaunchedThisRun++;
+        this.scheduleNextOrganicDialSlot();
 
         this.logger.log(
           `[OutboundService] createPhoneCall agent=${this.agentId} fila=${rowNumber} tel=${phone} retell_llm_dynamic_variables (${Object.keys(dynamicVars).length}/${RETELL_OUTBOUND_VARIABLE_KEYS.length}): ${JSON.stringify(dynamicVars)}`,
@@ -394,9 +407,10 @@ export class OutboundService {
         this.logger.log(
           `[OutboundService] Fila ${rowNumber} OK — call_id=${call.call_id} | intentos hoy=${this.dailyAttemptCount}/${maxDailyCalls}`,
         );
+        break;
       } catch (err) {
         this.logger.error(
-          `[OutboundService] Fila ${rowNumber} error Retell (ya marcada SI, no se reintenta): ${(err as Error).message}`,
+          `[OutboundService] Fila ${rowNumber} error Retell: ${(err as Error).message}`,
         );
       }
     }
@@ -685,8 +699,21 @@ export class OutboundService {
     return '+34' + phone;
   }
 
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  /**
+   * Programa el próximo hueco de discado con delay aleatorio 5–10 min
+   * (configurable vía OUTBOUND_DELAY_MIN_MS / OUTBOUND_DELAY_MAX_MS).
+   */
+  private scheduleNextOrganicDialSlot(): void {
+    const { minMs, maxMs } = resolveOutboundDelayRangeMs({
+      minRaw: this.configService.get('OUTBOUND_DELAY_MIN_MS'),
+      maxRaw: this.configService.get('OUTBOUND_DELAY_MAX_MS'),
+    });
+    const delayMs = pickOutboundInterCallDelayMs(minMs, maxMs);
+    this.nextAllowedDialAt = Date.now() + delayMs;
+    const mins = (delayMs / 60_000).toFixed(1);
+    this.logger.log(
+      `[OutboundService] Ritmo orgánico: próxima llamada no antes de ${mins} min (rango ${Math.round(minMs / 60_000)}–${Math.round(maxMs / 60_000)} min).`,
+    );
   }
 
   private getBestPhone(row: any): string | null {

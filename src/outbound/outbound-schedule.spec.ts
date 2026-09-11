@@ -1,7 +1,11 @@
 import {
   DEFAULT_MAX_DAILY_CALLS,
+  DEFAULT_OUTBOUND_DELAY_MAX_MS,
+  DEFAULT_OUTBOUND_DELAY_MIN_MS,
   isWithinOutboundCallHours,
+  pickOutboundInterCallDelayMs,
   resolveMaxDailyCalls,
+  resolveOutboundDelayRangeMs,
 } from './outbound-schedule';
 
 describe('outbound-schedule', () => {
@@ -23,6 +27,39 @@ describe('outbound-schedule', () => {
       expect(resolveMaxDailyCalls('0')).toBe(30);
       expect(resolveMaxDailyCalls('-5')).toBe(30);
       expect(resolveMaxDailyCalls('abc')).toBe(30);
+    });
+  });
+
+  describe('resolveOutboundDelayRangeMs', () => {
+    it('por defecto 5–10 minutos', () => {
+      expect(resolveOutboundDelayRangeMs()).toEqual({
+        minMs: DEFAULT_OUTBOUND_DELAY_MIN_MS,
+        maxMs: DEFAULT_OUTBOUND_DELAY_MAX_MS,
+      });
+      expect(DEFAULT_OUTBOUND_DELAY_MIN_MS).toBe(5 * 60_000);
+      expect(DEFAULT_OUTBOUND_DELAY_MAX_MS).toBe(10 * 60_000);
+    });
+
+    it('lee env y ordena si min > max', () => {
+      expect(
+        resolveOutboundDelayRangeMs({ minRaw: '600000', maxRaw: '300000' }),
+      ).toEqual({ minMs: 300_000, maxMs: 600_000 });
+    });
+  });
+
+  describe('pickOutboundInterCallDelayMs', () => {
+    it('queda dentro del rango inclusive', () => {
+      const samples = Array.from({ length: 40 }, (_, i) =>
+        pickOutboundInterCallDelayMs(300_000, 600_000, () => i / 40),
+      );
+      for (const s of samples) {
+        expect(s).toBeGreaterThanOrEqual(300_000);
+        expect(s).toBeLessThanOrEqual(600_000);
+      }
+    });
+
+    it('si min=max devuelve ese valor', () => {
+      expect(pickOutboundInterCallDelayMs(120_000, 120_000)).toBe(120_000);
     });
   });
 
