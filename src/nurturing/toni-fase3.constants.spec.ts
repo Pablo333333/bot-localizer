@@ -7,6 +7,7 @@ import {
   TEMPLATE_CALL_FOLLOWUP_D10,
   TEMPLATE_CALL_FOLLOWUP_D7,
   TONI_NO_ANSWER_MESSAGE,
+  TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3,
   isFollowupCallTemplate,
   resolveCallPhase,
   resolveRetellFollowupAgentId,
@@ -38,6 +39,12 @@ describe('Toni Fase 3 constants', () => {
     expect(TONI_NO_ANSWER_MESSAGE).toContain('Localisto de Localicer');
     expect(TONI_NO_ANSWER_MESSAGE).toContain(
       'https://api.leadconnectorhq.com/widget/bookings/cita-para-llamada',
+    );
+  });
+
+  it('Content SID SMS seguimiento_lead_fase3', () => {
+    expect(TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3).toBe(
+      'HXc7bd38988127fbe33808deb0785466cf',
     );
   });
 

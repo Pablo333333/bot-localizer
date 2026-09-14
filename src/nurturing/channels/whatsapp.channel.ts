@@ -13,6 +13,14 @@ import {
   NurturingChannel,
 } from './channel.interface';
 
+/**
+ * WhatsApp vía Twilio.
+ *
+ * Business Initiated requiere Content Template aprobado en canal WA.
+ * Mientras `seguimiento_lead_fase3` no esté aprobado para WA, dejar
+ * NURTURING_WHATSAPP_ENABLED≠true (default) para no intentar envíos que fallan
+ * y dejar que el follow-up use SMS.
+ */
 @Injectable()
 export class WhatsappChannel implements NurturingChannel {
   readonly channel = Channel.WHATSAPP;
@@ -27,7 +35,24 @@ export class WhatsappChannel implements NurturingChannel {
     this.client = sid && token ? twilio(sid, token) : null;
   }
 
+  /** Gate explícito: sin true no se intenta WA business-initiated. */
+  isEnabled(): boolean {
+    const v = String(this.config.get('NURTURING_WHATSAPP_ENABLED') ?? '')
+      .trim()
+      .toLowerCase();
+    return v === 'true' || v === '1' || v === 'yes' || v === 'si' || v === 'sí';
+  }
+
   async send(payload: ChannelSendPayload): Promise<ChannelSendResult> {
+    if (!this.isEnabled()) {
+      const error =
+        'WhatsApp nurturing deshabilitado (NURTURING_WHATSAPP_ENABLED≠true; plantilla WA no aprobada)';
+      this.logger.warn(
+        `[WhatsAppService] SKIP lead=${payload.leadId}: ${error}`,
+      );
+      return { success: false, error };
+    }
+
     const bookingLink =
       (payload.templatePayload?.booking_link as string | undefined) ||
       this.config.get<string>('BOOKING_LINK') ||
@@ -73,11 +98,31 @@ export class WhatsappChannel implements NurturingChannel {
     }
 
     try {
-      const message = await this.client.messages.create({
+      const contentSid = (
+        payload.templatePayload?.contentSid as string | undefined
+      )?.trim();
+      const createParams: {
+        from: string;
+        to: string;
+        body?: string;
+        contentSid?: string;
+        contentVariables?: string;
+      } = {
         from: this.fromNumber,
         to,
-        body,
-      });
+      };
+      if (contentSid) {
+        createParams.contentSid = contentSid;
+        const vars = payload.templatePayload?.contentVariables;
+        if (vars != null) {
+          createParams.contentVariables =
+            typeof vars === 'string' ? vars : JSON.stringify(vars);
+        }
+      } else {
+        createParams.body = body;
+      }
+
+      const message = await this.client.messages.create(createParams);
 
       this.logger.log(
         `[WhatsAppService] OK sid=${message.sid} to=${to} e164=${e164} status=${message.status}`,

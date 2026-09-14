@@ -14,6 +14,7 @@ import {
   TEMPLATE_WA_T0,
   TONI_BOOKING_LINK,
   TONI_NO_ANSWER_MESSAGE,
+  TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3,
   resolveCallPhase,
   resolveRetellFollowupAgentId,
   type NurturingCallPhase,
@@ -25,11 +26,18 @@ import {
 import { normalizePhone, formatE164Spain } from '../utils/phone.util';
 import { CallOutcomeClassifier } from './call-outcome.classifier';
 import { planNoContactFollowup, resolveT0MessageChannel } from './no-answer-followup.policy';
+import {
+  buildSeguimientoSmsContentVariables,
+  resolveLeadContactName,
+  resolveLeadPropertyLabel,
+} from './lead-sms-content-vars';
 
 /**
  * Retell outbound / follow-up:
  * - Crea Lead si el teléfono no existe.
- * - NO_ANSWER / POSTPONE (/ busy / voicemail): mensaje T+0 + enroll T+7/T+10 días + PENDIENTE.
+ * - NO_ANSWER / POSTPONE (/ busy / voicemail / user_declined): SMS T+0
+ *   (Content SID seguimiento_lead_fase3) + enroll T+7/T+10 + PENDIENTE.
+ *   WhatsApp solo si NURTURING_WHATSAPP_ENABLED=true y canal lo pide.
  * - HANGUP u otras casuísticas: PENDIENTE, sin cola T+7/T+10.
  * - T+7: SMS si la rellamada no contacta. T+10: ILOCALIZABLE.
  */
@@ -252,12 +260,21 @@ export class NoAnswerFollowupService {
     }
 
     if (plan.sendWhatsApp || plan.sendSms) {
+      const callVars = {
+        ...(callData.retell_llm_dynamic_variables || {}),
+        ...(callData.collected_dynamic_variables || {}),
+        ...(callData.call_analysis?.custom_analysis_data || {}),
+      } as Record<string, unknown>;
       const sent = await this.sendToniBookingMessages(lead, callData.call_id, {
         whatsapp: plan.sendWhatsApp,
         sms: plan.sendSms,
+        /** Si WA falla o está deshabilitado, no perder el hilo: enviar SMS. */
+        smsFallbackIfWhatsappFails: plan.sendWhatsApp && !plan.sendSms,
         waKey: TEMPLATE_WA_T0,
-        smsKey: plan.sendSms && phase === 't0' ? TEMPLATE_SMS_T0 : TEMPLATE_SMS_T7,
+        smsKey:
+          plan.sendSms && phase === 't0' ? TEMPLATE_SMS_T0 : TEMPLATE_SMS_T7,
         summaryPrefix: `${phase}_${outcome}`,
+        callVars,
       });
       whatsappSent = sent.whatsappSent;
       smsSent = sent.smsSent;
@@ -361,12 +378,23 @@ export class NoAnswerFollowupService {
 
     if (!lead) {
       const storedPhone = e164 || phone;
+      const callVars = {
+        ...(callData.retell_llm_dynamic_variables || {}),
+        ...(callData.collected_dynamic_variables || {}),
+        ...(callData.call_analysis?.custom_analysis_data || {}),
+      } as Record<string, unknown>;
+      const nameFromCall =
+        callData.call_analysis?.custom_analysis_data?.nombre_contacto ||
+        resolveLeadContactName({ name: null, metadata: {} }, callVars) ||
+        null;
+      const propiedad = resolveLeadPropertyLabel(
+        { name: null, metadata: {} },
+        callVars,
+      );
       lead = await this.prisma.lead.create({
         data: {
           phone: storedPhone,
-          name:
-            callData.call_analysis?.custom_analysis_data?.nombre_contacto ||
-            null,
+          name: nameFromCall ? String(nameFromCall) : null,
           source: 'outbound',
           status: LeadStatus.NUEVO as any,
           externalRef: callData.call_id ? String(callData.call_id) : null,
@@ -374,6 +402,26 @@ export class NoAnswerFollowupService {
             last_call_id: callData.call_id,
             last_outcome: outcome,
             created_from: 'retell_webhook',
+            ...(propiedad ? { propiedad } : {}),
+            ...(callVars.municipio
+              ? { municipio: String(callVars.municipio) }
+              : {}),
+            ...(callVars.tipo_inmueble
+              ? { tipo_inmueble: String(callVars.tipo_inmueble) }
+              : {}),
+            ...(callVars.nombre_via
+              ? { nombre_via: String(callVars.nombre_via) }
+              : {}),
+            ...(callVars.tipo_via
+              ? { tipo_via: String(callVars.tipo_via) }
+              : {}),
+            ...(callVars['Direccion titulo anuncio']
+              ? {
+                  direccion_titulo_anuncio: String(
+                    callVars['Direccion titulo anuncio'],
+                  ),
+                }
+              : {}),
           },
         },
       });
@@ -417,59 +465,105 @@ export class NoAnswerFollowupService {
   }
 
   private async sendToniBookingMessages(
-    lead: { id: string; phone: string; name: string | null; email: string | null },
+    lead: { id: string; phone: string; name: string | null; email: string | null; metadata?: unknown },
     callId: string | undefined,
     opts: {
       whatsapp: boolean;
       sms: boolean;
+      /** Si true y WA no llega, dispara SMS con Content SID (evita fallo silencioso). */
+      smsFallbackIfWhatsappFails?: boolean;
       waKey?: string;
       smsKey?: string;
       summaryPrefix: string;
+      /** Variables Retell de la llamada (fallback si el lead aún no tiene metadata Sheets). */
+      callVars?: Record<string, unknown> | null;
     },
   ): Promise<{ whatsappSent: boolean; smsSent: boolean }> {
     const bookingLink =
       this.config.get<string>('BOOKING_LINK_CALL') || TONI_BOOKING_LINK;
-    const payload = {
+    // Content SID lo resuelve SmsChannel (default seguimiento_lead_fase3).
+    // {{1}} nombre / {{2}} propiedad — siempre desde lead (+ callVars), nunca literales fijos.
+    const contentVariables = buildSeguimientoSmsContentVariables(
+      lead,
+      opts.callVars,
+    );
+    this.logger.log(
+      `[Followup] Content vars lead=${lead.id} {{1}}=${JSON.stringify(contentVariables['1'])} {{2}}=${JSON.stringify(contentVariables['2'])}`,
+    );
+    if (!contentVariables['1'] || !contentVariables['2']) {
+      this.logger.warn(
+        `[Followup] Content vars incompletas lead=${lead.id} name=${!!contentVariables['1']} propiedad=${!!contentVariables['2']} — se envía igual con lo disponible`,
+      );
+    }
+
+    const payload: Record<string, unknown> = {
       body: TONI_NO_ANSWER_MESSAGE,
       booking_link: bookingLink,
+      contentVariables,
     };
+    const explicitSid =
+      this.config.get<string>('TWILIO_SMS_CONTENT_SID') ??
+      this.config.get<string>('TWILIO_CONTENT_SID_SEGUIMIENTO');
+    if (explicitSid !== undefined && String(explicitSid).trim() !== '') {
+      payload.contentSid = String(explicitSid).trim();
+    } else if (explicitSid === undefined) {
+      payload.contentSid = TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3;
+    }
     const stepRunId = `retell:${callId || 'unknown'}`;
     let whatsappSent = false;
     let smsSent = false;
+    let whatsappFailed = false;
 
     if (opts.whatsapp) {
-      this.logger.log(
-        `[Followup] Disparando WhatsApp T+0 lead=${lead.id} phone=${lead.phone} call=${callId}`,
-      );
-      const result = await this.whatsapp.send({
-        leadId: lead.id,
-        phone: lead.phone,
-        name: lead.name,
-        email: lead.email,
-        templateKey: opts.waKey || TEMPLATE_WA_T0,
-        templatePayload: payload,
-        stepRunId,
-      });
-      whatsappSent = result.success;
-      if (!result.success) {
-        this.logger.error(
-          `[Followup] WhatsApp T+0 FALLÓ lead=${lead.id} phone=${lead.phone}: ${result.error}`,
+      if (!this.whatsapp.isEnabled()) {
+        this.logger.warn(
+          `[Followup] WhatsApp omitido (NURTURING_WHATSAPP_ENABLED≠true) lead=${lead.id} — usará SMS si aplica`,
         );
-      }
-      if (result.success) {
-        await this.prisma.communicationLog.create({
-          data: {
-            leadId: lead.id,
-            channel: PrismaChannel.whatsapp,
-            direction: 'outbound',
-            summary: `${opts.summaryPrefix}:whatsapp`,
-            providerRef: result.providerRef,
-          },
+        whatsappFailed = true;
+      } else {
+        this.logger.log(
+          `[Followup] Disparando WhatsApp lead=${lead.id} phone=${lead.phone} call=${callId}`,
+        );
+        const result = await this.whatsapp.send({
+          leadId: lead.id,
+          phone: lead.phone,
+          name: lead.name,
+          email: lead.email,
+          templateKey: opts.waKey || TEMPLATE_WA_T0,
+          templatePayload: payload,
+          stepRunId,
         });
+        whatsappSent = result.success;
+        whatsappFailed = !result.success;
+        if (!result.success) {
+          this.logger.error(
+            `[Followup] WhatsApp FALLÓ lead=${lead.id} phone=${lead.phone}: ${result.error}`,
+          );
+        }
+        if (result.success) {
+          await this.prisma.communicationLog.create({
+            data: {
+              leadId: lead.id,
+              channel: PrismaChannel.whatsapp,
+              direction: 'outbound',
+              summary: `${opts.summaryPrefix}:whatsapp`,
+              providerRef: result.providerRef,
+            },
+          });
+        }
       }
     }
 
-    if (opts.sms) {
+    const shouldSms =
+      opts.sms ||
+      (opts.smsFallbackIfWhatsappFails === true && whatsappFailed);
+
+    if (shouldSms) {
+      if (!opts.sms && whatsappFailed) {
+        this.logger.log(
+          `[Followup] Fallback SMS (Content SID) tras WA no disponible/fallido lead=${lead.id}`,
+        );
+      }
       const result = await this.sms.send({
         leadId: lead.id,
         phone: lead.phone,
@@ -480,6 +574,11 @@ export class NoAnswerFollowupService {
         stepRunId,
       });
       smsSent = result.success;
+      if (!result.success) {
+        this.logger.error(
+          `[Followup] SMS FALLÓ lead=${lead.id} phone=${lead.phone}: ${result.error}`,
+        );
+      }
       if (result.success) {
         await this.prisma.communicationLog.create({
           data: {

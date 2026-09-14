@@ -19,9 +19,17 @@ export const NURTURING_T10_DELAY_MINUTES = 14_400;
 export const TEMPLATE_CALL_FOLLOWUP_D7 = 'nurturing.call.followup_d7';
 export const TEMPLATE_CALL_FOLLOWUP_D10 = 'nurturing.call.followup_d10';
 export const TEMPLATE_WA_T0 = 'nurturing.whatsapp.no_answer_t0';
-/** Reservado. El SMS de T+0 está omitido a propósito (solo WhatsApp). */
+/** SMS T+0 / seguimiento (Content Template Twilio aprobado para SMS). */
 export const TEMPLATE_SMS_T0 = 'nurturing.sms.no_answer_t0';
 export const TEMPLATE_SMS_T7 = 'nurturing.sms.followup_d7';
+
+/**
+ * Content SID Twilio `seguimiento_lead_fase3`.
+ * Aprobado para SMS; aún NO para WhatsApp Business Initiated.
+ * Override: TWILIO_SMS_CONTENT_SID / TWILIO_CONTENT_SID_SEGUIMIENTO.
+ */
+export const TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3 =
+  'HXc7bd38988127fbe33808deb0785466cf';
 
 export const DEFAULT_TONI_SEQUENCE_NAME =
   'Seguimiento Toni (T+0 WA/SMS → T+7 Call → T+10 Call)';

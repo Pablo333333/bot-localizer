@@ -6,6 +6,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SheetsService } from '../../sheets/sheets.service';
 import { LeadStatus } from '../enums';
 import { normalizePhone, phoneDedupeKey } from '../utils/phone.util';
+import { buildLeadPropertyMetadataFromSheet } from '../followup/lead-sms-content-vars';
 
 const SHEET_NAME = 'Localizados';
 const COL_ESTADO = 'Estado';
@@ -16,8 +17,6 @@ const COL_TELEFONO2 = 'Telefono2';
 const COL_TELEFONO3 = 'Telefono3';
 const COL_EMAIL_PROPIETARIO = 'Email propietario-gestor';
 const COL_EMAIL_AVISOS = 'Email Avisos';
-const COL_MUNICIPIO = 'Municipio';
-const COL_TIPO = 'Tipo de inmueble';
 const COL_LLAMADO_POR = 'Llamado por';
 
 type LeadIndexRow = {
@@ -127,8 +126,7 @@ export class SheetsLeadSyncService {
           row.get(COL_ESTADO)?.toString() || '',
         );
         const metadata: Record<string, unknown> = {
-          municipio: row.get(COL_MUNICIPIO)?.toString()?.trim() || undefined,
-          tipo_inmueble: row.get(COL_TIPO)?.toString()?.trim() || undefined,
+          ...buildLeadPropertyMetadataFromSheet((h) => row.get(h)),
           llamado_por: row.get(COL_LLAMADO_POR)?.toString()?.trim() || undefined,
         };
 

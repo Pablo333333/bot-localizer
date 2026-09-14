@@ -7,18 +7,23 @@ export interface NoContactFollowupPlan {
   markIlocalizable: boolean;
 }
 
-/** Canal T+0: whatsapp (default) | sms (prueba sin plantilla WA) | both */
+/**
+ * Canal T+0:
+ * - sms (default): Content Template aprobado para SMS; WA business aún no.
+ * - whatsapp: solo si NURTURING_WHATSAPP_ENABLED=true y plantilla WA aprobada.
+ * - both: intenta WA y SMS (WA se salta si el gate está off).
+ */
 export type T0MessageChannel = 'whatsapp' | 'sms' | 'both';
 
 export function resolveT0MessageChannel(
   raw?: string | null,
 ): T0MessageChannel {
-  const v = String(raw ?? 'whatsapp')
+  const v = String(raw ?? 'sms')
     .trim()
     .toLowerCase();
-  if (v === 'sms') return 'sms';
+  if (v === 'whatsapp' || v === 'wa') return 'whatsapp';
   if (v === 'both' || v === 'whatsapp+sms' || v === 'wa+sms') return 'both';
-  return 'whatsapp';
+  return 'sms';
 }
 
 /**
@@ -30,7 +35,7 @@ export function planNoContactFollowup(
   phase: NurturingCallPhase,
   opts?: { t0Channel?: T0MessageChannel; enroll?: boolean },
 ): NoContactFollowupPlan {
-  const t0 = opts?.t0Channel ?? 'whatsapp';
+  const t0 = opts?.t0Channel ?? 'sms';
   const enroll = opts?.enroll === true;
 
   switch (phase) {
