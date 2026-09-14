@@ -73,7 +73,8 @@ export class SyncController {
   }
 
   /**
-   * Inspección BullMQ/Prisma: jobs delayed (T+7 / T+10) tras no-contesta.
+   * Inspección BullMQ/Prisma: delayed + waiting/active/failed + stepRuns.
+   * GET /nurturing/sync/queue-jobs
    * GET /nurturing/sync/queue-jobs?phone=644408099
    */
   @Get('queue-jobs')

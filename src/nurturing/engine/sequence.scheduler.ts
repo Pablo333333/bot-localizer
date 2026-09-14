@@ -114,6 +114,8 @@ export class SequenceScheduler {
     phoneFilter: string | null;
     digits: string | null;
     phase3Enabled: boolean;
+    /** Conteos BullMQ (waiting = backlog listo al arrancar worker) */
+    jobCounts: Record<string, number> | null;
     lead: {
       id: string;
       phone: string;
@@ -130,6 +132,13 @@ export class SequenceScheduler {
       data: NurturingStepJobData;
       state: string;
     }>;
+    /** waiting / active / failed (además de delayed) — útil tras downtime */
+    readyOrFailedJobs: Array<{
+      jobId: string | undefined;
+      state: string;
+      data: NurturingStepJobData;
+      failedReason?: string;
+    }>;
     stepRuns: Array<{
       id: string;
       status: string;
@@ -142,6 +151,7 @@ export class SequenceScheduler {
       label: string;
       leadId: string;
       leadPhone: string;
+      overdue: boolean;
     }>;
     errors: {
       redis?: string;
@@ -155,6 +165,7 @@ export class SequenceScheduler {
       prismaLead?: string;
       prismaStepRuns?: string;
     } = {};
+    let jobCounts: Record<string, number> | null = null;
     let delayedJobs: Array<{
       jobId: string | undefined;
       name: string | undefined;
@@ -163,6 +174,12 @@ export class SequenceScheduler {
       processAt: string | null;
       data: NurturingStepJobData;
       state: string;
+    }> = [];
+    let readyOrFailedJobs: Array<{
+      jobId: string | undefined;
+      state: string;
+      data: NurturingStepJobData;
+      failedReason?: string;
     }> = [];
     let lead: {
       id: string;
@@ -182,10 +199,20 @@ export class SequenceScheduler {
       label: string;
       leadId: string;
       leadPhone: string;
+      overdue: boolean;
     }> = [];
 
     // 1) BullMQ / Redis — causa más frecuente de 500 si REDIS_URL falla en runtime
     try {
+      jobCounts = await this.queue.getJobCounts(
+        'waiting',
+        'delayed',
+        'active',
+        'failed',
+        'completed',
+        'paused',
+        'prioritized',
+      );
       const delayed = await this.queue.getJobs(['delayed'], 0, 49);
       delayedJobs = await Promise.all(
         delayed.map(async (job) => {
@@ -206,6 +233,25 @@ export class SequenceScheduler {
             processAt,
             data: job.data,
             state,
+          };
+        }),
+      );
+      const ready = await this.queue.getJobs(
+        ['waiting', 'active', 'failed', 'prioritized'],
+        0,
+        49,
+      );
+      readyOrFailedJobs = await Promise.all(
+        ready.map(async (job) => {
+          const state = await job.getState();
+          return {
+            jobId: job.id,
+            state,
+            data: job.data,
+            failedReason:
+              state === 'failed'
+                ? String(job.failedReason || '').slice(0, 200)
+                : undefined,
           };
         }),
       );
@@ -233,6 +279,9 @@ export class SequenceScheduler {
             metadata: row.metadata,
           };
           delayedJobs = delayedJobs.filter((j) => j.data?.leadId === row.id);
+          readyOrFailedJobs = readyOrFailedJobs.filter(
+            (j) => j.data?.leadId === row.id,
+          );
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -265,6 +314,7 @@ export class SequenceScheduler {
         take: 50,
       });
 
+      const now = Date.now();
       stepRunsMapped = stepRuns.map((r) => {
         const days = Math.round((r.step.delayMinutes / (24 * 60)) * 10) / 10;
         const label =
@@ -286,6 +336,7 @@ export class SequenceScheduler {
           label,
           leadId: r.enrollment.leadId,
           leadPhone: r.enrollment.lead.phone,
+          overdue: r.scheduledFor.getTime() <= now,
         };
       });
     } catch (err) {
@@ -304,9 +355,11 @@ export class SequenceScheduler {
       phase3Enabled: isNurturingPhase3Enabled(
         this.config.get('NURTURING_PHASE3_ENABLED'),
       ),
+      jobCounts,
       lead,
       delayedCount: delayedJobs.length,
       delayedJobs,
+      readyOrFailedJobs,
       stepRuns: stepRunsMapped,
       errors,
     };

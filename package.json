@@ -26,7 +26,9 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "prisma db seed",
-    "test:nurturing": "ts-node -r tsconfig-paths/register scripts/test-nurturing-flow.ts"
+    "test:nurturing": "ts-node -r tsconfig-paths/register scripts/test-nurturing-flow.ts",
+    "audit:nurturing-queue": "ts-node -r tsconfig-paths/register scripts/audit-nurturing-queue.ts",
+    "audit:nurturing-phone": "ts-node -r tsconfig-paths/register scripts/audit-nurturing-phone.ts"
   },
   "engines": {
     "node": ">=20"
