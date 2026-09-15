@@ -2,12 +2,13 @@ import { Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NurturingApiKeyGuard } from '../guards/nurturing-api-key.guard';
 import { SequenceScheduler } from '../engine/sequence.scheduler';
-import {
-  isNurturingPhase3Enabled,
-} from '../phase3-enabled';
+import { EnrollmentsService } from '../enrollments/enrollments.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { isNurturingPhase3Enabled } from '../phase3-enabled';
 import {
   OUTBOUND_SANDBOX_WHITELIST_E164,
   OUTBOUND_SANDBOX_WHITELIST_ENABLED,
+  isAllowedOutboundSandboxPhone,
 } from '../../outbound/outbound-sandbox-whitelist';
 import { SheetsLeadSyncService } from './sheets-lead-sync.service';
 import { SheetsReviewedSyncService } from './sheets-reviewed-sync.service';
@@ -19,6 +20,8 @@ export class SyncController {
     private readonly sheetsSync: SheetsLeadSyncService,
     private readonly sheetsReviewedSync: SheetsReviewedSyncService,
     private readonly sequenceScheduler: SequenceScheduler,
+    private readonly enrollments: EnrollmentsService,
+    private readonly prisma: PrismaService,
     private readonly config: ConfigService,
   ) {}
 
@@ -77,12 +80,28 @@ export class SyncController {
   }
 
   @Get('health')
-  health() {
+  async health() {
     const phase3Raw = this.config.get('NURTURING_PHASE3_ENABLED');
+    const defaultSequence = await this.prisma.sequence.findFirst({
+      where: { isDefault: true, isActive: true },
+      include: { _count: { select: { steps: true } } },
+    });
+    const toniDigits = '644408099';
+    const toniLead = await this.prisma.lead.findFirst({
+      where: { phone: { contains: toniDigits } },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        phone: true,
+        status: true,
+        metadata: true,
+        updatedAt: true,
+      },
+    });
+
     return {
       ok: true,
       service: 'nurturing-sync',
-      /** Lo que el proceso realmente ve tras el redeploy (no el panel de Railway). */
       runtime: {
         phase3Enabled: isNurturingPhase3Enabled(phase3Raw),
         phase3Raw: phase3Raw == null ? null : String(phase3Raw),
@@ -92,16 +111,72 @@ export class SyncController {
         whatsappEnabled: String(
           this.config.get('NURTURING_WHATSAPP_ENABLED') ?? 'false',
         ),
-        outboundAgentIdConfigured: Boolean(
-          this.config.get('RETELL_OUTBOUND_AGENT_ID'),
-        ),
+        outboundAgentId: this.config.get('RETELL_OUTBOUND_AGENT_ID') || null,
         followupAgentId:
           this.config.get('RETELL_AGENT_ID_FOLLOWUP') ||
           'agent_25c341a3bcc06e505b5ed2850c',
         redisUrlConfigured: Boolean(this.config.get('REDIS_URL')),
+        defaultSequence: defaultSequence
+          ? {
+              id: defaultSequence.id,
+              name: defaultSequence.name,
+              steps: defaultSequence._count.steps,
+            }
+          : null,
+        toniLead: toniLead
+          ? {
+              id: toniLead.id,
+              phone: toniLead.phone,
+              status: toniLead.status,
+              updatedAt: toniLead.updatedAt,
+              metadata: toniLead.metadata,
+            }
+          : null,
         checkedAt: new Date().toISOString(),
       },
     };
+  }
+
+  /**
+   * Enroll manual (prueba BullMQ sin webhook). Con sandbox ON solo Toni.
+   * POST /nurturing/sync/enroll-phone?phone=644408099
+   */
+  @Post('enroll-phone')
+  async enrollPhone(@Query('phone') phone?: string) {
+    const raw = String(phone || OUTBOUND_SANDBOX_WHITELIST_E164).trim();
+    if (
+      OUTBOUND_SANDBOX_WHITELIST_ENABLED &&
+      !isAllowedOutboundSandboxPhone(raw)
+    ) {
+      return {
+        ok: false,
+        error: `sandbox activo — solo ${OUTBOUND_SANDBOX_WHITELIST_E164}`,
+      };
+    }
+    const digits = raw.replace(/\D/g, '').slice(-9);
+    let lead = await this.prisma.lead.findFirst({
+      where: { phone: { contains: digits } },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (!lead) {
+      lead = await this.prisma.lead.create({
+        data: {
+          phone: raw.startsWith('+') ? raw : `+34${digits}`,
+          name: 'Toni (enroll manual)',
+          source: 'manual_enroll_test',
+        },
+      });
+    }
+    try {
+      const result = await this.enrollments.enrollLead(lead.id);
+      return { ok: true, leadId: lead.id, ...result };
+    } catch (err) {
+      return {
+        ok: false,
+        leadId: lead.id,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   /**
@@ -114,4 +189,3 @@ export class SyncController {
     return this.sequenceScheduler.inspectScheduledJobs(phone);
   }
 }
-

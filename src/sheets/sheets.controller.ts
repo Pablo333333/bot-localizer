@@ -11,6 +11,12 @@ import {
 } from '../wordpress/wpresidence.constants';
 import { PropertyPublishEmailService } from '../notifications/property-publish-email.service';
 import { NoAnswerFollowupService } from '../nurturing/followup/no-answer-followup.service';
+import { resolveRetellLeadPhone } from '../nurturing/followup/retell-call-phone';
+import {
+  OUTBOUND_SANDBOX_WHITELIST_E164,
+  OUTBOUND_SANDBOX_WHITELIST_ENABLED,
+  isAllowedOutboundSandboxPhone,
+} from '../outbound/outbound-sandbox-whitelist';
 
 @Controller('webhooks')
 export class SheetsController {
@@ -58,6 +64,7 @@ export class SheetsController {
       body.agent_id ||
       body.call?.agent_id;
     const callId = callData.call_id || body.call_id;
+    const leadPhone = resolveRetellLeadPhone(callData, body);
 
     const TARGET_AGENT_ID =
       this.configService.getOrThrow<string>('RETELL_OUTBOUND_AGENT_ID');
@@ -68,39 +75,84 @@ export class SheetsController {
       this.configService.get<string>('RETELL_AGENT_ID_FOLLOWUP') ||
       'agent_25c341a3bcc06e505b5ed2850c';
 
-    if (
-      agentId !== TARGET_AGENT_ID &&
-      agentId !== INBOUND_AGENT_ID &&
-      agentId !== FOLLOWUP_AGENT_ID
-    ) {
+    const agentMatch =
+      agentId === TARGET_AGENT_ID ||
+      agentId === INBOUND_AGENT_ID ||
+      agentId === FOLLOWUP_AGENT_ID;
+
+    /**
+     * Prueba Toni: si el sandbox está ON y el callee es Toni, procesamos nurturing
+     * aunque el agent_id del webhook no coincida (llamada manual / otro agente Retell).
+     */
+    const sandboxToniBypass =
+      OUTBOUND_SANDBOX_WHITELIST_ENABLED &&
+      Boolean(leadPhone) &&
+      isAllowedOutboundSandboxPhone(leadPhone);
+
+    if (!agentMatch && !sandboxToniBypass) {
       this.logger.warn(
-        `Ignorando webhook: Agent ID ${agentId} no coincide con objetivos ` +
-          `(outbound=${TARGET_AGENT_ID} followup=${FOLLOWUP_AGENT_ID} inbound=${INBOUND_AGENT_ID || 'n/a'}). ` +
+        `[WEBHOOK_GATE] SKIP agent_mismatch agent=${agentId} phone=${leadPhone || '(vacío)'} ` +
+          `outbound=${TARGET_AGENT_ID} followup=${FOLLOWUP_AGENT_ID} inbound=${INBOUND_AGENT_ID || 'n/a'} ` +
           `→ sin nurturing / sin enroll BullMQ.`,
       );
       return;
     }
 
+    if (!agentMatch && sandboxToniBypass) {
+      this.logger.warn(
+        `[WEBHOOK_GATE] agent_mismatch PERO sandbox Toni phone=${leadPhone} ` +
+          `agent=${agentId} — se procesa nurturing igual (solo whitelist ${OUTBOUND_SANDBOX_WHITELIST_E164}).`,
+      );
+    }
+
+    const shouldNurture =
+      agentId === TARGET_AGENT_ID ||
+      agentId === FOLLOWUP_AGENT_ID ||
+      sandboxToniBypass;
+
     // Nurturing en call_ended y call_analyzed (idempotente por call_id).
-    if (agentId === TARGET_AGENT_ID || agentId === FOLLOWUP_AGENT_ID) {
+    if (shouldNurture) {
       try {
-        // Asegurar agent_id en callData para resolveCallPhase → t0
         if (!callData.agent_id && agentId) {
           callData.agent_id = agentId;
         }
+        // Para phase t0: si el agent no es el outbound, forzamos el id configurado
+        // cuando el bypass Toni está activo (evita phase=unknown).
+        if (
+          sandboxToniBypass &&
+          callData.agent_id !== TARGET_AGENT_ID &&
+          callData.agent_id !== FOLLOWUP_AGENT_ID
+        ) {
+          callData.agent_id = TARGET_AGENT_ID;
+        }
+        if (!callData.to_number && leadPhone) {
+          callData.to_number = leadPhone;
+        }
+
+        this.logger.log(
+          `[WEBHOOK_GATE] nurturing START event=${eventType} call=${callId} ` +
+            `agent=${callData.agent_id} phone=${leadPhone} reason=${callData.disconnection_reason || callData.call_status || '?'}`,
+        );
+
         const followup =
           await this.noAnswerFollowup.handleOutboundCallAnalyzed(callData, {
             eventType: String(eventType),
           });
         this.logger.log(
-          `Nurturing follow-up (${eventType}): phase=${followup.phase} outcome=${followup.outcome} wa=${followup.whatsappSent} sms=${followup.smsSent} enroll=${followup.enrolled} ilocalizable=${followup.markedIlocalizable} lead=${followup.leadId}`,
+          `[WEBHOOK_GATE] nurturing DONE event=${eventType} phase=${followup.phase} outcome=${followup.outcome} ` +
+            `wa=${followup.whatsappSent} sms=${followup.smsSent} enroll=${followup.enrolled} ` +
+            `ilocalizable=${followup.markedIlocalizable} lead=${followup.leadId}`,
         );
       } catch (followErr: any) {
         this.logger.error(
-          `Nurturing follow-up error: ${followErr.message}`,
+          `[WEBHOOK_GATE] nurturing ERROR: ${followErr.message}`,
           followErr.stack,
         );
       }
+    } else {
+      this.logger.log(
+        `[WEBHOOK_GATE] nurturing omitted (inbound-only agent=${agentId})`,
+      );
     }
 
     // Sheets / WordPress solo con análisis completo

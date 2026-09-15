@@ -53,7 +53,22 @@ export class CallOutcomeClassifier {
       return CallOutcome.POSTPONE;
     }
 
-    // user_hangup → PENDIENTE sin enroll (cuelgue a mitad / corta conversación)
+    // user_hangup / agent_hangup muy corto (<8s) y sin éxito → no hubo conversación real
+    // (Retell a veces manda hangup en vez de dial_no_answer). Enroll como NO_ANSWER.
+    if (this.isHangupReason(reason)) {
+      const shortNoTalk =
+        duration > 0 &&
+        duration < 8_000 &&
+        callData.call_analysis?.call_successful !== true;
+      if (shortNoTalk || callStatus === 'not_connected') {
+        this.logger.log(
+          `hangup corto/no-conectado → NO_ANSWER (enroll). reason=${reason} duration_ms=${duration} status=${callStatus}`,
+        );
+        return CallOutcome.NO_ANSWER;
+      }
+    }
+
+    // user_hangup con conversación → PENDIENTE sin enroll
     if (this.isUserHangupReason(reason)) {
       this.logger.log(
         `user_hangup → HANGUP (PENDIENTE, sin enroll T+7/T+10). call_successful=${callData.call_analysis?.call_successful}`,
@@ -65,7 +80,10 @@ export class CallOutcomeClassifier {
     if (this.isNoAnswerReason(reason) || callStatus === 'not_connected') {
       if (this.isBusyReason(reason)) return CallOutcome.BUSY;
       if (this.isVoicemailReason(reason)) return CallOutcome.VOICEMAIL;
-      if (this.isHangupReason(reason)) return CallOutcome.HANGUP;
+      if (this.isHangupReason(reason)) {
+        // hangup + not_connected ya cubierto arriba; residual → NO_ANSWER
+        return CallOutcome.NO_ANSWER;
+      }
       return CallOutcome.NO_ANSWER;
     }
 

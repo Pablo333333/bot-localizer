@@ -36,6 +36,7 @@ import {
   resolveLeadContactName,
   resolveLeadPropertyLabel,
 } from './lead-sms-content-vars';
+import { resolveRetellLeadPhone } from './retell-call-phone';
 
 /**
  * Retell outbound / follow-up:
@@ -110,9 +111,12 @@ export class NoAnswerFollowupService {
     this.logger.log(
       `[Followup] outcome=${outcome} enrollRetry=${enrollRetry} pendiente=${markPendiente} call=${callData.call_id}`,
     );
-    const phoneRaw = callData.to_number || '';
+    const phoneRaw =
+      resolveRetellLeadPhone(callData) || callData.to_number || '';
     if (!phoneRaw) {
-      this.logger.warn('No to_number on call — skip follow-up');
+      this.logger.warn(
+        '[Followup] No teléfono lead (to_number/from_number) — skip follow-up',
+      );
       return {
         outcome,
         phase: 'unknown',

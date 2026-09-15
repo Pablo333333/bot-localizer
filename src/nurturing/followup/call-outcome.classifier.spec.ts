@@ -4,7 +4,7 @@ import { CallOutcome } from '../enums';
 describe('CallOutcomeClassifier', () => {
   const classifier = new CallOutcomeClassifier();
 
-  it('clasifica NO_ANSWER, BUSY, VOICEMAIL y HANGUP', () => {
+  it('clasifica NO_ANSWER, BUSY, VOICEMAIL y HANGUP largo', () => {
     expect(
       classifier.classify({ disconnection_reason: 'dial_no_answer' }),
     ).toBe(CallOutcome.NO_ANSWER);
@@ -17,9 +17,21 @@ describe('CallOutcomeClassifier', () => {
     expect(
       classifier.classify({
         disconnection_reason: 'user_hangup',
-        duration_ms: 4000,
+        duration_ms: 24_000,
       }),
     ).toBe(CallOutcome.HANGUP);
+  });
+
+  it('hangup corto (<8s) sin éxito → NO_ANSWER (enroll)', () => {
+    expect(
+      classifier.classify({
+        disconnection_reason: 'user_hangup',
+        duration_ms: 4000,
+      }),
+    ).toBe(CallOutcome.NO_ANSWER);
+    expect(
+      classifier.shouldEnrollRetrySequence(CallOutcome.NO_ANSWER),
+    ).toBe(true);
   });
 
   it('NO_ANSWER enrolla; HANGUP solo PENDIENTE sin enroll', () => {
@@ -66,7 +78,16 @@ describe('CallOutcomeClassifier', () => {
     );
   });
 
-  it('user hangup (con espacio) también se reconoce', () => {
+  it('user hangup (con espacio) corto → NO_ANSWER', () => {
+    expect(
+      classifier.classify({
+        disconnection_reason: 'user hangup',
+        duration_ms: 2000,
+      }),
+    ).toBe(CallOutcome.NO_ANSWER);
+  });
+
+  it('user hangup largo sin duration explícita → HANGUP', () => {
     expect(
       classifier.classify({ disconnection_reason: 'user hangup' }),
     ).toBe(CallOutcome.HANGUP);
