@@ -24,6 +24,11 @@ import {
   isNurturingPhase3Enabled,
 } from '../phase3-enabled';
 import { normalizePhone, formatE164Spain } from '../utils/phone.util';
+import {
+  OUTBOUND_SANDBOX_WHITELIST_E164,
+  OUTBOUND_SANDBOX_WHITELIST_ENABLED,
+  isAllowedOutboundSandboxPhone,
+} from '../../outbound/outbound-sandbox-whitelist';
 import { CallOutcomeClassifier } from './call-outcome.classifier';
 import { planNoContactFollowup, resolveT0MessageChannel } from './no-answer-followup.policy';
 import {
@@ -108,6 +113,24 @@ export class NoAnswerFollowupService {
     const phoneRaw = callData.to_number || '';
     if (!phoneRaw) {
       this.logger.warn('No to_number on call — skip follow-up');
+      return {
+        outcome,
+        phase: 'unknown',
+        whatsappSent: false,
+        smsSent: false,
+        enrolled: false,
+        markedIlocalizable: false,
+      };
+    }
+
+    // Prueba Toni: sandbox activo → ignorar SMS/enroll de cualquier otro número.
+    if (
+      OUTBOUND_SANDBOX_WHITELIST_ENABLED &&
+      !isAllowedOutboundSandboxPhone(phoneRaw)
+    ) {
+      this.logger.warn(
+        `[Followup] SKIP sandbox — to=${phoneRaw} (solo ${OUTBOUND_SANDBOX_WHITELIST_E164}) call=${callData.call_id}`,
+      );
       return {
         outcome,
         phase: 'unknown',
