@@ -9,6 +9,10 @@ import {
   NURTURING_PHASE3_DISABLED_LOG,
   isNurturingPhase3Enabled,
 } from '../phase3-enabled';
+import {
+  OUTBOUND_SANDBOX_WHITELIST_E164,
+  OUTBOUND_SANDBOX_WHITELIST_ENABLED,
+} from '../../outbound/outbound-sandbox-whitelist';
 import { NurturingStepJobData, stepRunJobId } from './nurturing-step.job';
 
 @Injectable()
@@ -114,6 +118,12 @@ export class SequenceScheduler {
     phoneFilter: string | null;
     digits: string | null;
     phase3Enabled: boolean;
+    runtime?: {
+      phase3Enabled: boolean;
+      phase3Raw: string | null;
+      sandboxWhitelistEnabled: boolean;
+      sandboxWhitelistE164: string;
+    };
     /** Conteos BullMQ (waiting = backlog listo al arrancar worker) */
     jobCounts: Record<string, number> | null;
     lead: {
@@ -356,6 +366,18 @@ export class SequenceScheduler {
         this.config.get('NURTURING_PHASE3_ENABLED'),
       ),
       jobCounts,
+      /** Eco de runtime: confirma si el proceso cargó NURTURING_PHASE3_ENABLED */
+      runtime: {
+        phase3Enabled: isNurturingPhase3Enabled(
+          this.config.get('NURTURING_PHASE3_ENABLED'),
+        ),
+        phase3Raw:
+          this.config.get('NURTURING_PHASE3_ENABLED') == null
+            ? null
+            : String(this.config.get('NURTURING_PHASE3_ENABLED')),
+        sandboxWhitelistEnabled: OUTBOUND_SANDBOX_WHITELIST_ENABLED,
+        sandboxWhitelistE164: OUTBOUND_SANDBOX_WHITELIST_E164,
+      },
       lead,
       delayedCount: delayedJobs.length,
       delayedJobs,

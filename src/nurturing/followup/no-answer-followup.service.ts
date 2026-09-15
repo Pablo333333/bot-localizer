@@ -189,6 +189,21 @@ export class NoAnswerFollowupService {
       ),
     });
 
+    /**
+     * Enroll T+7/T+10 solo en T+0. Si Retell manda un agent_id que no matchea
+     * RETELL_OUTBOUND_AGENT_ID (prueba manual / typo), phase queda `unknown` y
+     * antes se perdía el enroll pese a no_answer. Con outcome enrollable y sin
+     * template T+7/T+10, tratamos unknown como t0.
+     */
+    const effectivePhase: NurturingCallPhase =
+      phase === 'unknown' && enrollRetry ? 't0' : phase;
+    if (phase !== effectivePhase) {
+      this.logger.warn(
+        `[Followup] phase=${phase}→${effectivePhase} (enrollRetry + agent/template no resuelto). ` +
+          `agent=${callData.agent_id} outboundEnv=${this.config.get('RETELL_OUTBOUND_AGENT_ID')}`,
+      );
+    }
+
     if (this.classifier.shouldMarkClosed(outcome)) {
       await this.leads.updateStatus(lead.id, {
         status: LeadStatus.CERRADO,
@@ -202,18 +217,18 @@ export class NoAnswerFollowupService {
               ...((lead.metadata as object) || {}),
               last_call_id: callData.call_id,
               last_outcome: outcome,
-              last_phase: phase,
+              last_phase: effectivePhase,
               nurturing_handled_call_id: String(callData.call_id),
             },
           },
         });
       }
       this.logger.log(
-        `Lead ${lead.id} cerrado por rechazo explícito (outcome=${outcome} phase=${phase})`,
+        `Lead ${lead.id} cerrado por rechazo explícito (outcome=${outcome} phase=${effectivePhase})`,
       );
       return {
         outcome,
-        phase,
+        phase: effectivePhase,
         whatsappSent: false,
         smsSent: false,
         enrolled: false,
@@ -231,7 +246,7 @@ export class NoAnswerFollowupService {
             ...((lead.metadata as object) || {}),
             last_call_id: callData.call_id,
             last_outcome: outcome,
-            last_phase: phase,
+            last_phase: effectivePhase,
             ...(callData.call_id
               ? { nurturing_handled_call_id: String(callData.call_id) }
               : {}),
@@ -240,7 +255,7 @@ export class NoAnswerFollowupService {
       });
       return {
         outcome,
-        phase,
+        phase: effectivePhase,
         whatsappSent: false,
         smsSent: false,
         enrolled: false,
@@ -256,29 +271,33 @@ export class NoAnswerFollowupService {
     const t0Channel = resolveT0MessageChannel(
       this.config.get('NURTURING_T0_CHANNEL'),
     );
-    const plan = planNoContactFollowup(phase, {
+    const plan = planNoContactFollowup(effectivePhase, {
       t0Channel,
       // Solo no_answer / postpone (y busy/voicemail) enrollan en T+0
-      enroll: enrollRetry && phase === 't0',
+      enroll: enrollRetry && effectivePhase === 't0',
     });
 
     // T+7 SMS / T+10 ilocalizable solo si el outcome sigue siendo no-contacto enrollable
-    if (phase === 't7' && enrollRetry) {
+    if (effectivePhase === 't7' && enrollRetry) {
       plan.sendSms = true;
     }
-    if (phase === 't10' && enrollRetry) {
+    if (effectivePhase === 't10' && enrollRetry) {
       plan.markIlocalizable = true;
     }
-    if (phase === 't7' && !enrollRetry) {
+    if (effectivePhase === 't7' && !enrollRetry) {
       plan.sendSms = false;
     }
-    if (phase === 't10' && !enrollRetry) {
+    if (effectivePhase === 't10' && !enrollRetry) {
       plan.markIlocalizable = false;
     }
 
-    if (phase === 't0') {
+    if (effectivePhase === 't0') {
       this.logger.log(
         `[Followup] T+0 enroll=${plan.enroll} channel=${t0Channel} WA=${plan.sendWhatsApp} SMS=${plan.sendSms} (hangup→PENDIENTE sin cola)`,
+      );
+    } else if (enrollRetry && !plan.enroll) {
+      this.logger.warn(
+        `[Followup] enrollRetry=true pero enroll=false phase=${effectivePhase} (raw=${phase}) — no se encolará BullMQ`,
       );
     }
 
@@ -295,8 +314,10 @@ export class NoAnswerFollowupService {
         smsFallbackIfWhatsappFails: plan.sendWhatsApp && !plan.sendSms,
         waKey: TEMPLATE_WA_T0,
         smsKey:
-          plan.sendSms && phase === 't0' ? TEMPLATE_SMS_T0 : TEMPLATE_SMS_T7,
-        summaryPrefix: `${phase}_${outcome}`,
+          plan.sendSms && effectivePhase === 't0'
+            ? TEMPLATE_SMS_T0
+            : TEMPLATE_SMS_T7,
+        summaryPrefix: `${effectivePhase}_${outcome}`,
         callVars,
       });
       whatsappSent = sent.whatsappSent;
@@ -306,10 +327,10 @@ export class NoAnswerFollowupService {
     if (markPendiente && !plan.markIlocalizable) {
       await this.leads.updateStatus(lead.id, {
         status: LeadStatus.PENDIENTE,
-        reason: `${outcome}:${phase}`,
+        reason: `${outcome}:${effectivePhase}`,
       });
       this.logger.log(
-        `Lead ${lead.id} → PENDIENTE (outcome=${outcome} phase=${phase} enroll=${plan.enroll})`,
+        `Lead ${lead.id} → PENDIENTE (outcome=${outcome} phase=${effectivePhase} enroll=${plan.enroll})`,
       );
     }
 
@@ -327,7 +348,7 @@ export class NoAnswerFollowupService {
           }`,
         );
       }
-    } else if (phase === 't0' && markPendiente) {
+    } else if (effectivePhase === 't0' && markPendiente) {
       this.logger.log(
         `Lead ${lead.id} sin enroll T+7/T+10 (outcome=${outcome} — solo PENDIENTE)`,
       );
@@ -351,7 +372,11 @@ export class NoAnswerFollowupService {
           ...((lead.metadata as object) || {}),
           last_call_id: callData.call_id,
           last_outcome: outcome,
-          last_phase: phase,
+          last_phase: effectivePhase,
+          last_phase_raw: phase,
+          last_enroll_attempted: plan.enroll,
+          last_enrolled: enrolled,
+          last_sms_sent: smsSent,
           ...(callData.call_id
             ? { nurturing_handled_call_id: String(callData.call_id) }
             : {}),
@@ -360,12 +385,12 @@ export class NoAnswerFollowupService {
     });
 
     this.logger.log(
-      `Follow-up lead=${lead.id} phase=${phase} outcome=${outcome} wa=${whatsappSent} sms=${smsSent} enroll=${enrolled} ilocalizable=${markedIlocalizable}`,
+      `Follow-up lead=${lead.id} phase=${effectivePhase} outcome=${outcome} wa=${whatsappSent} sms=${smsSent} enroll=${enrolled} ilocalizable=${markedIlocalizable}`,
     );
 
     return {
       outcome,
-      phase,
+      phase: effectivePhase,
       whatsappSent,
       smsSent,
       enrolled,

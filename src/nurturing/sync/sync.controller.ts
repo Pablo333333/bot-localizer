@@ -1,6 +1,14 @@
 import { Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { NurturingApiKeyGuard } from '../guards/nurturing-api-key.guard';
 import { SequenceScheduler } from '../engine/sequence.scheduler';
+import {
+  isNurturingPhase3Enabled,
+} from '../phase3-enabled';
+import {
+  OUTBOUND_SANDBOX_WHITELIST_E164,
+  OUTBOUND_SANDBOX_WHITELIST_ENABLED,
+} from '../../outbound/outbound-sandbox-whitelist';
 import { SheetsLeadSyncService } from './sheets-lead-sync.service';
 import { SheetsReviewedSyncService } from './sheets-reviewed-sync.service';
 
@@ -11,6 +19,7 @@ export class SyncController {
     private readonly sheetsSync: SheetsLeadSyncService,
     private readonly sheetsReviewedSync: SheetsReviewedSyncService,
     private readonly sequenceScheduler: SequenceScheduler,
+    private readonly config: ConfigService,
   ) {}
 
   @Post('sheets')
@@ -69,7 +78,30 @@ export class SyncController {
 
   @Get('health')
   health() {
-    return { ok: true, service: 'nurturing-sync' };
+    const phase3Raw = this.config.get('NURTURING_PHASE3_ENABLED');
+    return {
+      ok: true,
+      service: 'nurturing-sync',
+      /** Lo que el proceso realmente ve tras el redeploy (no el panel de Railway). */
+      runtime: {
+        phase3Enabled: isNurturingPhase3Enabled(phase3Raw),
+        phase3Raw: phase3Raw == null ? null : String(phase3Raw),
+        sandboxWhitelistEnabled: OUTBOUND_SANDBOX_WHITELIST_ENABLED,
+        sandboxWhitelistE164: OUTBOUND_SANDBOX_WHITELIST_E164,
+        t0Channel: String(this.config.get('NURTURING_T0_CHANNEL') ?? 'sms'),
+        whatsappEnabled: String(
+          this.config.get('NURTURING_WHATSAPP_ENABLED') ?? 'false',
+        ),
+        outboundAgentIdConfigured: Boolean(
+          this.config.get('RETELL_OUTBOUND_AGENT_ID'),
+        ),
+        followupAgentId:
+          this.config.get('RETELL_AGENT_ID_FOLLOWUP') ||
+          'agent_25c341a3bcc06e505b5ed2850c',
+        redisUrlConfigured: Boolean(this.config.get('REDIS_URL')),
+        checkedAt: new Date().toISOString(),
+      },
+    };
   }
 
   /**

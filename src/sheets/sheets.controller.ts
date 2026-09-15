@@ -52,8 +52,12 @@ export class SheetsController {
     }
 
     const callData = (body.call || body) as any;
-    const agentId = callData.agent_id;
-    const callId = callData.call_id;
+    const agentId =
+      callData.agent_id ||
+      callData.agentId ||
+      body.agent_id ||
+      body.call?.agent_id;
+    const callId = callData.call_id || body.call_id;
 
     const TARGET_AGENT_ID =
       this.configService.getOrThrow<string>('RETELL_OUTBOUND_AGENT_ID');
@@ -70,7 +74,9 @@ export class SheetsController {
       agentId !== FOLLOWUP_AGENT_ID
     ) {
       this.logger.warn(
-        `Ignorando webhook: Agent ID ${agentId} no coincide con objetivos.`,
+        `Ignorando webhook: Agent ID ${agentId} no coincide con objetivos ` +
+          `(outbound=${TARGET_AGENT_ID} followup=${FOLLOWUP_AGENT_ID} inbound=${INBOUND_AGENT_ID || 'n/a'}). ` +
+          `→ sin nurturing / sin enroll BullMQ.`,
       );
       return;
     }
@@ -78,6 +84,10 @@ export class SheetsController {
     // Nurturing en call_ended y call_analyzed (idempotente por call_id).
     if (agentId === TARGET_AGENT_ID || agentId === FOLLOWUP_AGENT_ID) {
       try {
+        // Asegurar agent_id en callData para resolveCallPhase → t0
+        if (!callData.agent_id && agentId) {
+          callData.agent_id = agentId;
+        }
         const followup =
           await this.noAnswerFollowup.handleOutboundCallAnalyzed(callData, {
             eventType: String(eventType),
