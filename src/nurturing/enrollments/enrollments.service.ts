@@ -12,11 +12,15 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LeadStatus as AppLeadStatus, TERMINAL_LEAD_STATUSES } from '../enums';
-import { SequenceScheduler } from '../engine/sequence.scheduler';
 import {
   NURTURING_PHASE3_DISABLED_LOG,
   isNurturingPhase3Enabled,
 } from '../phase3-enabled';
+import {
+  PHASE3_LEAD_NOT_ALLOWED_LOG,
+  isPhase3AllowedPhone,
+} from '../phase3-allowlist';
+import { SequenceScheduler } from '../engine/sequence.scheduler';
 
 @Injectable()
 export class EnrollmentsService {
@@ -42,6 +46,18 @@ export class EnrollmentsService {
     const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
     if (!lead) {
       throw new NotFoundException(`Lead ${leadId} not found`);
+    }
+
+    if (
+      !isPhase3AllowedPhone(
+        lead.phone,
+        this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+      )
+    ) {
+      this.logger.warn(
+        `${PHASE3_LEAD_NOT_ALLOWED_LOG} lead=${leadId} phone=${lead.phone}`,
+      );
+      throw new BadRequestException(PHASE3_LEAD_NOT_ALLOWED_LOG);
     }
 
     if (TERMINAL_LEAD_STATUSES.has(lead.status as AppLeadStatus)) {

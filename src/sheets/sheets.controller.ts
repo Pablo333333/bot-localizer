@@ -13,10 +13,9 @@ import { PropertyPublishEmailService } from '../notifications/property-publish-e
 import { NoAnswerFollowupService } from '../nurturing/followup/no-answer-followup.service';
 import { resolveRetellLeadPhone } from '../nurturing/followup/retell-call-phone';
 import {
-  OUTBOUND_SANDBOX_WHITELIST_E164,
-  OUTBOUND_SANDBOX_WHITELIST_ENABLED,
-  isAllowedOutboundSandboxPhone,
-} from '../outbound/outbound-sandbox-whitelist';
+  PHASE3_TONI_PHONE_E164,
+  isPhase3AllowedPhone,
+} from '../nurturing/phase3-allowlist';
 
 @Controller('webhooks')
 export class SheetsController {
@@ -80,16 +79,15 @@ export class SheetsController {
       agentId === INBOUND_AGENT_ID ||
       agentId === FOLLOWUP_AGENT_ID;
 
-    /**
-     * Prueba Toni: si el sandbox está ON y el callee es Toni, procesamos nurturing
-     * aunque el agent_id del webhook no coincida (llamada manual / otro agente Retell).
-     */
-    const sandboxToniBypass =
-      OUTBOUND_SANDBOX_WHITELIST_ENABLED &&
+    /** Fase 3 solo Toni: nurturing aunque agent_id no matchee (llamada manual). */
+    const phase3Toni =
       Boolean(leadPhone) &&
-      isAllowedOutboundSandboxPhone(leadPhone);
+      isPhase3AllowedPhone(
+        leadPhone,
+        this.configService.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+      );
 
-    if (!agentMatch && !sandboxToniBypass) {
+    if (!agentMatch && !phase3Toni) {
       this.logger.warn(
         `[WEBHOOK_GATE] SKIP agent_mismatch agent=${agentId} phone=${leadPhone || '(vacío)'} ` +
           `outbound=${TARGET_AGENT_ID} followup=${FOLLOWUP_AGENT_ID} inbound=${INBOUND_AGENT_ID || 'n/a'} ` +
@@ -98,28 +96,27 @@ export class SheetsController {
       return;
     }
 
-    if (!agentMatch && sandboxToniBypass) {
+    if (!agentMatch && phase3Toni) {
       this.logger.warn(
-        `[WEBHOOK_GATE] agent_mismatch PERO sandbox Toni phone=${leadPhone} ` +
-          `agent=${agentId} — se procesa nurturing igual (solo whitelist ${OUTBOUND_SANDBOX_WHITELIST_E164}).`,
+        `[WEBHOOK_GATE] agent_mismatch PERO Fase3 Toni phone=${leadPhone} ` +
+          `agent=${agentId} — nurturing permitido (allowlist ${PHASE3_TONI_PHONE_E164}).`,
       );
     }
 
     const shouldNurture =
       agentId === TARGET_AGENT_ID ||
       agentId === FOLLOWUP_AGENT_ID ||
-      sandboxToniBypass;
+      phase3Toni;
 
     // Nurturing en call_ended y call_analyzed (idempotente por call_id).
+    // Internamente NoAnswerFollowupService vuelve a filtrar allowlist Toni.
     if (shouldNurture) {
       try {
         if (!callData.agent_id && agentId) {
           callData.agent_id = agentId;
         }
-        // Para phase t0: si el agent no es el outbound, forzamos el id configurado
-        // cuando el bypass Toni está activo (evita phase=unknown).
         if (
-          sandboxToniBypass &&
+          phase3Toni &&
           callData.agent_id !== TARGET_AGENT_ID &&
           callData.agent_id !== FOLLOWUP_AGENT_ID
         ) {

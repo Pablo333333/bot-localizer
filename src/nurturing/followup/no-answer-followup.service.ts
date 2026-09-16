@@ -23,6 +23,11 @@ import {
   NURTURING_PHASE3_DISABLED_LOG,
   isNurturingPhase3Enabled,
 } from '../phase3-enabled';
+import {
+  PHASE3_LEAD_NOT_ALLOWED_LOG,
+  PHASE3_TONI_PHONE_E164,
+  isPhase3AllowedPhone,
+} from '../phase3-allowlist';
 import { normalizePhone, formatE164Spain } from '../utils/phone.util';
 import {
   OUTBOUND_SANDBOX_WHITELIST_E164,
@@ -127,7 +132,27 @@ export class NoAnswerFollowupService {
       };
     }
 
-    // Prueba Toni: sandbox activo → ignorar SMS/enroll de cualquier otro número.
+    // Fase 3 solo Toni (allowlist). Resto → solo Fase 1, sin SMS/enroll/cola.
+    if (
+      !isPhase3AllowedPhone(
+        phoneRaw,
+        this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+      )
+    ) {
+      this.logger.log(
+        `${PHASE3_LEAD_NOT_ALLOWED_LOG} to=${phoneRaw} call=${callData.call_id} (allow=${PHASE3_TONI_PHONE_E164})`,
+      );
+      return {
+        outcome,
+        phase: 'unknown',
+        whatsappSent: false,
+        smsSent: false,
+        enrolled: false,
+        markedIlocalizable: false,
+      };
+    }
+
+    // Sandbox Retell (si activo): refuerzo adicional
     if (
       OUTBOUND_SANDBOX_WHITELIST_ENABLED &&
       !isAllowedOutboundSandboxPhone(phoneRaw)

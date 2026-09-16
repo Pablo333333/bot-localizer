@@ -149,8 +149,8 @@ export class OutboundService {
         `[OutboundService] Fase 3 nurturing OFF — lote Solo Fase 1 (sin WA/enroll T+7/T+10). cupo=${mode.maxDailyCalls}`,
       );
     } else {
-      this.logger.warn(
-        '[OutboundService] NURTURING_PHASE3_ENABLED=true — el webhook SÍ puede enrollar tras no_answer. Para lote masivo Fase 1, ponerlo en false.',
+      this.logger.log(
+        `[OutboundService] Fase 1 lote=${mode.maxDailyCalls}/día; Fase 3 master ON pero solo allowlist Toni (resto sin enroll T+7/T+10)`,
       );
     }
 

@@ -2,10 +2,12 @@
  * Fase 1 — Outbound T+0 (llamadas Retell desde pestaña Localizados).
  * Independiente de Fase 3 (nurturing WA / enroll T+7/T+10).
  *
- * Producción:
- *   OUTBOUND_CALLS_ENABLED=true
- *   NURTURING_PHASE3_ENABLED=false   ← nurturing masivo off
- *   OUTBOUND_TEST_PHONE_ONLY=        ← vacío (números reales del Sheet)
+ * Producción (en paralelo):
+ *   OUTBOUND_CALLS_ENABLED=true      ← lote Fase 1 (30/día) a todo el Sheet
+ *   NURTURING_PHASE3_ENABLED=true    ← master; código limita a Toni (allowlist)
+ *   NURTURING_PHASE3_PHONE_ALLOWLIST= ← vacío = solo +34644408099
+ *   OUTBOUND_TEST_PHONE_ONLY=        ← vacío
+ *   OUTBOUND_SANDBOX_WHITELIST_ENABLED=false en código
  *   MAX_DAILY_CALLS=30
  *   Horario: L-V 10:00-14:00 y 17:00-20:30 Europe/Madrid
  *

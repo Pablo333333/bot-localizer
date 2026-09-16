@@ -7,48 +7,30 @@ import {
 } from './outbound-sandbox-whitelist';
 
 describe('outbound sandbox whitelist', () => {
-  it('PRUEBA: whitelist ACTIVA — solo Toni (+34644408099)', () => {
-    expect(OUTBOUND_SANDBOX_WHITELIST_ENABLED).toBe(true);
+  it('producción: whitelist OFF — lote Fase 1 a números reales', () => {
+    expect(OUTBOUND_SANDBOX_WHITELIST_ENABLED).toBe(false);
     expect(OUTBOUND_SANDBOX_WHITELIST_E164).toBe('+34644408099');
   });
 
-  it('permite solo el número de Toni (variantes de formato)', () => {
+  it('con sandbox off permite cualquier número (incl. no-Toni)', () => {
+    expect(isAllowedOutboundSandboxPhone('+34611111111')).toBe(true);
+    expect(isAllowedOutboundSandboxPhone('+34971122334')).toBe(true);
     expect(isAllowedOutboundSandboxPhone('+34644408099')).toBe(true);
-    expect(isAllowedOutboundSandboxPhone('+34 644 408 099')).toBe(true);
-    expect(isAllowedOutboundSandboxPhone('644408099')).toBe(true);
-    expect(isAllowedOutboundSandboxPhone('34644408099')).toBe(true);
+    expect(guardOutboundRetellCall('+34600000000')).toEqual({ allowed: true });
   });
 
-  it('bloquea cualquier otro lead', () => {
-    expect(isAllowedOutboundSandboxPhone('+34611111111')).toBe(false);
-    expect(isAllowedOutboundSandboxPhone('+34971122334')).toBe(false);
-    expect(guardOutboundRetellCall('+34600000000')).toEqual({
-      allowed: false,
-      skipCode: 'skipped_sandbox_whitelist',
-    });
-  });
-
-  it('safeCreatePhoneCall NO dispara Retell a números fuera de whitelist', async () => {
+  it('safeCreatePhoneCall dispara Retell a números reales cuando el sandbox está off', async () => {
     const createPhoneCall = jest.fn().mockResolvedValue({ call_id: 'call_ok' });
     const retell = { call: { createPhoneCall } };
 
-    const blocked = await safeCreatePhoneCall(retell, {
+    const result = await safeCreatePhoneCall(retell, {
       from_number: '+34871075112',
       to_number: '+34611111111',
       override_agent_id: 'agent_test',
     });
-    expect(blocked).toEqual({
-      skipped: true,
-      skipCode: 'skipped_sandbox_whitelist',
-    });
-    expect(createPhoneCall).not.toHaveBeenCalled();
 
-    const allowed = await safeCreatePhoneCall(retell, {
-      from_number: '+34871075112',
-      to_number: '+34644408099',
-      override_agent_id: 'agent_test',
-    });
-    expect(allowed).toEqual({ skipped: false, call: { call_id: 'call_ok' } });
+    expect(result).toEqual({ skipped: false, call: { call_id: 'call_ok' } });
     expect(createPhoneCall).toHaveBeenCalledTimes(1);
+    expect(createPhoneCall.mock.calls[0][0].to_number).toBe('+34611111111');
   });
 });

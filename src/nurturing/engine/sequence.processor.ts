@@ -16,6 +16,10 @@ import {
   NURTURING_PHASE3_DISABLED_LOG,
   isNurturingPhase3Enabled,
 } from '../phase3-enabled';
+import {
+  PHASE3_LEAD_NOT_ALLOWED_LOG,
+  isPhase3AllowedPhone,
+} from '../phase3-allowlist';
 import { NurturingStepJobData } from './nurturing-step.job';
 
 @Processor(NURTURING_STEPS_QUEUE)
@@ -68,6 +72,20 @@ export class SequenceProcessor extends WorkerHost {
 
     const { enrollment } = stepRun;
     const lead = enrollment.lead;
+
+    if (
+      !isPhase3AllowedPhone(
+        lead.phone,
+        this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+      )
+    ) {
+      this.logger.warn(
+        `${PHASE3_LEAD_NOT_ALLOWED_LOG} — skip stepRun=${stepRunId} phone=${lead.phone}`,
+      );
+      await this.markSkipped(stepRunId, 'phase3_allowlist');
+      await this.maybeCompleteEnrollment(enrollmentId);
+      return { status: 'skipped' };
+    }
 
     if (enrollment.status !== EnrollmentStatus.active) {
       await this.markSkipped(stepRunId, `enrollment_${enrollment.status}`);

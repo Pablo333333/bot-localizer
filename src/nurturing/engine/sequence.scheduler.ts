@@ -10,6 +10,12 @@ import {
   isNurturingPhase3Enabled,
 } from '../phase3-enabled';
 import {
+  PHASE3_LEAD_NOT_ALLOWED_LOG,
+  isPhase3AllowedPhone,
+  resolvePhase3PhoneAllowlist,
+  PHASE3_TONI_PHONE_E164,
+} from '../phase3-allowlist';
+import {
   OUTBOUND_SANDBOX_WHITELIST_E164,
   OUTBOUND_SANDBOX_WHITELIST_ENABLED,
 } from '../../outbound/outbound-sandbox-whitelist';
@@ -38,6 +44,20 @@ export class SequenceScheduler {
       !isNurturingPhase3Enabled(this.config.get('NURTURING_PHASE3_ENABLED'))
     ) {
       this.logger.log(NURTURING_PHASE3_DISABLED_LOG);
+      return;
+    }
+
+    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
+    if (
+      !lead ||
+      !isPhase3AllowedPhone(
+        lead.phone,
+        this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+      )
+    ) {
+      this.logger.warn(
+        `${PHASE3_LEAD_NOT_ALLOWED_LOG} — no se encola BullMQ enrollment=${enrollmentId} lead=${leadId} phone=${lead?.phone ?? '?'}`,
+      );
       return;
     }
 
@@ -121,6 +141,8 @@ export class SequenceScheduler {
     runtime?: {
       phase3Enabled: boolean;
       phase3Raw: string | null;
+      phase3PhoneAllowlist: string[];
+      phase3ToniOnlyDefault: string;
       sandboxWhitelistEnabled: boolean;
       sandboxWhitelistE164: string;
     };
@@ -375,6 +397,10 @@ export class SequenceScheduler {
           this.config.get('NURTURING_PHASE3_ENABLED') == null
             ? null
             : String(this.config.get('NURTURING_PHASE3_ENABLED')),
+        phase3PhoneAllowlist: resolvePhase3PhoneAllowlist(
+          this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+        ),
+        phase3ToniOnlyDefault: PHASE3_TONI_PHONE_E164,
         sandboxWhitelistEnabled: OUTBOUND_SANDBOX_WHITELIST_ENABLED,
         sandboxWhitelistE164: OUTBOUND_SANDBOX_WHITELIST_E164,
       },

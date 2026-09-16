@@ -6,9 +6,13 @@ import { EnrollmentsService } from '../enrollments/enrollments.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { isNurturingPhase3Enabled } from '../phase3-enabled';
 import {
+  PHASE3_TONI_PHONE_E164,
+  isPhase3AllowedPhone,
+  resolvePhase3PhoneAllowlist,
+} from '../phase3-allowlist';
+import {
   OUTBOUND_SANDBOX_WHITELIST_E164,
   OUTBOUND_SANDBOX_WHITELIST_ENABLED,
-  isAllowedOutboundSandboxPhone,
 } from '../../outbound/outbound-sandbox-whitelist';
 import { SheetsLeadSyncService } from './sheets-lead-sync.service';
 import { SheetsReviewedSyncService } from './sheets-reviewed-sync.service';
@@ -105,6 +109,10 @@ export class SyncController {
       runtime: {
         phase3Enabled: isNurturingPhase3Enabled(phase3Raw),
         phase3Raw: phase3Raw == null ? null : String(phase3Raw),
+        phase3PhoneAllowlist: resolvePhase3PhoneAllowlist(
+          this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+        ),
+        phase3ToniOnlyDefault: PHASE3_TONI_PHONE_E164,
         sandboxWhitelistEnabled: OUTBOUND_SANDBOX_WHITELIST_ENABLED,
         sandboxWhitelistE164: OUTBOUND_SANDBOX_WHITELIST_E164,
         t0Channel: String(this.config.get('NURTURING_T0_CHANNEL') ?? 'sms'),
@@ -138,19 +146,21 @@ export class SyncController {
   }
 
   /**
-   * Enroll manual (prueba BullMQ sin webhook). Con sandbox ON solo Toni.
+   * Enroll manual Fase 3 — solo teléfonos de la allowlist (Toni por defecto).
    * POST /nurturing/sync/enroll-phone?phone=644408099
    */
   @Post('enroll-phone')
   async enrollPhone(@Query('phone') phone?: string) {
-    const raw = String(phone || OUTBOUND_SANDBOX_WHITELIST_E164).trim();
+    const raw = String(phone || PHASE3_TONI_PHONE_E164).trim();
     if (
-      OUTBOUND_SANDBOX_WHITELIST_ENABLED &&
-      !isAllowedOutboundSandboxPhone(raw)
+      !isPhase3AllowedPhone(
+        raw,
+        this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+      )
     ) {
       return {
         ok: false,
-        error: `sandbox activo — solo ${OUTBOUND_SANDBOX_WHITELIST_E164}`,
+        error: `Fase 3 solo allowlist (default Toni ${PHASE3_TONI_PHONE_E164})`,
       };
     }
     const digits = raw.replace(/\D/g, '').slice(-9);

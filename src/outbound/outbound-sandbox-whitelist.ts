@@ -5,10 +5,10 @@ import { matchesOutboundTestPhone } from './outbound-test-phone';
  * OUTBOUND_SANDBOX_WHITELIST_E164, da igual lo que haya en Sheets/DB.
  * También filtra follow-up Fase 3 (SMS/enroll) vía isAllowedOutboundSandboxPhone.
  *
- * PRUEBA HOY: true — únicamente +34 644 408 099.
- * Tras la prueba: volver a false (producción / lote real).
+ * Producción: false — Fase 1 lote diario (30) a números reales del Sheet.
+ * Fase 3 (T+7/T+10 de Toni u otros enrollados) sigue vía NURTURING_PHASE3_ENABLED.
  */
-export const OUTBOUND_SANDBOX_WHITELIST_ENABLED = true;
+export const OUTBOUND_SANDBOX_WHITELIST_ENABLED = false;
 
 /** Número de prueba Toni (E.164). También acepta 644408099 / +34 644 408 099. */
 export const OUTBOUND_SANDBOX_WHITELIST_E164 = '+34644408099';
