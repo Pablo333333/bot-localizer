@@ -13,6 +13,8 @@ import {
 } from '../../outbound/outbound-sandbox-whitelist';
 import { Channel } from '../enums';
 import {
+  TEMPLATE_CALL_FOLLOWUP_D10,
+  TEMPLATE_CALL_FOLLOWUP_D7,
   isFollowupCallTemplate,
   resolveRetellFollowupAgentId,
   resolveRetellFromNumber,
@@ -103,11 +105,19 @@ export class CallChannel implements NurturingChannel {
     }
 
     try {
+      const nurturingPhase =
+        payload.templateKey === TEMPLATE_CALL_FOLLOWUP_D10
+          ? 't10'
+          : payload.templateKey === TEMPLATE_CALL_FOLLOWUP_D7
+            ? 't7'
+            : 't0';
+
       const dynamicVars: Record<string, string> = {
         nombre: payload.name || '',
         lead_id: payload.leadId,
         step_run_id: payload.stepRunId,
         template_key: payload.templateKey,
+        nurturing_phase: nurturingPhase,
         summary:
           (payload.templatePayload?.summary as string | undefined) ||
           'Llamada de seguimiento nurturing',
@@ -119,6 +129,9 @@ export class CallChannel implements NurturingChannel {
           if (v != null) dynamicVars[k] = String(v);
         }
       }
+      // No permitir que extras borren la fase/template canónicos del step.
+      dynamicVars.template_key = payload.templateKey;
+      dynamicVars.nurturing_phase = nurturingPhase;
 
       const guarded = await safeCreatePhoneCall(
         this.retell,

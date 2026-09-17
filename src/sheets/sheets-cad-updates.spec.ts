@@ -96,4 +96,25 @@ describe('buildCadPropertyUpdates', () => {
       'Información adicional': 'Tiene terraza trasera',
     });
   });
+
+  it('no escribe pipeline de lead (pendiente/ilocalizable) en columna Estado del inmueble', () => {
+    const updates = buildCadPropertyUpdates(
+      { estado: 'pendiente', precio_alquiler: '2000' },
+      getExisting,
+    );
+    expect(updates).not.toHaveProperty('Estado');
+    expect(updates['Precio ALQUILER/mes']).toBe('2000');
+  });
+
+  it('escribe nombre de contacto sin target_contact y URL imagen', () => {
+    const updates = buildCadPropertyUpdates(
+      {
+        nombre_contacto: 'María López',
+        url_imagen: 'https://drive.google.com/file/d/abc123/view',
+      },
+      () => undefined,
+    );
+    expect(updates['Nombre contacto1']).toBe('María López');
+    expect(updates['URL imagen']).toContain('drive.google.com');
+  });
 });

@@ -17,7 +17,7 @@ import {
 } from '../phase3-allowlist';
 import {
   OUTBOUND_SANDBOX_WHITELIST_E164,
-  OUTBOUND_SANDBOX_WHITELIST_ENABLED,
+  isOutboundSandboxWhitelistEnabled,
 } from '../../outbound/outbound-sandbox-whitelist';
 import { NurturingStepJobData, stepRunJobId } from './nurturing-step.job';
 
@@ -401,7 +401,9 @@ export class SequenceScheduler {
           this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
         ),
         phase3ToniOnlyDefault: PHASE3_TONI_PHONE_E164,
-        sandboxWhitelistEnabled: OUTBOUND_SANDBOX_WHITELIST_ENABLED,
+        sandboxWhitelistEnabled: isOutboundSandboxWhitelistEnabled(
+          this.config.get('OUTBOUND_SANDBOX_WHITELIST_ENABLED'),
+        ),
         sandboxWhitelistE164: OUTBOUND_SANDBOX_WHITELIST_E164,
       },
       lead,

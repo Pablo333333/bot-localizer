@@ -160,10 +160,10 @@ export class SheetsController {
       return;
     }
 
-    const cad = callData.call_analysis?.custom_analysis_data;
+    const cad = this.mergeCallCadSources(callData);
     const callSummary = callData.call_analysis?.call_summary || '';
 
-    if (cad) {
+    if (cad && Object.keys(cad).length > 0) {
       this.logger.log(
         `[IA Data Extraction] Campos detectados para Call ID ${callId}:`,
       );
@@ -172,7 +172,7 @@ export class SheetsController {
       });
     } else {
       this.logger.warn(
-        `[IA Data Extraction] No se detectó custom_analysis_data para Call ID ${callId}`,
+        `[IA Data Extraction] No se detectó CAD (custom_analysis / collected / llm vars) para Call ID ${callId}`,
       );
     }
 
@@ -367,5 +367,26 @@ export class SheetsController {
         error.stack,
       );
     }
+  }
+
+  /**
+   * Une todas las fuentes Retell donde Localisto deja correcciones:
+   * custom_analysis_data + collected_dynamic_variables + retell_llm_dynamic_variables.
+   * El análisis custom gana sobre collected; collected gana sobre llm iniciales.
+   */
+  private mergeCallCadSources(callData: Record<string, any>): Record<string, any> {
+    const llm = callData.retell_llm_dynamic_variables || {};
+    const collected = callData.collected_dynamic_variables || {};
+    const analysis = callData.call_analysis?.custom_analysis_data || {};
+    const merged = {
+      ...llm,
+      ...collected,
+      ...analysis,
+    };
+    if (!callData.call_analysis) {
+      callData.call_analysis = {};
+    }
+    callData.call_analysis.custom_analysis_data = merged;
+    return merged;
   }
 }

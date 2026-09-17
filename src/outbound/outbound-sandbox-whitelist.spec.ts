@@ -3,13 +3,33 @@ import {
   OUTBOUND_SANDBOX_WHITELIST_ENABLED,
   guardOutboundRetellCall,
   isAllowedOutboundSandboxPhone,
+  isOutboundSandboxWhitelistEnabled,
   safeCreatePhoneCall,
 } from './outbound-sandbox-whitelist';
 
 describe('outbound sandbox whitelist', () => {
+  const prev = process.env.OUTBOUND_SANDBOX_WHITELIST_ENABLED;
+
+  afterEach(() => {
+    if (prev === undefined) {
+      delete process.env.OUTBOUND_SANDBOX_WHITELIST_ENABLED;
+    } else {
+      process.env.OUTBOUND_SANDBOX_WHITELIST_ENABLED = prev;
+    }
+  });
+
   it('producción: whitelist OFF — lote Fase 1 a números reales', () => {
+    delete process.env.OUTBOUND_SANDBOX_WHITELIST_ENABLED;
     expect(OUTBOUND_SANDBOX_WHITELIST_ENABLED).toBe(false);
+    expect(isOutboundSandboxWhitelistEnabled()).toBe(false);
     expect(OUTBOUND_SANDBOX_WHITELIST_E164).toBe('+34644408099');
+  });
+
+  it('env true activa sandbox; env false lo desactiva', () => {
+    expect(isOutboundSandboxWhitelistEnabled('true')).toBe(true);
+    expect(isOutboundSandboxWhitelistEnabled('false')).toBe(false);
+    expect(isAllowedOutboundSandboxPhone('+34611111111', 'true')).toBe(false);
+    expect(isAllowedOutboundSandboxPhone('+34644408099', 'true')).toBe(true);
   });
 
   it('con sandbox off permite cualquier número (incl. no-Toni)', () => {

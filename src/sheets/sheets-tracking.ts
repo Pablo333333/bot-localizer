@@ -16,7 +16,8 @@ export const BOT_TRACKING_HEADERS = [
   'Referencia',
   'Referencia / WP Post ID',
   'Notas de Error',
-  'Estado',
+  'Estado lead',
+  'Estado nurturing',
   'Ilocalizable',
 ] as const;
 

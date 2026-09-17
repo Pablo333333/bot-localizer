@@ -61,6 +61,17 @@ describe('planNoContactFollowup', () => {
     });
   });
 
+  it('T+0 hangup bookingFallback → SMS sin enroll', () => {
+    expect(
+      planNoContactFollowup('t0', { bookingFallback: true }),
+    ).toEqual({
+      sendWhatsApp: false,
+      sendSms: true,
+      enroll: false,
+      markIlocalizable: false,
+    });
+  });
+
   it('T+7: SMS de seguimiento; no WhatsApp', () => {
     expect(planNoContactFollowup('t7')).toEqual({
       sendWhatsApp: false,

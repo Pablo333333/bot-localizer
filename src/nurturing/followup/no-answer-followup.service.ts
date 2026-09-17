@@ -31,8 +31,8 @@ import {
 import { normalizePhone, formatE164Spain } from '../utils/phone.util';
 import {
   OUTBOUND_SANDBOX_WHITELIST_E164,
-  OUTBOUND_SANDBOX_WHITELIST_ENABLED,
   isAllowedOutboundSandboxPhone,
+  isOutboundSandboxWhitelistEnabled,
 } from '../../outbound/outbound-sandbox-whitelist';
 import { CallOutcomeClassifier } from './call-outcome.classifier';
 import { planNoContactFollowup, resolveT0MessageChannel } from './no-answer-followup.policy';
@@ -154,7 +154,9 @@ export class NoAnswerFollowupService {
 
     // Sandbox Retell (si activo): refuerzo adicional
     if (
-      OUTBOUND_SANDBOX_WHITELIST_ENABLED &&
+      isOutboundSandboxWhitelistEnabled(
+        this.config.get('OUTBOUND_SANDBOX_WHITELIST_ENABLED'),
+      ) &&
       !isAllowedOutboundSandboxPhone(phoneRaw)
     ) {
       this.logger.warn(
@@ -208,24 +210,37 @@ export class NoAnswerFollowupService {
       callData.retell_llm_dynamic_variables?.nurturing_phase ||
       callData.collected_dynamic_variables?.nurturing_phase ||
       callData.call_analysis?.custom_analysis_data?.nurturing_phase;
-    const phase = resolveCallPhase({
+    const followupAgentId = resolveRetellFollowupAgentId(
+      this.config.get<string>('RETELL_AGENT_ID_FOLLOWUP'),
+    );
+    let phase = resolveCallPhase({
       agentId: callData.agent_id,
       templateKey,
       nurturingPhase: nurturingPhase ? String(nurturingPhase) : null,
       outboundAgentId: this.config.get<string>('RETELL_OUTBOUND_AGENT_ID'),
-      followupAgentId: resolveRetellFollowupAgentId(
-        this.config.get<string>('RETELL_AGENT_ID_FOLLOWUP'),
-      ),
+      followupAgentId,
     });
+
+    // Follow-up agent sin template en webhook: inferir T+7/T+10 desde historial.
+    if (phase === 'unknown' && callData.agent_id === followupAgentId) {
+      phase = this.inferFollowupPhaseFromLead(meta);
+      this.logger.log(
+        `[Followup] phase inferida desde lead metadata → ${phase} (followup agent sin template)`,
+      );
+    }
 
     /**
      * Enroll T+7/T+10 solo en T+0. Si Retell manda un agent_id que no matchea
      * RETELL_OUTBOUND_AGENT_ID (prueba manual / typo), phase queda `unknown` y
      * antes se perdía el enroll pese a no_answer. Con outcome enrollable y sin
-     * template T+7/T+10, tratamos unknown como t0.
+     * template T+7/T+10, tratamos unknown como t0 — NUNCA si ya es follow-up.
      */
     const effectivePhase: NurturingCallPhase =
-      phase === 'unknown' && enrollRetry ? 't0' : phase;
+      phase === 'unknown' &&
+      enrollRetry &&
+      callData.agent_id !== followupAgentId
+        ? 't0'
+        : phase;
     if (phase !== effectivePhase) {
       this.logger.warn(
         `[Followup] phase=${phase}→${effectivePhase} (enrollRetry + agent/template no resuelto). ` +
@@ -300,10 +315,14 @@ export class NoAnswerFollowupService {
     const t0Channel = resolveT0MessageChannel(
       this.config.get('NURTURING_T0_CHANNEL'),
     );
+    const bookingFallback =
+      effectivePhase === 't0' &&
+      this.classifier.shouldSendBookingFallbackOnly(outcome);
     const plan = planNoContactFollowup(effectivePhase, {
       t0Channel,
       // Solo no_answer / postpone (y busy/voicemail) enrollan en T+0
       enroll: enrollRetry && effectivePhase === 't0',
+      bookingFallback,
     });
 
     // T+7 SMS / T+10 ilocalizable solo si el outcome sigue siendo no-contacto enrollable
@@ -322,7 +341,7 @@ export class NoAnswerFollowupService {
 
     if (effectivePhase === 't0') {
       this.logger.log(
-        `[Followup] T+0 enroll=${plan.enroll} channel=${t0Channel} WA=${plan.sendWhatsApp} SMS=${plan.sendSms} (hangup→PENDIENTE sin cola)`,
+        `[Followup] T+0 enroll=${plan.enroll} bookingFallback=${bookingFallback} channel=${t0Channel} WA=${plan.sendWhatsApp} SMS=${plan.sendSms}`,
       );
     } else if (enrollRetry && !plan.enroll) {
       this.logger.warn(
@@ -508,6 +527,22 @@ export class NoAnswerFollowupService {
     }
 
     return lead;
+  }
+
+  /**
+   * Si el agente follow-up no trae template_key, usa la última fase del lead:
+   * t0 → esta es T+7; t7 → esta es T+10; t10 → permanece t10.
+   */
+  private inferFollowupPhaseFromLead(
+    meta: Record<string, unknown>,
+  ): NurturingCallPhase {
+    const last = String(meta.last_phase || '')
+      .toLowerCase()
+      .trim();
+    if (last === 't0' || last === 'unknown' || !last) return 't7';
+    if (last === 't7') return 't10';
+    if (last === 't10') return 't10';
+    return 't7';
   }
 
   private async resolveTemplateKey(

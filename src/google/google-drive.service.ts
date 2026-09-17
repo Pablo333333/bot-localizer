@@ -124,27 +124,66 @@ export class GoogleDriveService implements OnModuleInit {
 
   async getFileMetadata(
     fileId: string,
-  ): Promise<{ id: string; name?: string | null; mimeType?: string | null }> {
+  ): Promise<{
+    id: string;
+    name?: string | null;
+    mimeType?: string | null;
+    shortcutTargetId?: string | null;
+  }> {
     const meta = await this.driveClient.files.get({
       fileId,
-      fields: 'id, name, mimeType',
+      fields: 'id, name, mimeType, shortcutDetails',
       ...DRIVE_FILE_OPTS,
     });
     return {
       id: meta.data.id || fileId,
       name: meta.data.name,
       mimeType: meta.data.mimeType,
+      shortcutTargetId: meta.data.shortcutDetails?.targetId || null,
     };
+  }
+
+  /**
+   * Resuelve shortcuts de Drive al archivo imagen real.
+   */
+  async resolveImageFileId(fileId: string): Promise<{
+    id: string;
+    name?: string | null;
+    mimeType?: string | null;
+  }> {
+    const meta = await this.getFileMetadata(fileId);
+    if (
+      meta.mimeType === 'application/vnd.google-apps.shortcut' &&
+      meta.shortcutTargetId
+    ) {
+      this.logger.log(
+        `Drive shortcut ${fileId} → target ${meta.shortcutTargetId}`,
+      );
+      return this.getFileMetadata(meta.shortcutTargetId);
+    }
+    return meta;
   }
 
   async downloadImageBuffer(fileId: string): Promise<Buffer> {
     try {
+      let resolvedId = fileId;
+      try {
+        const resolved = await this.resolveImageFileId(fileId);
+        resolvedId = resolved.id;
+      } catch {
+        // Continuar con el id original
+      }
+
       const response = await this.driveClient.files.get(
-        { fileId, alt: 'media', ...DRIVE_FILE_OPTS },
+        { fileId: resolvedId, alt: 'media', ...DRIVE_FILE_OPTS },
         { responseType: 'arraybuffer' },
       );
 
-      return Buffer.from(response.data as ArrayBuffer);
+      const buffer = Buffer.from(response.data as ArrayBuffer);
+      if (!buffer.length) {
+        throw new Error(`Buffer vacío para fileId=${resolvedId}`);
+      }
+      return buffer;
     } catch (error) {
       this.logger.error(
         `Error al descargar el buffer de la imagen ${fileId}: ${error.message}`,

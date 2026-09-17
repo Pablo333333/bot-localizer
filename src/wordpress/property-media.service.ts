@@ -145,14 +145,14 @@ export class PropertyMediaService {
         continue;
       }
       try {
-        const meta = await this.googleDrive.getFileMetadata(fileId);
+        const meta = await this.googleDrive.resolveImageFileId(fileId);
         if (meta.mimeType?.startsWith('image/')) {
           pushUnique([
-            { id: fileId, name: meta.name, mimeType: meta.mimeType },
+            { id: meta.id, name: meta.name, mimeType: meta.mimeType },
           ]);
         } else if (meta.mimeType === 'application/vnd.google-apps.folder') {
           const folderImages =
-            await this.googleDrive.getImagesFromFolder(fileId);
+            await this.googleDrive.getImagesFromFolder(meta.id);
           pushUnique(
             folderImages.map((f) => ({
               id: f.id!,
@@ -162,7 +162,11 @@ export class PropertyMediaService {
           );
         } else {
           pushUnique([
-            { id: fileId, name: meta.name, mimeType: meta.mimeType },
+            {
+              id: meta.id,
+              name: meta.name,
+              mimeType: meta.mimeType || 'image/jpeg',
+            },
           ]);
         }
       } catch (err: any) {

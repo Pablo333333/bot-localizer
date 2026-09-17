@@ -7,7 +7,7 @@
  *   NURTURING_PHASE3_ENABLED=true    ← master; código limita a Toni (allowlist)
  *   NURTURING_PHASE3_PHONE_ALLOWLIST= ← vacío = solo +34644408099
  *   OUTBOUND_TEST_PHONE_ONLY=        ← vacío
- *   OUTBOUND_SANDBOX_WHITELIST_ENABLED=false en código
+ *   OUTBOUND_SANDBOX_WHITELIST_ENABLED=false  ← env (default off; no sandbox)
  *   MAX_DAILY_CALLS=30
  *   Horario: L-V 10:00-14:00 y 17:00-20:30 Europe/Madrid
  *

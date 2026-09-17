@@ -29,23 +29,32 @@ export function resolveT0MessageChannel(
 /**
  * Acciones de seguimiento por fase.
  * `enroll` en T+0 solo si el caller pasa enroll=true (no_answer / postpone).
- * Hangup: el servicio marca PENDIENTE sin enroll.
+ * `bookingFallback`: SMS/WA con link de cita tras hangup / interacción incompleta
+ * (sin enroll T+7/T+10).
  */
 export function planNoContactFollowup(
   phase: NurturingCallPhase,
-  opts?: { t0Channel?: T0MessageChannel; enroll?: boolean },
+  opts?: {
+    t0Channel?: T0MessageChannel;
+    enroll?: boolean;
+    /** Hangup / interacción: enviar mensaje de cita sin enrollar. */
+    bookingFallback?: boolean;
+  },
 ): NoContactFollowupPlan {
   const t0 = opts?.t0Channel ?? 'sms';
   const enroll = opts?.enroll === true;
+  const bookingFallback = opts?.bookingFallback === true;
 
   switch (phase) {
-    case 't0':
+    case 't0': {
+      const sendMessage = enroll || bookingFallback;
       return {
-        sendWhatsApp: enroll && (t0 === 'whatsapp' || t0 === 'both'),
-        sendSms: enroll && (t0 === 'sms' || t0 === 'both'),
+        sendWhatsApp: sendMessage && (t0 === 'whatsapp' || t0 === 'both'),
+        sendSms: sendMessage && (t0 === 'sms' || t0 === 'both'),
         enroll,
         markIlocalizable: false,
       };
+    }
     case 't7':
       return {
         sendWhatsApp: false,

@@ -172,7 +172,7 @@ export function buildCadPropertyUpdates(
   pickIfChanged(out, 'Superficie Total', val(cad.superficie_total, true), getExisting);
   pickIfChanged(out, 'Superficie util', val(cad.superficie_util, true), getExisting);
   pickIfChanged(out, 'Negocio anterior', val(cad.negocio_anterior), getExisting);
-  pickIfChanged(out, 'Estado', matchOption(cad.estado, ESTADO_OPTIONS), getExisting);
+  // Estado se escribe más abajo (evita pipeline lead: pendiente/ilocalizable).
   pickIfChanged(out, 'Año de construcción', val(cad.anio_construccion), getExisting);
   pickIfChanged(out, 'Año reforma', val(cad.anio_reforma), getExisting);
   pickIfChanged(
@@ -269,19 +269,63 @@ export function buildCadPropertyUpdates(
     getExisting,
   );
 
+  // URL / carpeta Drive corregidas en llamada → Sheet (fuente para sync WP).
+  pickIfChanged(
+    out,
+    'URL imagen',
+    val(
+      cad.url_imagen ||
+        cad.imagen_url ||
+        cad.imagen_drive ||
+        cad.google_drive_url ||
+        cad.drive_url,
+    ),
+    getExisting,
+  );
+  pickIfChanged(
+    out,
+    'Carpeta Drive',
+    val(
+      cad.carpeta_drive ||
+        cad.drive_folder_id ||
+        cad.drive_folder ||
+        cad.google_drive_folder,
+    ),
+    getExisting,
+  );
+
   const target = String(cad.target_contact || '').trim();
   if (target === 'contacto_1') {
-    pickIfChanged(out, 'Nombre contacto1', val(cad.nombre_contacto_1), getExisting);
+    pickIfChanged(out, 'Nombre contacto1', val(cad.nombre_contacto_1 || cad.nombre_contacto), getExisting);
     pickIfChanged(out, 'Contacto1 con', val(cad.contacto_1_con), getExisting);
     pickIfChanged(out, 'Contacto1 por', val(cad.contacto_1_por), getExisting);
   } else if (target === 'contacto_2') {
-    pickIfChanged(out, 'Nombre contacto2', val(cad.nombre_contacto_2), getExisting);
+    pickIfChanged(out, 'Nombre contacto2', val(cad.nombre_contacto_2 || cad.nombre_contacto), getExisting);
     pickIfChanged(out, 'Contacto2 con', val(cad.contacto_2_con), getExisting);
     pickIfChanged(out, 'Contacto2 por', val(cad.contacto_2_por), getExisting);
   } else if (target === 'contacto_3') {
-    pickIfChanged(out, 'Nombre contacto3', val(cad.nombre_contacto_3), getExisting);
+    pickIfChanged(out, 'Nombre contacto3', val(cad.nombre_contacto_3 || cad.nombre_contacto), getExisting);
     pickIfChanged(out, 'Contacto3 con', val(cad.contacto_3_con), getExisting);
     pickIfChanged(out, 'Contacto3 por', val(cad.contacto_3_por), getExisting);
+  } else {
+    // Sin target_contact: aplicar correcciones genéricas al contacto principal.
+    pickIfChanged(
+      out,
+      'Nombre contacto1',
+      val(cad.nombre_contacto_1 || cad.nombre_contacto || cad.nombre_propietario),
+      getExisting,
+    );
+    pickIfChanged(out, 'Nombre contacto2', val(cad.nombre_contacto_2), getExisting);
+    pickIfChanged(out, 'Nombre contacto3', val(cad.nombre_contacto_3), getExisting);
+  }
+
+  // Estado del inmueble (Buen estado, Reformado…): no escribir valores de pipeline de lead.
+  const estadoInmueble = matchOption(cad.estado, ESTADO_OPTIONS);
+  const estadoLooksLikeLead = /^(pendiente|nuevo|ilocalizable|cerrado|interesado|cita)/i.test(
+    String(cad.estado || '').trim(),
+  );
+  if (estadoInmueble && !estadoLooksLikeLead) {
+    pickIfChanged(out, 'Estado', estadoInmueble, getExisting);
   }
 
   return out;

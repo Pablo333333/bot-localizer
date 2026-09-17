@@ -199,9 +199,9 @@ export class SheetsLeadSyncService {
   ): Promise<void> {
     const { sheet, rows } = await this.sheetsService.getAllRows(SHEET_NAME);
     const headers = new Set(sheet.headerValues || []);
-    if (!headers.has(COL_ESTADO)) {
+    if (!headers.has(COL_ESTADO) && !headers.has('Ilocalizable')) {
       this.logger.warn(
-        `Column "${COL_ESTADO}" not found in sheet — skip status sync`,
+        `Columnas "${COL_ESTADO}" / Ilocalizable no encontradas — skip status sync`,
       );
       return;
     }
@@ -243,8 +243,14 @@ export class SheetsLeadSyncService {
       sheet,
       row.rowNumber,
       {
-        Estado: status,
+        // No sobrescribir "Estado" (condición del inmueble) con pipeline de lead.
+        // Solo marcar Ilocalizable cuando aplica.
         Ilocalizable: status === 'ilocalizable' ? 'SI' : undefined,
+        ...(headers.has('Estado lead')
+          ? { 'Estado lead': status }
+          : headers.has('Estado nurturing')
+            ? { 'Estado nurturing': status }
+            : {}),
       },
       row,
     );

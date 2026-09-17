@@ -309,8 +309,9 @@ export class WordpressService {
     options: { postId?: number } = {},
   ): Promise<number> {
     try {
+      const safeName = this.sanitizeMediaFileName(fileName, mimeType);
       this.logger.log(
-        `Subiendo imagen a WordPress: ${fileName}${options.postId ? ` (post=${options.postId})` : ''}`,
+        `Subiendo imagen a WordPress: ${safeName}${options.postId ? ` (post=${options.postId})` : ''} bytes=${buffer.length}`,
       );
 
       const url = options.postId
@@ -320,9 +321,11 @@ export class WordpressService {
       const response = await lastValueFrom(
         this.httpService.post(url, buffer, {
           headers: this.getAuthHeaders({
-            'Content-Type': mimeType,
-            'Content-Disposition': `attachment; filename="${fileName}"`,
+            'Content-Type': mimeType || 'image/jpeg',
+            'Content-Disposition': `attachment; filename="${safeName}"`,
           }),
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
         }),
       );
 
@@ -337,6 +340,28 @@ export class WordpressService {
       );
       throw error;
     }
+  }
+
+  /** WP rechaza Content-Disposition con acentos/espacios raros — ASCII seguro. */
+  private sanitizeMediaFileName(fileName: string, mimeType: string): string {
+    const base = String(fileName || 'image')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9._-]+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^\.+/, '')
+      .slice(0, 120);
+    const hasExt = /\.(jpe?g|png|gif|webp|bmp)$/i.test(base);
+    if (hasExt) return base || 'image.jpg';
+    const ext =
+      mimeType?.includes('png')
+        ? 'png'
+        : mimeType?.includes('webp')
+          ? 'webp'
+          : mimeType?.includes('gif')
+            ? 'gif'
+            : 'jpg';
+    return `${base || 'image'}.${ext}`;
   }
 
   /** Asocia un adjunto existente como hijo del estate_property (galería WPResidence). */

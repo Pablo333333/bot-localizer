@@ -82,6 +82,13 @@ describe('Toni Fase 3 constants', () => {
         nurturingPhase: 't10',
       }),
     ).toBe('t10');
+    // Sin template/phase: follow-up agent ya NO se asume t7 (evita saltar ILOCALIZABLE).
+    expect(
+      resolveCallPhase({
+        agentId: RETELL_FOLLOWUP_AGENT_ID_DEFAULT,
+        followupAgentId: RETELL_FOLLOWUP_AGENT_ID_DEFAULT,
+      }),
+    ).toBe('unknown');
   });
 
   it('ILOCALIZABLE es estado terminal', () => {

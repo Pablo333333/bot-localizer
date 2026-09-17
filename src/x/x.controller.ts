@@ -126,9 +126,12 @@ export class XController {
       autoReplyRaw,
       agentIdConfigured || openaiConfigured,
     );
+    const webhookReady = Boolean(creds) && secretConfigured;
     return {
       ok: true,
       service: 'x-dm',
+      /** Listo para CRC GET + eventos POST de Account Activity (DMs Localicer). */
+      webhookReady,
       credentialsConfigured: Boolean(creds),
       crcSecretConfigured: secretConfigured,
       agentIdConfigured,
@@ -137,6 +140,7 @@ export class XController {
       botUserIdConfigured: Boolean(
         this.config.get<string>('X_BOT_USER_ID')?.trim(),
       ),
+      scopesHint: 'dm.read dm.write tweet.read users.read offline.access',
       dmEngine:
         String(this.config.get('X_DM_ENGINE') || '')
           .trim()
@@ -145,6 +149,8 @@ export class XController {
       webhookUrlHint:
         'https://bot-localicer-production.up.railway.app/x/webhook',
       listenMode: 'webhook-only (no polling worker)',
+      crcChallenge: 'GET /x/webhook?crc_token=… → { response_token }',
+      dmEvents: 'POST /x/webhook con direct_message_events | dm_events',
     };
   }
 }

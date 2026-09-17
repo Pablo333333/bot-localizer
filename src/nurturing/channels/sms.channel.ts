@@ -130,8 +130,31 @@ export class SmsChannel implements NurturingChannel {
           payload.templatePayload?.contentVariables ??
           this.config.get<string>('TWILIO_SMS_CONTENT_VARIABLES');
         if (vars != null) {
-          createParams.contentVariables =
-            typeof vars === 'string' ? vars : JSON.stringify(vars);
+          const parsed =
+            typeof vars === 'string'
+              ? (() => {
+                  try {
+                    return JSON.parse(vars) as Record<string, string>;
+                  } catch {
+                    return null;
+                  }
+                })()
+              : (vars as Record<string, string>);
+          const v1 = String(parsed?.['1'] ?? '').trim();
+          const v2 = String(parsed?.['2'] ?? '').trim();
+          // Content SID sin variables → Twilio falla; usar body libre.
+          if (!v1 && !v2) {
+            this.logger.warn(
+              `[SmsService] Content vars vacías — fallback a body libre to=${to}`,
+            );
+            createParams.body = body;
+            delete createParams.contentSid;
+          } else {
+            createParams.contentVariables = JSON.stringify({
+              '1': v1 || 'cliente',
+              '2': v2 || 'tu anuncio',
+            });
+          }
         }
       } else {
         createParams.body = body;

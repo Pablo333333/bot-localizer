@@ -60,6 +60,12 @@ export function resolveRetellFromNumber(envValue?: string | null): string {
   return v.replace(/\s+/g, '');
 }
 
+/**
+ * Fase de la llamada nurturing.
+ * Prioridad: nurturing_phase explícita → template_key → agent_id.
+ * Misma agent follow-up para T+7 y T+10: sin template/phase NO asumir t7
+ * (evita SMS T+7 en vez de ILOCALIZABLE en T+10).
+ */
 export function resolveCallPhase(params: {
   agentId?: string;
   templateKey?: string | null;
@@ -69,18 +75,25 @@ export function resolveCallPhase(params: {
 }): NurturingCallPhase {
   const explicit = String(params.nurturingPhase || '')
     .toLowerCase()
-    .trim();
+    .trim()
+    .replace(/^nurturing[._-]?/, '')
+    .replace(/^phase[._-]?/, '');
   if (explicit === 't0' || explicit === 't7' || explicit === 't10') {
     return explicit;
   }
-
-  if (params.templateKey === TEMPLATE_CALL_FOLLOWUP_D7) return 't7';
-  if (params.templateKey === TEMPLATE_CALL_FOLLOWUP_D10) return 't10';
-
-  const followup = resolveRetellFollowupAgentId(params.followupAgentId);
-  if (params.agentId && params.agentId === followup) {
+  if (explicit === 'd7' || explicit === 'day7' || explicit === 'followup_d7') {
     return 't7';
   }
+  if (explicit === 'd10' || explicit === 'day10' || explicit === 'followup_d10') {
+    return 't10';
+  }
+
+  const template = String(params.templateKey || '').trim();
+  if (template === TEMPLATE_CALL_FOLLOWUP_D7) return 't7';
+  if (template === TEMPLATE_CALL_FOLLOWUP_D10) return 't10';
+  if (/followup_d10|call\.d10|\.t10\b/i.test(template)) return 't10';
+  if (/followup_d7|call\.d7|\.t7\b/i.test(template)) return 't7';
+
   if (
     params.agentId &&
     params.outboundAgentId &&
@@ -88,5 +101,7 @@ export function resolveCallPhase(params: {
   ) {
     return 't0';
   }
+
+  // Follow-up agent sin template/phase → unknown (resolveTemplateKey en BD debe aclarar).
   return 'unknown';
 }

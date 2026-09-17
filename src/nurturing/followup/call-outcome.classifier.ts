@@ -135,9 +135,21 @@ export class CallOutcomeClassifier {
     );
   }
 
-  /** WhatsApp/SMS booking T+0: misma regla que enroll (no hangup). */
+  /**
+   * SMS/WA con link de cita:
+   * - no_answer / busy / voicemail / postpone → enroll + mensaje
+   * - hangup (interacción incompleta) → mensaje de respaldo sin enroll
+   */
   shouldSendBookingWhatsApp(outcome: CallOutcome): boolean {
-    return this.shouldEnrollRetrySequence(outcome);
+    return (
+      this.shouldEnrollRetrySequence(outcome) ||
+      outcome === CallOutcome.HANGUP
+    );
+  }
+
+  /** Hangup con conversación: SMS de cita, PENDIENTE, sin cola T+7/T+10. */
+  shouldSendBookingFallbackOnly(outcome: CallOutcome): boolean {
+    return outcome === CallOutcome.HANGUP;
   }
 
   /**

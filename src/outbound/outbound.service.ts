@@ -32,10 +32,10 @@ import {
 } from './outbound-test-phone';
 import {
   OUTBOUND_SANDBOX_WHITELIST_E164,
-  OUTBOUND_SANDBOX_WHITELIST_ENABLED,
   OUTBOUND_SANDBOX_WHITELIST_LOG,
   SKIPPED_SANDBOX_WHITELIST,
   isAllowedOutboundSandboxPhone,
+  isOutboundSandboxWhitelistEnabled,
   safeCreatePhoneCall,
 } from './outbound-sandbox-whitelist';
 
@@ -96,7 +96,9 @@ export class OutboundService {
     this.logger.log(
       `[OutboundService] Arranque mode=${JSON.stringify(mode)} horario=${OUTBOUND_HOURS_DESCRIPTION} espaciado=${Math.round(delayRange.minMs / 60_000)}–${Math.round(delayRange.maxMs / 60_000)} min entre llamadas`,
     );
-    if (OUTBOUND_SANDBOX_WHITELIST_ENABLED) {
+    if (isOutboundSandboxWhitelistEnabled(
+      this.configService.get('OUTBOUND_SANDBOX_WHITELIST_ENABLED'),
+    )) {
       this.logger.warn(OUTBOUND_SANDBOX_WHITELIST_LOG);
     }
     if (OUTBOUND_AUTO_DIAL_PAUSED) {
@@ -199,6 +201,16 @@ export class OutboundService {
       this.configService.get('OUTBOUND_TEST_PHONE_ONLY'),
     );
 
+    if (
+      isOutboundSandboxWhitelistEnabled(
+        this.configService.get('OUTBOUND_SANDBOX_WHITELIST_ENABLED'),
+      )
+    ) {
+      this.logger.warn(
+        `[OutboundService] SANDBOX activo — solo ${OUTBOUND_SANDBOX_WHITELIST_E164}. Desactiva OUTBOUND_SANDBOX_WHITELIST_ENABLED para lote Fase 1.`,
+      );
+    }
+
     const { sheet, rows } = await this.sheetsService.getAllRows(SHEET_NAME);
 
     if (!sheet) {
@@ -207,6 +219,8 @@ export class OutboundService {
       );
       return;
     }
+
+    this.hydrateDailyCountFromSheet(rows, maxDailyCalls);
 
     const headers = sheet.headerValues || [];
     const pubHeader = findPublicacionAutorizadaHeader(headers);
@@ -564,6 +578,53 @@ export class OutboundService {
       this.dailyAttemptDateKey = todayKey;
       this.dailyAttemptCount = 0;
       this.attemptedPhonesToday.clear();
+    }
+  }
+
+  /**
+   * Tras restart de Railway el contador en memoria queda a 0.
+   * Rehidrata desde filas con Llamado=SI y Fecha actualización de hoy (Madrid)
+   * para no superar MAX_DAILY_CALLS ni re-llamar los mismos números.
+   */
+  private hydrateDailyCountFromSheet(
+    rows: Array<{ get: (key: string) => unknown }>,
+    maxDailyCalls: number,
+  ): void {
+    this.rotateDailyCountersIfNeeded();
+    const todayKey = this.dailyAttemptDateKey;
+    let sheetToday = 0;
+
+    for (const row of rows) {
+      const llamadoRaw = String(row.get(COL_LLAMADO) ?? '')
+        .trim()
+        .toUpperCase();
+      if (!MARKED_STATUSES.has(llamadoRaw)) continue;
+
+      const fechaRaw =
+        String(row.get(COL_FECHA_ACTUALIZACION) ?? '').trim() ||
+        String(row.get('Fecha Llamada') ?? '').trim() ||
+        String(row.get('Fecha llamada') ?? '').trim();
+      if (!fechaRaw) continue;
+
+      const ts = this.parseFlexibleDateTime(fechaRaw);
+      if (ts == null) continue;
+      if (this.getMadridDateKey(new Date(ts)) !== todayKey) continue;
+
+      sheetToday += 1;
+      const phoneRaw = this.getBestPhone(row);
+      if (phoneRaw) {
+        const phoneKey = this.normalizePhoneKey(this.formatE164Spain(phoneRaw));
+        this.attemptedPhonesToday.add(phoneKey);
+        const prev = this.lastAttemptByPhone.get(phoneKey) || 0;
+        if (ts > prev) this.lastAttemptByPhone.set(phoneKey, ts);
+      }
+    }
+
+    if (sheetToday > this.dailyAttemptCount) {
+      this.logger.log(
+        `[OutboundService] Cupo rehidratado desde Sheet: memoria=${this.dailyAttemptCount} → sheetHoy=${sheetToday}/${maxDailyCalls}`,
+      );
+      this.dailyAttemptCount = sheetToday;
     }
   }
 
