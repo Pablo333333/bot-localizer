@@ -9,9 +9,12 @@ import {
   TONI_NO_ANSWER_MESSAGE,
   TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3,
   isFollowupCallTemplate,
+  parseTwilioContentVariables,
+  renderToniNoAnswerFallback,
   resolveCallPhase,
   resolveRetellFollowupAgentId,
   resolveRetellFromNumber,
+  twilioSeguimientoContentVariablesJson,
 } from './toni-fase3.constants';
 
 describe('Toni Fase 3 constants', () => {
@@ -36,15 +39,47 @@ describe('Toni Fase 3 constants', () => {
   });
 
   it('plantilla T+0 incluye link de agendamiento Toni', () => {
-    expect(TONI_NO_ANSWER_MESSAGE).toContain('Localisto de Localicer');
+    expect(TONI_NO_ANSWER_MESSAGE).toContain('Intentamos contactarte');
+    expect(TONI_NO_ANSWER_MESSAGE).toContain('{{1}}');
+    expect(TONI_NO_ANSWER_MESSAGE).toContain('{{2}}');
     expect(TONI_NO_ANSWER_MESSAGE).toContain(
       'https://api.leadconnectorhq.com/widget/bookings/cita-para-llamada',
     );
+    expect(TONI_NO_ANSWER_MESSAGE).toContain('O responde directamente a este mensaje.');
   });
 
-  it('Content SID SMS seguimiento_lead_fase3', () => {
+  it('Twilio contentVariables solo envía {{1}} = título', () => {
+    expect(
+      twilioSeguimientoContentVariablesJson({ '1': 'Local Gran Vía' }),
+    ).toBe(JSON.stringify({ '1': 'Local Gran Vía' }));
+    expect(twilioSeguimientoContentVariablesJson({})).toBe(
+      JSON.stringify({ '1': 'tu inmueble comercial' }),
+    );
+  });
+
+  it('renderToniNoAnswerFallback usa nombre en saludo y título Twilio {{1}} como inmueble', () => {
+    const text = renderToniNoAnswerFallback(
+      {
+        '1': 'Local en Palma',
+      },
+      'Toni',
+    );
+    expect(text).toContain('Hola Toni!');
+    expect(text).toContain('inmueble comercial Local en Palma');
+    expect(text).toContain(
+      'https://api.leadconnectorhq.com/widget/bookings/cita-para-llamada',
+    );
+    expect(text).not.toContain('{{1}}');
+    expect(text).not.toContain('{{2}}');
+    expect(parseTwilioContentVariables({ '1': 'Local en Palma' })).toEqual({
+      '1': 'Local en Palma',
+      '2': '',
+    });
+  });
+
+  it('Content SID SMS seguimiento ({{1}} título inmueble)', () => {
     expect(TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3).toBe(
-      'HXc7bd38988127fbe33808deb0785466cf',
+      'HX623b40271b0f7fab6282f6548e0ba487',
     );
   });
 

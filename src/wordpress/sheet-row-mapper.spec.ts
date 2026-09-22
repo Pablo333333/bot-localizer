@@ -70,9 +70,46 @@ describe('sheet-row-mapper', () => {
           'https://drive.google.com/drive/folders/folderXYZ999',
         'Vista interior StreetView':
           'https://www.google.com/maps/@39.5,2.6,3a,75y',
+        'Publicacion Autorizada?': 'SI',
       }),
     );
     expect(cad.url_imagen).toContain('drive.google.com/file');
     expect(cad.carpeta_drive).toContain('folders/folderXYZ999');
+    expect(cad.publicacion_autorizada).toBe('SI');
+  });
+
+  it('encuentra fotos Drive aunque el encabezado no coincida exactamente', () => {
+    const headers = [
+      'Call ID',
+      'URL Imagen ',
+      'Carpeta Google Drive',
+      'Vista interior StreetView',
+    ];
+    const cad = sheetRowToCad(
+      fakeRow({
+        'URL Imagen ':
+          'https://drive.google.com/file/d/zzz999/view',
+        'Carpeta Google Drive':
+          'https://drive.google.com/drive/folders/folderAAA',
+        'Vista interior StreetView':
+          'https://www.google.com/maps/@39.5,2.6,3a,75y',
+      }),
+      headers,
+    );
+    expect(cad.url_imagen).toContain('zzz999');
+    expect(cad.carpeta_drive).toContain('folderAAA');
+    expect(String(cad.url_imagen)).not.toContain('maps');
+  });
+
+  it('escanea cualquier celda con URL de Drive (p.ej. columna Fotos)', () => {
+    const headers = ['Municipio', 'Fotos', 'Otra'];
+    const cad = sheetRowToCad(
+      fakeRow({
+        Municipio: 'Palma',
+        Fotos: '=HYPERLINK("https://drive.google.com/file/d/foto111/view";"ver")',
+      }),
+      headers,
+    );
+    expect(cad.url_imagen).toContain('foto111');
   });
 });

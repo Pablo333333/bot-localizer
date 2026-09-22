@@ -16,6 +16,7 @@ import {
   PHASE3_TONI_PHONE_E164,
   isPhase3AllowedPhone,
 } from '../nurturing/phase3-allowlist';
+import { normalizeSiToken } from '../outbound/publicacion-autorizada';
 
 @Controller('webhooks')
 export class SheetsController {
@@ -246,10 +247,23 @@ export class SheetsController {
         );
       }
 
-      if (isSuccessful && isAvailable) {
+      const publicacionAutorizadaRaw =
+        sheetWrite.updates['Publicacion Autorizada?'] ||
+        sheetWrite.updates['Publicación Autorizada?'] ||
+        mergedCad.publicacion_autorizada;
+      const publicacionAutorizadaSi =
+        normalizeSiToken(publicacionAutorizadaRaw) === 'SI';
+
+      if (isSuccessful && isAvailable && !publicacionAutorizadaSi) {
+        this.logger.log(
+          `[Webhook] Call ${callId}: Publicación Autorizada? no es SI ("${String(publicacionAutorizadaRaw ?? '').trim() || 'vacío'}") — no se crea/publica en WordPress.`,
+        );
+      }
+
+      if (isSuccessful && isAvailable && publicacionAutorizadaSi) {
         try {
           this.logger.log(
-            'Iniciando flujo WordPress con CAD de llamada (Sheet ya actualizado)...',
+            'Iniciando flujo WordPress (Publicación Autorizada?=SI, Sheet ya actualizado)...',
           );
           const existingPostId = sheetWrite.wpPostId;
 
@@ -285,6 +299,10 @@ export class SheetsController {
                     galleryMediaIds: media.galleryMediaIds,
                     commercialContent,
                     preserveStatus: brief?.status === 'publish',
+                    status:
+                      this.configService.get<string>('WP_REVIEWED_POST_STATUS') ||
+                      this.configService.get<string>('WP_POST_STATUS') ||
+                      'pending',
                   },
                 );
               if (media.galleryMediaIds.length > 0) {
@@ -309,6 +327,10 @@ export class SheetsController {
                   featuredMediaId: media.featuredMediaId,
                   galleryMediaIds: media.galleryMediaIds,
                   commercialContent,
+                  status:
+                    this.configService.get<string>('WP_REVIEWED_POST_STATUS') ||
+                    this.configService.get<string>('WP_POST_STATUS') ||
+                    'pending',
                 },
               );
             if (media.galleryMediaIds.length > 0) {

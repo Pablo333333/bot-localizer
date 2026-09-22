@@ -113,12 +113,10 @@ export function extractImageUrlsFromCad(cad: CadLike): string[] {
   const urls: string[] = [];
   const seen = new Set<string>();
 
-  for (const key of IMAGE_URL_KEYS) {
-    const raw = sanitizeRaw(cad[key]);
-    if (!raw) continue;
+  const consider = (raw: string) => {
     for (const part of splitMultiValue(raw)) {
       if (extractDriveFolderId(part) && /\/(?:drive\/)?folders\//i.test(part)) {
-        continue; // carpeta → extractDriveFolderIdsFromCad
+        continue;
       }
       if (!isHttpUrl(part) && !extractDriveFileId(part)) continue;
       if (
@@ -128,11 +126,25 @@ export function extractImageUrlsFromCad(cad: CadLike): string[] {
       ) {
         continue;
       }
+      if (/google\.com\/maps|streetview/i.test(part)) continue;
       const keyNorm = part.toLowerCase();
       if (seen.has(keyNorm)) continue;
       seen.add(keyNorm);
       urls.push(part);
     }
+  };
+
+  for (const key of IMAGE_URL_KEYS) {
+    const raw = sanitizeRaw(cad[key]);
+    if (raw) consider(raw);
+  }
+
+  for (const [key, value] of Object.entries(cad)) {
+    if ((IMAGE_URL_KEYS as readonly string[]).includes(key)) continue;
+    const raw = sanitizeRaw(value);
+    if (!raw) continue;
+    if (!/drive\.google\.com|docs\.google\.com|\/file\/d\//i.test(raw)) continue;
+    consider(raw);
   }
 
   return urls.slice(0, MAX_PROPERTY_IMAGES);
@@ -171,6 +183,20 @@ export function extractDriveFolderIdsFromCad(cad: CadLike): string[] {
     if (!raw) continue;
     for (const part of splitMultiValue(raw)) {
       if (/\/(?:drive\/)?folders\//i.test(part)) push(part);
+    }
+  }
+
+  for (const [key, value] of Object.entries(cad)) {
+    if (
+      (DRIVE_FOLDER_KEYS as readonly string[]).includes(key) ||
+      (IMAGE_URL_KEYS as readonly string[]).includes(key)
+    ) {
+      continue;
+    }
+    const raw = sanitizeRaw(value);
+    if (!raw) continue;
+    if (/\/(?:drive\/)?folders\//i.test(raw)) {
+      for (const part of splitMultiValue(raw)) push(part);
     }
   }
 

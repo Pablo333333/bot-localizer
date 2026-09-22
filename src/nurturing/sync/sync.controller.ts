@@ -36,7 +36,7 @@ export class SyncController {
 
   /**
    * @deprecated Usar POST /nurturing/sync/reviewed-to-wordpress
-   * (SheetsWordpressSyncService desactivado — única vía: Anuncio Revisado? = SI).
+   * (SheetsWordpressSyncService desactivado — única vía: Publicación Autorizada? = SI).
    */
   @Post('sheets-to-wordpress')
   syncSheetsToWordpress(@Query('row') row?: string) {
@@ -47,7 +47,7 @@ export class SyncController {
   }
 
   /**
-   * Anuncio Revisado? = SI → crear/actualizar estate_property en WordPress.
+   * Publicación Autorizada? = SI → crear/actualizar estate_property en WordPress.
    * Query opcional: ?row=42 (número de fila del Sheet, 1-based con cabecera en fila 1).
    */
   @Post('reviewed-to-wordpress')

@@ -1,6 +1,13 @@
 import { RetellCad, sanitizeValue } from './property-mapper';
+import {
+  extractDriveFileId,
+  extractDriveFolderId,
+} from './property-media-sources';
 
-type SheetRowLike = { get: (header: string) => unknown };
+type SheetRowLike = {
+  get: (header: string) => unknown;
+  toObject?: () => Record<string, unknown>;
+};
 
 /** Sheet Localizados → claves CAD usadas por buildEstatePropertyPayload. */
 const SHEET_TO_CAD: ReadonlyArray<{
@@ -95,27 +102,43 @@ const SHEET_TO_CAD: ReadonlyArray<{
   { cadKey: 'iluminacion', columns: ['Iluminacion'] },
   { cadKey: 'suelos', columns: ['Suelos'] },
   {
+    cadKey: 'publicacion_autorizada',
+    columns: ['Publicacion Autorizada?', 'Publicación Autorizada?'],
+  },
+  {
     cadKey: 'url_imagen',
     columns: [
       'URL imagen',
       'Url imagen',
+      'URL Imagen',
       'url_imagen',
       'Imagen URL',
       'URLs imagenes',
       'URLs imágenes',
       'Imagenes Drive',
       'Imágenes Drive',
+      'Fotos Drive',
+      'Foto Drive',
+      'Link fotos',
+      'Enlace fotos',
+      'Link Drive',
+      'Enlace Drive',
+      'Google Drive',
+      'Fotos',
     ],
   },
   {
     cadKey: 'carpeta_drive',
     columns: [
       'Carpeta Drive',
+      'Carpeta Google Drive',
       'Drive folder',
       'Drive Folder ID',
       'ID carpeta Drive',
       'carpeta_drive',
       'Google Drive Folder',
+      'Carpeta fotos',
+      'Folder Drive',
     ],
   },
 ];
@@ -128,13 +151,191 @@ export const WP_POST_ID_SHEET_HEADERS = [
   'Referencia / WP Post ID',
 ] as const;
 
+function normalizeHeader(raw: string): string {
+  return String(raw || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[_?/]+/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+function isStreetViewOrMapsHeader(normalized: string): boolean {
+  return (
+    normalized.includes('streetview') ||
+    normalized.includes('street view') ||
+    normalized.includes('vista interior') ||
+    normalized.includes('maps')
+  );
+}
+
+/** HYPERLINK / objetos de celda → URL o texto usable. */
+export function unwrapSheetCellValue(raw: unknown): string {
+  if (raw === undefined || raw === null) return '';
+  if (typeof raw === 'object') {
+    const o = raw as Record<string, unknown>;
+    for (const key of ['hyperlink', 'url', 'link', 'text', 'value']) {
+      const v = o[key];
+      if (v != null && String(v).trim()) return String(v).trim();
+    }
+  }
+  const s = String(raw).trim();
+  const hyper =
+    s.match(/HYPERLINK\s*\(\s*"([^"]+)"/i) ||
+    s.match(/HYPERLINK\s*\(\s*'([^']+)'/i);
+  if (hyper?.[1]) return hyper[1].trim();
+  return s;
+}
+
+function findHeaderByAliases(
+  aliases: readonly string[],
+  headers?: string[],
+): string | null {
+  if (!headers?.length) return null;
+  const wanted = aliases.map(normalizeHeader);
+  for (const h of headers) {
+    if (wanted.includes(normalizeHeader(h))) return h;
+  }
+  for (const h of headers) {
+    const n = normalizeHeader(h);
+    if (!n || isStreetViewOrMapsHeader(n)) continue;
+    for (const alias of wanted) {
+      if (alias.length >= 6 && (n.includes(alias) || alias.includes(n))) {
+        return h;
+      }
+    }
+  }
+  return null;
+}
+
+function rowEntries(
+  row: SheetRowLike,
+  headers?: string[],
+): Array<{ header: string; value: string }> {
+  const out: Array<{ header: string; value: string }> = [];
+  const seen = new Set<string>();
+  const push = (header: string, raw: unknown) => {
+    if (!header || seen.has(header)) return;
+    seen.add(header);
+    out.push({ header, value: unwrapSheetCellValue(raw) });
+  };
+
+  if (headers?.length) {
+    for (const h of headers) push(h, row.get(h));
+  }
+
+  if (typeof row.toObject === 'function') {
+    const obj = row.toObject() || {};
+    for (const [h, v] of Object.entries(obj)) push(h, v);
+  }
+
+  return out;
+}
+
+function collectDriveFromRow(
+  row: SheetRowLike,
+  headers?: string[],
+): { url_imagen?: string; carpeta_drive?: string } {
+  const files: string[] = [];
+  const folders: string[] = [];
+  const seen = new Set<string>();
+
+  const pushFile = (raw: string) => {
+    for (const part of raw
+      .split(/[\n,;|]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)) {
+      if (/\/(?:drive\/)?folders\//i.test(part)) continue;
+      if (
+        !extractDriveFileId(part) &&
+        !/drive\.google\.com|docs\.google\.com/i.test(part)
+      ) {
+        continue;
+      }
+      if (/google\.com\/maps/i.test(part)) continue;
+      const key = part.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      files.push(part);
+    }
+  };
+  const pushFolder = (raw: string) => {
+    for (const part of raw
+      .split(/[\n,;|]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)) {
+      if (/\/file\/d\//i.test(part)) continue;
+      const id = extractDriveFolderId(part);
+      if (!id) continue;
+      if (seen.has(`folder:${id}`)) continue;
+      seen.add(`folder:${id}`);
+      folders.push(part);
+    }
+  };
+
+  for (const { header, value } of rowEntries(row, headers)) {
+    if (!value) continue;
+    const n = normalizeHeader(header);
+    if (isStreetViewOrMapsHeader(n)) continue;
+
+    const looksFolderHeader =
+      (n.includes('carpeta') || n.includes('folder')) &&
+      (n.includes('drive') ||
+        n.includes('foto') ||
+        n.includes('imagen') ||
+        n.includes('google'));
+    const looksFileHeader =
+      !looksFolderHeader &&
+      ((n.includes('imagen') &&
+        (n.includes('url') ||
+          n.includes('drive') ||
+          n.includes('link') ||
+          n.includes('enlace'))) ||
+        (n.includes('foto') &&
+          (n.includes('url') ||
+            n.includes('drive') ||
+            n.includes('link') ||
+            n.includes('enlace'))) ||
+        n.includes('imagenes drive') ||
+        n.includes('fotos drive') ||
+        n === 'fotos' ||
+        n === 'imagenes' ||
+        n === 'google drive' ||
+        n === 'drive' ||
+        n.includes('url imagen') ||
+        n.includes('url foto'));
+
+    if (looksFolderHeader || /\/(?:drive\/)?folders\//i.test(value)) {
+      pushFolder(value);
+    }
+    if (looksFileHeader || /\/file\/d\/|drive\.google\.com/i.test(value)) {
+      pushFile(value);
+    }
+  }
+
+  return {
+    ...(files.length ? { url_imagen: files.join(', ') } : {}),
+    ...(folders.length ? { carpeta_drive: folders.join(', ') } : {}),
+  };
+}
+
 function readSheetCell(
   row: SheetRowLike,
   columns: readonly string[],
   cleanSymbols = false,
+  headers?: string[],
 ): string {
-  for (const column of columns) {
-    const value = sanitizeValue(row.get(column), cleanSymbols);
+  const resolved = findHeaderByAliases(columns, headers);
+  const tryHeaders = resolved ? [resolved, ...columns] : [...columns];
+  const seen = new Set<string>();
+  for (const column of tryHeaders) {
+    if (!column || seen.has(column)) continue;
+    seen.add(column);
+    const value = sanitizeValue(
+      unwrapSheetCellValue(row.get(column)),
+      cleanSymbols,
+    );
     if (value) return value;
   }
   return '';
@@ -143,41 +344,48 @@ function readSheetCell(
 /** Lee el ID de WordPress ya guardado en la fila (idempotencia). */
 export function readWpPostIdFromSheetRow(row: SheetRowLike): number | undefined {
   for (const header of WP_POST_ID_SHEET_HEADERS) {
-    const raw = row.get(header);
-    if (raw === undefined || raw === null) continue;
-    const trimmed = String(raw).trim();
-    if (/^\d+$/.test(trimmed)) {
-      return Number(trimmed);
-    }
+    const raw = unwrapSheetCellValue(row.get(header));
+    if (!raw) continue;
+    if (/^\d+$/.test(raw)) return Number(raw);
   }
   return undefined;
 }
 
 /** Convierte una fila de Localizados al CAD esperado por property-mapper. */
-export function sheetRowToCad(row: SheetRowLike): RetellCad {
+export function sheetRowToCad(
+  row: SheetRowLike,
+  headers?: string[],
+): RetellCad {
   const cad: RetellCad = {};
 
   for (const { cadKey, columns, cleanSymbols } of SHEET_TO_CAD) {
-    const value = readSheetCell(row, columns, cleanSymbols);
+    const value = readSheetCell(row, columns, cleanSymbols, headers);
     if (value) {
       cad[cadKey] = value;
     }
   }
 
+  const drive = collectDriveFromRow(row, headers);
+  if (drive.url_imagen) cad.url_imagen = drive.url_imagen;
+  if (drive.carpeta_drive) cad.carpeta_drive = drive.carpeta_drive;
+
   return cad;
 }
 
 /** Objeto callData compatible con buildEstatePropertyPayload / createPropertyPost. */
-export function sheetRowToCallData(row: SheetRowLike): {
+export function sheetRowToCallData(
+  row: SheetRowLike,
+  headers?: string[],
+): {
   call_id?: string;
   call_analysis: {
     call_summary?: string;
     custom_analysis_data: RetellCad;
   };
 } {
-  const callId = readSheetCell(row, ['Call ID']);
-  const cad = sheetRowToCad(row);
-  const summary = readSheetCell(row, ['Información adicional']);
+  const callId = readSheetCell(row, ['Call ID'], false, headers);
+  const cad = sheetRowToCad(row, headers);
+  const summary = readSheetCell(row, ['Información adicional'], false, headers);
 
   return {
     call_id: callId || undefined,

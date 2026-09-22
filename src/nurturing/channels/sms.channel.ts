@@ -2,18 +2,25 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import twilio, { Twilio } from 'twilio';
 import { Channel } from '../enums';
-import { TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3 } from '../toni-fase3.constants';
-import { formatE164Spain, renderTemplate } from '../utils/phone.util';
+import {
+  TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3,
+  parseTwilioContentVariables,
+  renderToniNoAnswerFallback,
+  twilioSeguimientoContentVariablesJson,
+} from '../toni-fase3.constants';
+import { formatE164Spain } from '../utils/phone.util';
 import {
   ChannelSendPayload,
   ChannelSendResult,
   NurturingChannel,
 } from './channel.interface';
+import { createTwilioMessageWithTemplateFallback } from './twilio-template-fallback';
 
 /**
  * SMS (Twilio). Preferencia: Content Template aprobado para SMS
- * (`seguimiento_lead_fase3` / TWILIO_SMS_CONTENT_SID). Fallback a body libre
- * solo si el Content SID está vacío (`TWILIO_SMS_CONTENT_SID=`).
+ * (`TWILIO_SMS_CONTENT_SID`, {{1}} = título del inmueble; el enlace de
+ * agendamiento lo incluye la plantilla). Si la plantilla falla,
+ * reenvía el copy libre de agendamiento (nombre + inmueble + enlace).
  *
  * from: TWILIO_SMS_FROM → TWILIO_FROM_NUMBER → TWILIO_WHATSAPP_NUMBER sin prefijo whatsapp:
  */
@@ -46,7 +53,7 @@ export class SmsChannel implements NurturingChannel {
   }
 
   /**
-   * Content SID por defecto = seguimiento_lead_fase3.
+   * Content SID por defecto = plantilla SMS de seguimiento.
    * Vacío explícito en env desactiva Content API y usa body libre.
    */
   private resolveContentSid(): string | undefined {
@@ -65,22 +72,16 @@ export class SmsChannel implements NurturingChannel {
       (payload.templatePayload?.contentSid as string | undefined)?.trim() ||
       this.contentSid;
 
-    const bookingLink =
-      (payload.templatePayload?.booking_link as string | undefined) ||
-      this.config.get<string>('BOOKING_LINK_CALL') ||
-      this.config.get<string>('BOOKING_LINK') ||
-      this.config.get<string>('CALENDAR_BOOKING_URL') ||
-      'https://www.localicer.com/agendar';
+    const contentVariables = parseTwilioContentVariables(
+      payload.templatePayload?.contentVariables ??
+        this.config.get<string>('TWILIO_SMS_CONTENT_VARIABLES'),
+    );
 
-    const bodyTemplate =
-      (payload.templatePayload?.body as string | undefined) ||
-      'Hola {{name}}, desde Localicer te escribimos por SMS. Agenda aquí: {{booking_link}}';
-
-    const body = renderTemplate(bodyTemplate, {
-      name: payload.name || '',
-      phone: payload.phone,
-      booking_link: bookingLink,
-    });
+    const bodyFromPayload = String(payload.templatePayload?.body ?? '').trim();
+    const body =
+      bodyFromPayload && !/\{\{[12]\}\}/.test(bodyFromPayload)
+        ? bodyFromPayload
+        : renderToniNoAnswerFallback(contentVariables, payload.name);
 
     const forceMock =
       this.config.get<string>('NURTURING_MOCK_CHANNELS') === 'true';
@@ -113,54 +114,28 @@ export class SmsChannel implements NurturingChannel {
     );
 
     try {
-      const createParams: {
-        from: string;
-        to: string;
-        body?: string;
-        contentSid?: string;
-        contentVariables?: string;
-      } = {
-        from: this.fromNumber,
-        to,
-      };
-
-      if (contentSid) {
-        createParams.contentSid = contentSid;
-        const vars =
-          payload.templatePayload?.contentVariables ??
-          this.config.get<string>('TWILIO_SMS_CONTENT_VARIABLES');
-        if (vars != null) {
-          const parsed =
-            typeof vars === 'string'
-              ? (() => {
-                  try {
-                    return JSON.parse(vars) as Record<string, string>;
-                  } catch {
-                    return null;
-                  }
-                })()
-              : (vars as Record<string, string>);
-          const v1 = String(parsed?.['1'] ?? '').trim();
-          const v2 = String(parsed?.['2'] ?? '').trim();
-          // Content SID sin variables → Twilio falla; usar body libre.
-          if (!v1 && !v2) {
-            this.logger.warn(
-              `[SmsService] Content vars vacías — fallback a body libre to=${to}`,
-            );
-            createParams.body = body;
-            delete createParams.contentSid;
-          } else {
-            createParams.contentVariables = JSON.stringify({
-              '1': v1 || 'cliente',
-              '2': v2 || 'tu anuncio',
-            });
-          }
-        }
-      } else {
-        createParams.body = body;
+      const propertyTitle = contentVariables['1'] || contentVariables['2'];
+      const useTemplate = Boolean(contentSid);
+      if (contentSid && !propertyTitle) {
+        this.logger.warn(
+          `[SmsService] {{1}} título vacío — se envía plantilla con fallback to=${to}`,
+        );
       }
 
-      const message = await this.client.messages.create(createParams);
+      const message = await createTwilioMessageWithTemplateFallback(
+        this.client,
+        {
+          from: this.fromNumber,
+          to,
+          body,
+          contentSid: useTemplate ? contentSid : undefined,
+          contentVariables: useTemplate
+            ? twilioSeguimientoContentVariablesJson(contentVariables)
+            : undefined,
+        },
+        this.logger,
+        'SmsService',
+      );
       this.logger.log(
         `[SmsService] OK sid=${message.sid} to=${to} status=${message.status} ` +
           `contentSid=${contentSid || 'n/a'} lead=${payload.leadId}`,

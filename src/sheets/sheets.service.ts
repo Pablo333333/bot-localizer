@@ -195,7 +195,7 @@ export class SheetsService implements OnModuleInit {
     }
 
     const { sheet, row } = located;
-    const sheetCad = sheetRowToCad(row);
+    const sheetCad = sheetRowToCad(row, sheet.headerValues || []);
     const updates = buildCadPropertyUpdates(cad, (header) => row.get(header));
 
     if (Object.keys(updates).length > 0) {

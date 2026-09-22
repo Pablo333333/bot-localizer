@@ -3,20 +3,23 @@ import { ConfigService } from '@nestjs/config';
 import twilio, { Twilio } from 'twilio';
 import { Channel } from '../enums';
 import {
-  formatE164Spain,
-  renderTemplate,
-  toWhatsAppAddress,
-} from '../utils/phone.util';
+  parseTwilioContentVariables,
+  renderToniNoAnswerFallback,
+  twilioSeguimientoContentVariablesJson,
+} from '../toni-fase3.constants';
+import { formatE164Spain, toWhatsAppAddress } from '../utils/phone.util';
 import {
   ChannelSendPayload,
   ChannelSendResult,
   NurturingChannel,
 } from './channel.interface';
+import { createTwilioMessageWithTemplateFallback } from './twilio-template-fallback';
 
 /**
  * WhatsApp vía Twilio.
  *
  * Business Initiated requiere Content Template aprobado en canal WA.
+ * Si la plantilla falla, reenvía el copy libre de agendamiento.
  * Mientras `seguimiento_lead_fase3` no esté aprobado para WA, dejar
  * NURTURING_WHATSAPP_ENABLED≠true (default) para no intentar envíos que fallan
  * y dejar que el follow-up use SMS.
@@ -53,23 +56,14 @@ export class WhatsappChannel implements NurturingChannel {
       return { success: false, error };
     }
 
-    const bookingLink =
-      (payload.templatePayload?.booking_link as string | undefined) ||
-      this.config.get<string>('BOOKING_LINK') ||
-      this.config.get<string>('BOOKING_LINK_CALL') ||
-      this.config.get<string>('CALENDAR_BOOKING_URL') ||
-      'https://www.localicer.com/agendar';
-
-    const bodyTemplate =
-      (payload.templatePayload?.body as string | undefined) ||
-      'Hola {{name}}, no hemos podido hablar. Agenda tu visita aquí: {{booking_link}} — Localicer';
-
-    const body = renderTemplate(bodyTemplate, {
-      name: payload.name || 'hola',
-      phone: payload.phone,
-      email: payload.email,
-      booking_link: bookingLink,
-    });
+    const contentVariables = parseTwilioContentVariables(
+      payload.templatePayload?.contentVariables,
+    );
+    const bodyFromPayload = String(payload.templatePayload?.body ?? '').trim();
+    const body =
+      bodyFromPayload && !/\{\{[12]\}\}/.test(bodyFromPayload)
+        ? bodyFromPayload
+        : renderToniNoAnswerFallback(contentVariables, payload.name);
 
     const e164 = formatE164Spain(payload.phone);
     const to = toWhatsAppAddress(payload.phone);
@@ -101,28 +95,22 @@ export class WhatsappChannel implements NurturingChannel {
       const contentSid = (
         payload.templatePayload?.contentSid as string | undefined
       )?.trim();
-      const createParams: {
-        from: string;
-        to: string;
-        body?: string;
-        contentSid?: string;
-        contentVariables?: string;
-      } = {
-        from: this.fromNumber,
-        to,
-      };
-      if (contentSid) {
-        createParams.contentSid = contentSid;
-        const vars = payload.templatePayload?.contentVariables;
-        if (vars != null) {
-          createParams.contentVariables =
-            typeof vars === 'string' ? vars : JSON.stringify(vars);
-        }
-      } else {
-        createParams.body = body;
-      }
+      const useTemplate = Boolean(contentSid);
 
-      const message = await this.client.messages.create(createParams);
+      const message = await createTwilioMessageWithTemplateFallback(
+        this.client,
+        {
+          from: this.fromNumber,
+          to,
+          body,
+          contentSid: useTemplate ? contentSid : undefined,
+          contentVariables: useTemplate
+            ? twilioSeguimientoContentVariablesJson(contentVariables)
+            : undefined,
+        },
+        this.logger,
+        'WhatsAppService',
+      );
 
       this.logger.log(
         `[WhatsAppService] OK sid=${message.sid} to=${to} e164=${e164} status=${message.status}`,

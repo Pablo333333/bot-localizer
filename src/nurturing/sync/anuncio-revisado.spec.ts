@@ -25,7 +25,7 @@ describe('anuncio-revisado', () => {
     expect(findAnuncioRevisadoHeader(['A', 'B', 'C'])).toBeNull();
   });
 
-  it('solo procesa filas con SI', () => {
+  it('solo procesa filas con SI (gate de llamadas outbound)', () => {
     expect(
       isAnuncioRevisadoSi(
         fakeRow({ 'Anuncio Revisado?': 'SI' }),

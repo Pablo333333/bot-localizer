@@ -81,6 +81,7 @@ describe('XService parseIncomingDms', () => {
 
   it('extrae DM de Account Activity y marca echo del bot', () => {
     const parsed = service.parseIncomingDms({
+      for_user_id: 'bot-1',
       direct_message_events: [
         {
           type: 'message_create',
@@ -110,6 +111,29 @@ describe('XService parseIncomingDms', () => {
       isEcho: false,
     });
     expect(parsed[1].isEcho).toBe(true);
+  });
+
+  it('no trata el DM de prueba como echo si X_BOT_USER_ID está mal y for_user_id es el bot', () => {
+    configGet.mockImplementation((key: string) => {
+      if (key === 'X_BOT_USER_ID') return 'user-9';
+      return undefined;
+    });
+    const parsed = service.parseIncomingDms({
+      for_user_id: 'bot-1',
+      direct_message_events: [
+        {
+          type: 'message_create',
+          id: 'evt-test',
+          message_create: {
+            sender_id: 'user-9',
+            target: { recipient_id: 'bot-1' },
+            message_data: { text: 'ping' },
+          },
+        },
+      ],
+    });
+    expect(parsed[0].isEcho).toBe(false);
+    expect(parsed[0].senderId).toBe('user-9');
   });
 
   it('ignora eventos que no son message_create', () => {

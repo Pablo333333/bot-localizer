@@ -1,8 +1,8 @@
 /**
- * Variables del Content Template Twilio `seguimiento_lead_fase3`:
- *   {{1}} = nombre del contacto
- *   {{2}} = propiedad / anuncio
+ * Variables del Content Template Twilio de seguimiento:
+ *   {{1}} = título del inmueble (Direccion titulo anuncio / propiedad)
  *
+ * El enlace de agendamiento no es variable: lo incluye la plantilla Twilio.
  * Valores dinámicos desde Lead (Sheets → Postgres) y, si faltan,
  * desde variables Retell de la llamada. Sin literales fijos de negocio.
  */
@@ -41,7 +41,7 @@ function metaGet(
   return '';
 }
 
-/** Nombre para {{1}}. */
+/** Nombre del contacto (solo copy de fallback libre, no va a Twilio {{1}}). */
 export function resolveLeadContactName(
   lead: LeadLikeForSmsVars,
   callVars?: Record<string, unknown> | null,
@@ -59,7 +59,7 @@ export function resolveLeadContactName(
 }
 
 /**
- * Etiqueta de propiedad para {{2}}.
+ * Título del inmueble para Twilio {{1}}.
  * Preferencia: título de anuncio Sheets → dirección compuesta → tipo+municipio.
  */
 export function resolveLeadPropertyLabel(
@@ -117,14 +117,13 @@ export function resolveLeadPropertyLabel(
   return '';
 }
 
-/** Payload Twilio contentVariables: keys "1" y "2" como string. */
+/** Payload Twilio contentVariables: solo {{1}} = título del inmueble. */
 export function buildSeguimientoSmsContentVariables(
   lead: LeadLikeForSmsVars,
   callVars?: Record<string, unknown> | null,
-): { '1': string; '2': string } {
+): { '1': string } {
   return {
-    '1': resolveLeadContactName(lead, callVars),
-    '2': resolveLeadPropertyLabel(lead, callVars),
+    '1': resolveLeadPropertyLabel(lead, callVars),
   };
 }
 

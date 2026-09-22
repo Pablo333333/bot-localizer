@@ -69,6 +69,7 @@ export function readPublicacionAutorizadaRaw(
 
 /**
  * "Publicacion Autorizada?" debe ser estrictamente SI (por nombre de cabecera).
+ * Gate de creación/publicación del anuncio en WordPress.
  */
 export function isPublicacionAutorizadaSi(
   row: { get: (header: string) => unknown },

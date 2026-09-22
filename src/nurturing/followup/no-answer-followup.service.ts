@@ -13,8 +13,8 @@ import {
   TEMPLATE_SMS_T7,
   TEMPLATE_WA_T0,
   TONI_BOOKING_LINK,
-  TONI_NO_ANSWER_MESSAGE,
   TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3,
+  renderToniNoAnswerFallback,
   resolveCallPhase,
   resolveRetellFollowupAgentId,
   type NurturingCallPhase,
@@ -593,23 +593,22 @@ export class NoAnswerFollowupService {
   ): Promise<{ whatsappSent: boolean; smsSent: boolean }> {
     const bookingLink =
       this.config.get<string>('BOOKING_LINK_CALL') || TONI_BOOKING_LINK;
-    // Content SID lo resuelve SmsChannel (default seguimiento_lead_fase3).
-    // {{1}} nombre / {{2}} propiedad — siempre desde lead (+ callVars), nunca literales fijos.
+    // Content SID: plantilla Twilio ({{1}} = título inmueble; enlace embebido).
     const contentVariables = buildSeguimientoSmsContentVariables(
       lead,
       opts.callVars,
     );
     this.logger.log(
-      `[Followup] Content vars lead=${lead.id} {{1}}=${JSON.stringify(contentVariables['1'])} {{2}}=${JSON.stringify(contentVariables['2'])}`,
+      `[Followup] Content vars lead=${lead.id} {{1}} título=${JSON.stringify(contentVariables['1'])}`,
     );
-    if (!contentVariables['1'] || !contentVariables['2']) {
+    if (!contentVariables['1']) {
       this.logger.warn(
-        `[Followup] Content vars incompletas lead=${lead.id} name=${!!contentVariables['1']} propiedad=${!!contentVariables['2']} — se envía igual con lo disponible`,
+        `[Followup] Content vars incompletas lead=${lead.id} título vacío — se envía igual con fallback`,
       );
     }
 
     const payload: Record<string, unknown> = {
-      body: TONI_NO_ANSWER_MESSAGE,
+      body: renderToniNoAnswerFallback(contentVariables, lead.name),
       booking_link: bookingLink,
       contentVariables,
     };

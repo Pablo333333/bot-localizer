@@ -12,6 +12,7 @@ import {
   sanitizeValue,
   toWordpressRequestBody,
 } from './property-mapper';
+import { normalizeImageMimeType } from '../google/drive-file.util';
 
 @Injectable()
 export class WordpressService {
@@ -309,9 +310,10 @@ export class WordpressService {
     options: { postId?: number } = {},
   ): Promise<number> {
     try {
-      const safeName = this.sanitizeMediaFileName(fileName, mimeType);
+      const contentType = normalizeImageMimeType(mimeType);
+      const safeName = this.sanitizeMediaFileName(fileName, contentType);
       this.logger.log(
-        `Subiendo imagen a WordPress: ${safeName}${options.postId ? ` (post=${options.postId})` : ''} bytes=${buffer.length}`,
+        `Subiendo imagen a WordPress: ${safeName}${options.postId ? ` (post=${options.postId})` : ''} bytes=${buffer.length} mime=${contentType}`,
       );
 
       const url = options.postId
@@ -321,7 +323,7 @@ export class WordpressService {
       const response = await lastValueFrom(
         this.httpService.post(url, buffer, {
           headers: this.getAuthHeaders({
-            'Content-Type': mimeType || 'image/jpeg',
+            'Content-Type': contentType,
             'Content-Disposition': `attachment; filename="${safeName}"`,
           }),
           maxBodyLength: Infinity,

@@ -3,6 +3,12 @@ import { drive, drive_v3 } from '@googleapis/drive';
 import { JWT } from 'google-auth-library';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  assertImageBuffer,
+  downloadPublicDriveFile,
+  extractDriveFileIdFromUrl,
+  isLikelyHtmlBuffer,
+} from './drive-file.util';
 
 /** Flags necesarios para Shared Drives / unidades compartidas. */
 const DRIVE_LIST_OPTS = {
@@ -165,59 +171,73 @@ export class GoogleDriveService implements OnModuleInit {
   }
 
   async downloadImageBuffer(fileId: string): Promise<Buffer> {
-    try {
-      let resolvedId = fileId;
-      try {
-        const resolved = await this.resolveImageFileId(fileId);
-        resolvedId = resolved.id;
-      } catch {
-        // Continuar con el id original
-      }
+    const { buffer } = await this.downloadImageFile(fileId);
+    return buffer;
+  }
 
+  /**
+   * Descarga un archivo imagen: API de Drive (cuenta de servicio) y, si falla
+   * (403/404 / HTML de confirmación), URL pública uc?export=download.
+   */
+  async downloadImageFile(
+    fileId: string,
+  ): Promise<{ buffer: Buffer; mimeType: string; fileName?: string }> {
+    let resolvedId = fileId;
+    let fileName: string | undefined;
+    try {
+      const resolved = await this.resolveImageFileId(fileId);
+      resolvedId = resolved.id;
+      fileName = resolved.name || undefined;
+    } catch {
+      // Continuar con el id original
+    }
+
+    let buffer: Buffer | null = null;
+    let apiError: string | undefined;
+
+    try {
       const response = await this.driveClient.files.get(
-        { fileId: resolvedId, alt: 'media', ...DRIVE_FILE_OPTS },
+        {
+          fileId: resolvedId,
+          alt: 'media',
+          acknowledgeAbuse: true,
+          ...DRIVE_FILE_OPTS,
+        },
         { responseType: 'arraybuffer' },
       );
-
-      const buffer = Buffer.from(response.data as ArrayBuffer);
-      if (!buffer.length) {
-        throw new Error(`Buffer vacío para fileId=${resolvedId}`);
+      buffer = Buffer.isBuffer(response.data)
+        ? response.data
+        : Buffer.from(response.data as ArrayBuffer);
+      if (isLikelyHtmlBuffer(buffer)) {
+        throw new Error('API Drive devolvió HTML');
       }
-      return buffer;
-    } catch (error) {
-      this.logger.error(
-        `Error al descargar el buffer de la imagen ${fileId}: ${error.message}`,
+    } catch (error: any) {
+      apiError = error?.message || String(error);
+      this.logger.warn(
+        `Drive API alt=media falló fileId=${resolvedId}: ${apiError} — se intenta descarga pública`,
       );
-      throw error;
     }
+
+    if (!buffer || !buffer.length || isLikelyHtmlBuffer(buffer)) {
+      try {
+        buffer = await downloadPublicDriveFile(resolvedId);
+      } catch (pubErr: any) {
+        this.logger.error(
+          `Error al descargar imagen Drive ${fileId}: API=${apiError || 'n/a'} público=${pubErr.message}`,
+        );
+        throw pubErr;
+      }
+    }
+
+    const mimeType = assertImageBuffer(buffer, resolvedId);
+    return { buffer, mimeType, fileName };
   }
 
   /**
    * Extrae el fileId de URLs típicas de Google Drive (archivo, no carpeta).
    */
   extractFileIdFromUrl(url: string): string | null {
-    if (!url) return null;
-    const trimmed = url.trim();
-    if (/\/(?:drive\/)?folders\//i.test(trimmed)) {
-      return null;
-    }
-
-    const patterns = [
-      /\/file\/d\/([a-zA-Z0-9_-]+)/,
-      /[?&]id=([a-zA-Z0-9_-]+)/,
-      /\/d\/([a-zA-Z0-9_-]+)/,
-    ];
-
-    for (const re of patterns) {
-      const m = trimmed.match(re);
-      if (m?.[1]) return m[1];
-    }
-
-    if (/^[a-zA-Z0-9_-]{20,}$/.test(trimmed)) {
-      return trimmed;
-    }
-
-    return null;
+    return extractDriveFileIdFromUrl(url);
   }
 
   /** Extrae folderId de URLs /drive/folders/ID o ID crudo. */
@@ -261,19 +281,21 @@ export class GoogleDriveService implements OnModuleInit {
     this.logger.log(`Descargando imagen de Drive por URL. fileId=${fileId}`);
 
     let fileName = `drive_${fileId}.jpg`;
-    let mimeType = 'image/jpeg';
-
     try {
       const meta = await this.getFileMetadata(fileId);
       if (meta.name) fileName = meta.name;
-      if (meta.mimeType) mimeType = meta.mimeType;
     } catch (metaErr: any) {
       this.logger.warn(
         `No se pudo leer metadata de Drive (${fileId}): ${metaErr.message}. Se usará nombre por defecto.`,
       );
     }
 
-    const buffer = await this.downloadImageBuffer(fileId);
-    return { buffer, fileId, fileName, mimeType };
+    const downloaded = await this.downloadImageFile(fileId);
+    return {
+      buffer: downloaded.buffer,
+      fileId,
+      fileName: downloaded.fileName || fileName,
+      mimeType: downloaded.mimeType,
+    };
   }
 }

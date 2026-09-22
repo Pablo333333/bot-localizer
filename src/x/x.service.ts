@@ -12,15 +12,15 @@ import {
   buildCrcResponseToken,
   buildOAuth1Header,
 } from './x-oauth';
+import {
+  coerceJsonBody,
+  parseIncomingDmsFromPayload,
+  resolveWebhookBotUserId,
+  summarizeXWebhookPayload,
+  type XIncomingDm as ParsedIncomingDm,
+} from './x-webhook-payload';
 
-export interface XIncomingDm {
-  senderId: string | null;
-  recipientId: string | null;
-  text: string | null;
-  messageId?: string | null;
-  /** true si el mensaje lo envió la cuenta del bot (echo) */
-  isEcho?: boolean;
-}
+export type XIncomingDm = ParsedIncomingDm;
 
 export interface XSendResult {
   success: boolean;
@@ -216,14 +216,33 @@ export class XService {
   }
 
   /**
-   * Webhook Account Activity: DMs → Localisto → reply DM.
+   * Webhook Account Activity / XAA: DMs → Localisto → reply DM.
    * Ignora tweets/menciones y ecos del propio bot.
    */
-  async handleIncomingDm(payload: unknown): Promise<void> {
-    const messages = this.parseIncomingDms(payload);
+  async handleIncomingDm(payload: unknown, rawBody?: Buffer | string): Promise<void> {
+    const body = coerceJsonBody(payload, rawBody);
+    const bot = this.resolveBotUserId(body);
+    const messages = parseIncomingDmsFromPayload(body, bot.botUserId);
+    const summary = summarizeXWebhookPayload(body, messages);
+
+    this.logger.log(
+      `X webhook parse forUser=${summary.forUserId || '-'} botId=${bot.botUserId || '-'} botSrc=${bot.source} ` +
+        `envelope=${summary.envelopeEventType || '-'} dmEvents=${summary.dmEventCount} parsed=${summary.parsedDmCount} ` +
+        `inbound=${summary.inboundCount} echo=${summary.echoCount} typing=${summary.typingEventCount} ` +
+        `chatEncrypted=${summary.chatEvent} keys=${summary.keys.join(',') || '(none)'}`,
+    );
+
+    if (summary.chatEvent && summary.parsedDmCount === 0) {
+      this.logger.warn(
+        'X webhook chat.received/sent (XChat cifrado): no hay texto plano que el bot pueda leer. ' +
+          'Los DMs cifrados no se responden. Usa DM clásico (dm.received) o descifra encoded_event.',
+      );
+    }
+
     if (messages.length === 0) {
-      this.logger.debug(
-        'X webhook sin DMs de usuario (echo, tweet u otro evento)',
+      this.logger.warn(
+        `X webhook sin DMs de usuario parseables (¿echo, typing, tweet u otro evento?). ` +
+          `otherEventKeys=${summary.otherEventKeys.join(',') || '-'} sample=${summary.sampleTexts.join(' | ') || '-'}`,
       );
       return;
     }
@@ -237,7 +256,7 @@ export class XService {
     if (!autoReply) {
       for (const msg of messages) {
         this.logger.log(
-          `X DM passthrough sender=${msg.senderId} text=${JSON.stringify(msg.text)}`,
+          `X DM passthrough echo=${!!msg.isEcho} sender=${msg.senderId} text=${JSON.stringify(msg.text)}`,
         );
       }
       this.logger.log(X_INBOUND_DISABLED_LOG);
@@ -249,28 +268,50 @@ export class XService {
     }
   }
 
+  resolveBotUserId(payload: Record<string, any> = {}): {
+    botUserId: string | null;
+    source: string;
+  } {
+    const envId = this.config.get<string>('X_BOT_USER_ID')?.trim();
+    const accessToken = this.config.get<string>('X_ACCESS_TOKEN');
+    const resolved = resolveWebhookBotUserId({
+      payload,
+      envBotUserId: envId,
+      accessToken,
+    });
+    if (
+      envId &&
+      resolved.botUserId &&
+      envId !== resolved.botUserId &&
+      resolved.source.startsWith('payload')
+    ) {
+      this.logger.warn(
+        `X_BOT_USER_ID=${envId} no coincide con for_user_id/filter.user_id=${resolved.botUserId} — se usa el ID del payload (cuenta suscrita) para no ignorar DMs de prueba`,
+      );
+    }
+    return resolved;
+  }
+
   private async processOneDm(msg: XIncomingDm): Promise<void> {
     if (msg.isEcho) {
-      this.logger.debug(`X DM echo omitido messageId=${msg.messageId}`);
+      this.logger.log(
+        `X DM echo omitido (propio bot) sender=${msg.senderId} messageId=${msg.messageId} text=${JSON.stringify(msg.text)}`,
+      );
       return;
     }
     if (!msg.senderId || !msg.text?.trim()) {
-      this.logger.debug('X DM omitido (sin sender o texto)');
+      this.logger.warn(
+        `X DM omitido (sin sender o texto) sender=${msg.senderId} text=${JSON.stringify(msg.text)}`,
+      );
       return;
     }
     if (msg.messageId && this.processedMessageIds.has(msg.messageId)) {
-      this.logger.debug(`X DM ya procesado messageId=${msg.messageId}`);
-      return;
-    }
-
-    const botUserId = this.config.get<string>('X_BOT_USER_ID')?.trim();
-    if (botUserId && msg.senderId === botUserId) {
-      this.logger.debug('X DM del propio bot omitido (anti-bucle)');
+      this.logger.log(`X DM ya procesado messageId=${msg.messageId}`);
       return;
     }
 
     this.logger.log(
-      `X DM inbound sender=${msg.senderId} messageId=${msg.messageId ?? 'n/a'} chars=${msg.text.length}`,
+      `X DM inbound → agente sender=${msg.senderId} messageId=${msg.messageId ?? 'n/a'} text=${JSON.stringify(msg.text)}`,
     );
 
     let reply: string;
@@ -303,81 +344,12 @@ export class XService {
   }
 
   /**
-   * Parsea Account Activity (direct_message_events) y payloads v2 dm_events.
-   * No incluye tweets ni menciones.
+   * Parsea Account Activity (direct_message_events), XAA { data.payload } y dm_events v2.
    */
   parseIncomingDms(payload: unknown): XIncomingDm[] {
-    const body = payload as Record<string, any>;
-    const results: XIncomingDm[] = [];
-    const botUserId = this.config.get<string>('X_BOT_USER_ID')?.trim();
-
-    const events = Array.isArray(body?.direct_message_events)
-      ? body.direct_message_events
-      : [];
-
-    for (const event of events) {
-      if (event?.type && event.type !== 'message_create') continue;
-      const mc = event?.message_create;
-      if (!mc) continue;
-
-      const senderId =
-        mc.sender_id != null ? String(mc.sender_id) : null;
-      const recipientId =
-        mc.target?.recipient_id != null
-          ? String(mc.target.recipient_id)
-          : null;
-      const text =
-        mc.message_data?.text != null
-          ? String(mc.message_data.text)
-          : null;
-      const messageId = event.id != null ? String(event.id) : null;
-      const isEcho = Boolean(
-        botUserId && senderId && senderId === botUserId,
-      );
-
-      results.push({
-        senderId,
-        recipientId,
-        text,
-        messageId,
-        isEcho,
-      });
-    }
-
-    // Formato alternativo: { dm_events: [...] } (API v2 webhooks / polling)
-    const dmEvents = Array.isArray(body?.dm_events) ? body.dm_events : [];
-    for (const event of dmEvents) {
-      if (event?.event_type && event.event_type !== 'MessageCreate') {
-        continue;
-      }
-      const senderId =
-        event?.sender_id != null ? String(event.sender_id) : null;
-      const text =
-        event?.text != null
-          ? String(event.text)
-          : event?.message_create?.message_data?.text != null
-            ? String(event.message_create.message_data.text)
-            : null;
-      const messageId =
-        event?.id != null
-          ? String(event.id)
-          : event?.dm_event_id != null
-            ? String(event.dm_event_id)
-            : null;
-      const isEcho = Boolean(
-        botUserId && senderId && senderId === botUserId,
-      );
-      if (!text && !senderId) continue;
-      results.push({
-        senderId,
-        recipientId: null,
-        text,
-        messageId,
-        isEcho,
-      });
-    }
-
-    return results;
+    const body = coerceJsonBody(payload);
+    const bot = this.resolveBotUserId(body);
+    return parseIncomingDmsFromPayload(body, bot.botUserId);
   }
 
   private rememberProcessed(id: string): void {

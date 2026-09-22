@@ -22,9 +22,9 @@ import {
   shouldSkipWpOverwrite,
 } from '../../wordpress/wp-sync-guard';
 import {
-  findAnuncioRevisadoHeader,
-  isAnuncioRevisadoSi,
-} from './anuncio-revisado';
+  findPublicacionAutorizadaHeader,
+  isPublicacionAutorizadaSi,
+} from '../../outbound/publicacion-autorizada';
 
 const SHEET_NAME = 'Localizados';
 
@@ -39,7 +39,8 @@ export type ReviewedWpSyncStats = {
 };
 
 /**
- * Localizados → WordPress cuando "Anuncio Revisado?" = SI (por nombre de cabecera).
+ * Localizados → WordPress cuando "Publicación Autorizada?" = SI (por nombre de cabecera).
+ * Sube imágenes Drive a la biblioteca WP y crea el post pending con destacada + galería.
  * Crea el post si no hay ID_WP; si existe, actualiza salvo protección de publicados.
  */
 @Injectable()
@@ -109,11 +110,11 @@ export class SheetsReviewedSyncService {
     try {
       const { sheet, rows } = await this.sheetsService.getAllRows(SHEET_NAME);
       const headers = sheet.headerValues || [];
-      const reviewHeader = findAnuncioRevisadoHeader(headers);
+      const pubHeader = findPublicacionAutorizadaHeader(headers);
 
-      if (!reviewHeader) {
+      if (!pubHeader) {
         this.logger.warn(
-          'Columna "Anuncio Revisado?" no encontrada por nombre — sync omitido.',
+          'Columna "Publicación Autorizada?" no encontrada por nombre — sync omitido.',
         );
         return stats;
       }
@@ -126,7 +127,7 @@ export class SheetsReviewedSyncService {
           continue;
         }
 
-        if (!isAnuncioRevisadoSi(row, headers)) {
+        if (!isPublicacionAutorizadaSi(row, headers)) {
           stats.skipped += 1;
           continue;
         }
@@ -223,7 +224,7 @@ export class SheetsReviewedSyncService {
     headers: string[],
     options: { force?: boolean } = {},
   ): Promise<'created' | 'updated' | 'skipped'> {
-    const callData = sheetRowToCallData(row);
+    const callData = sheetRowToCallData(row, headers);
     const cad = callData.call_analysis.custom_analysis_data;
     const existingPostId = readWpPostIdFromSheetRow(row);
 
@@ -257,6 +258,9 @@ export class SheetsReviewedSyncService {
       callData.call_analysis.call_summary,
     );
     cad.descripcion_propietario = commercialContent;
+    this.logger.log(
+      `Fila ${row.rowNumber} media Sheet url_imagen=${String(cad.url_imagen || '').slice(0, 120) || '(vacío)'} carpeta_drive=${String(cad.carpeta_drive || '').slice(0, 120) || '(vacío)'}`,
+    );
     await this.sheetsService.updateSpecificCells(sheet, row.rowNumber, {
       [COL_DESCRIPCION_PROPIETARIO]: commercialContent,
       [COL_DESCRIPCION_PROPIETARIO_ALT]: commercialContent,
@@ -267,6 +271,12 @@ export class SheetsReviewedSyncService {
       callData.call_id,
       { postId: existingPostId },
     );
+
+    if (!media.featuredMediaId && media.galleryMediaIds.length === 0) {
+      this.logger.warn(
+        `Fila ${row.rowNumber}: sin imágenes en WP (Drive no descargó / no subió). Se crea el pending igual.`,
+      );
+    }
 
     const status =
       this.config.get<string>('WP_REVIEWED_POST_STATUS') ||

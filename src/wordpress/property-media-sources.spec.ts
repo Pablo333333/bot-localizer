@@ -62,4 +62,13 @@ describe('property-media-sources', () => {
     expect(formatPropertyImagesMeta([10, 20, 30])).toBe('10,20,30');
     expect(formatPropertyImagesMeta([])).toBe('');
   });
+
+  it('recoge URL Drive de cualquier clave CAD, no solo url_imagen', () => {
+    expect(
+      extractImageUrlsFromCad({
+        enlace_fotos:
+          'https://drive.google.com/file/d/extra999/view?usp=sharing',
+      }),
+    ).toEqual(['https://drive.google.com/file/d/extra999/view?usp=sharing']);
+  });
 });

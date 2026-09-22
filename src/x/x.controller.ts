@@ -13,6 +13,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import { isXInboundAutoReplyEnabled } from './x-inbound-enabled';
+import { coerceJsonBody, truncateJson } from './x-webhook-payload';
 import { XChatService } from './x-chat.service';
 import { XService } from './x.service';
 
@@ -70,28 +71,42 @@ export class XController {
   }
 
   /**
-   * Eventos Account Activity (DMs). Ack 200; auto-reply Localisto si está activo.
-   * No procesa tweets ni menciones públicas.
+   * Eventos Account Activity / X Activity API (DMs).
+   * Ack 200; auto-reply Localisto si está activo.
+   * POST /x/webhook
    */
   @Post('webhook')
   @HttpCode(HttpStatus.OK)
-  async handleWebhook(@Body() body: Record<string, unknown>) {
-    const dmCount = Array.isArray(body?.direct_message_events)
-      ? body.direct_message_events.length
-      : Array.isArray(body?.dm_events)
-        ? body.dm_events.length
-        : 0;
-
-    this.logger.log(`X webhook event dmEvents=${dmCount}`);
-    this.logger.debug(
-      `X webhook payload keys=${Object.keys(body || {}).join(',')}`,
+  async handleWebhook(
+    @Body() body: Record<string, unknown>,
+    @Req() req: Request,
+  ) {
+    const contentType = String(req.headers['content-type'] || '');
+    const contentLength = String(
+      req.headers['content-length'] ||
+        (req as Request & { rawBody?: Buffer }).rawBody?.length ||
+        '',
     );
+    const parsedBody = coerceJsonBody(
+      body,
+      (req as Request & { rawBody?: Buffer }).rawBody,
+    );
+    const keys = Object.keys(parsedBody || {});
+    const bot = this.xService.resolveBotUserId(parsedBody);
+
+    this.logger.log(
+      `X webhook POST hit contentType=${contentType || '(none)'} contentLength=${contentLength || '(none)'} ` +
+        `bodyType=${body == null ? 'null' : Array.isArray(body) ? 'array' : typeof body} ` +
+        `keys=${keys.join(',') || '(empty)'} botId=${bot.botUserId || '(none)'} botSrc=${bot.source}`,
+    );
+    this.logger.log(`X webhook POST payload=${truncateJson(parsedBody)}`);
 
     try {
-      await this.xService.handleIncomingDm(body);
+      await this.xService.handleIncomingDm(parsedBody);
     } catch (err) {
       this.logger.error(
         `X webhook error: ${err instanceof Error ? err.message : err}`,
+        err instanceof Error ? err.stack : undefined,
       );
     }
 
@@ -126,6 +141,7 @@ export class XController {
       autoReplyRaw,
       agentIdConfigured || openaiConfigured,
     );
+    const bot = this.xService.resolveBotUserId();
     const webhookReady = Boolean(creds) && secretConfigured;
     return {
       ok: true,
@@ -137,9 +153,9 @@ export class XController {
       agentIdConfigured,
       openaiConfigured,
       autoReplyEnabled,
-      botUserIdConfigured: Boolean(
-        this.config.get<string>('X_BOT_USER_ID')?.trim(),
-      ),
+      botUserIdConfigured: Boolean(bot.botUserId),
+      botUserId: bot.botUserId,
+      botUserIdSource: bot.source,
       scopesHint: 'dm.read dm.write tweet.read users.read offline.access',
       dmEngine:
         String(this.config.get('X_DM_ENGINE') || '')
@@ -150,7 +166,8 @@ export class XController {
         'https://bot-localicer-production.up.railway.app/x/webhook',
       listenMode: 'webhook-only (no polling worker)',
       crcChallenge: 'GET /x/webhook?crc_token=… → { response_token }',
-      dmEvents: 'POST /x/webhook con direct_message_events | dm_events',
+      dmEvents:
+        'POST /x/webhook — AAA direct_message_events | XAA data.event_type=dm.received + data.payload',
     };
   }
 }

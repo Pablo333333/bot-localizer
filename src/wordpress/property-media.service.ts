@@ -8,6 +8,7 @@ import {
 } from './property-media-sources';
 import type { RetellCad } from './property-mapper';
 import { WordpressService } from './wordpress.service';
+import { normalizeImageMimeType } from '../google/drive-file.util';
 
 export type PropertyMediaResult = {
   featuredMediaId?: number;
@@ -46,8 +47,12 @@ export class PropertyMediaService {
     const driveFiles = await this.collectDriveImageFiles(cad, callId, options.postId);
 
     if (driveFiles.length === 0) {
+      const extras = Object.entries(cad || {})
+        .filter(([, v]) => /drive\.google|docs\.google|\/file\/d\//i.test(String(v || '')))
+        .map(([k, v]) => `${k}=${String(v).slice(0, 60)}`)
+        .join(' | ');
       this.logger.warn(
-        `[PropertyMedia] Sin imágenes Drive | call_id=${callId || 'n/a'} post=${options.postId || 'n/a'} url_imagen=${String(cad?.url_imagen || '').slice(0, 80)} carpeta=${String(cad?.carpeta_drive || '').slice(0, 80)}`,
+        `[PropertyMedia] Sin imágenes Drive | call_id=${callId || 'n/a'} post=${options.postId || 'n/a'} url_imagen=${String(cad?.url_imagen || '').slice(0, 120)} carpeta=${String(cad?.carpeta_drive || '').slice(0, 120)}${extras ? ` extras=${extras}` : ''}`,
       );
       return empty;
     }
@@ -59,16 +64,17 @@ export class PropertyMediaService {
     const galleryMediaIds: number[] = [];
     for (const file of driveFiles.slice(0, MAX_PROPERTY_IMAGES)) {
       try {
-        const buffer = await this.googleDrive.downloadImageBuffer(file.id);
+        const downloaded = await this.googleDrive.downloadImageFile(file.id);
+        const mimeType = downloaded.mimeType || normalizeImageMimeType(file.mimeType);
         const mediaId = await this.wordpress.uploadMedia(
-          buffer,
-          file.name || `drive_${file.id}.jpg`,
-          file.mimeType || 'image/jpeg',
+          downloaded.buffer,
+          downloaded.fileName || file.name || `drive_${file.id}.jpg`,
+          mimeType,
           { postId: options.postId },
         );
         galleryMediaIds.push(mediaId);
         this.logger.log(
-          `[PropertyMedia] OK media_id=${mediaId} drive=${file.id} name=${file.name}`,
+          `[PropertyMedia] OK media_id=${mediaId} drive=${file.id} name=${file.name} mime=${mimeType} bytes=${downloaded.buffer.length}`,
         );
       } catch (err: any) {
         this.logger.warn(
@@ -159,6 +165,13 @@ export class PropertyMediaService {
               name: f.name,
               mimeType: f.mimeType,
             })),
+          );
+        } else if (
+          meta.mimeType &&
+          meta.mimeType.startsWith('application/vnd.google-apps.')
+        ) {
+          this.logger.warn(
+            `[PropertyMedia] Drive ${fileId} es ${meta.mimeType} (no imagen binaria) — omitido`,
           );
         } else {
           pushUnique([

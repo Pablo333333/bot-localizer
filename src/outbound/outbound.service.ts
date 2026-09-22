@@ -13,10 +13,10 @@ import {
   isOutboundCallsEnabled,
 } from './outbound-enabled';
 import {
-  findPublicacionAutorizadaHeader,
-  isPublicacionAutorizadaSi,
-  readPublicacionAutorizadaRaw,
-} from './publicacion-autorizada';
+  findAnuncioRevisadoHeader,
+  isAnuncioRevisadoSi,
+  readAnuncioRevisadoRaw,
+} from '../nurturing/sync/anuncio-revisado';
 import { buildRetellDynamicVariables, RETELL_OUTBOUND_VARIABLE_KEYS } from './retell-dynamic-variables';
 import {
   OUTBOUND_HOURS_DESCRIPTION,
@@ -223,9 +223,9 @@ export class OutboundService {
     this.hydrateDailyCountFromSheet(rows, maxDailyCalls);
 
     const headers = sheet.headerValues || [];
-    const pubHeader = findPublicacionAutorizadaHeader(headers);
+    const reviewHeader = findAnuncioRevisadoHeader(headers);
     this.logger.log(
-      `[OutboundService] Cabeceras clave → Publicacion Autorizada?: ${pubHeader ? `OK ("${pubHeader}" idx=${headers.indexOf(pubHeader)})` : 'FALTA'} | Llamado: ${headers.includes(COL_LLAMADO) ? 'OK' : 'FALTA'} | Telefono1: ${headers.includes(COL_C1_TEL) ? 'OK' : 'FALTA'} | Contacto1 por: ${headers.includes(COL_C1_ROL) ? 'OK' : 'FALTA'} | Call ID: ${headers.includes(COL_CALL_ID) ? 'OK' : 'FALTA'} | Marca temporal: ${headers.includes(COL_MARCA_TEMPORAL) ? 'OK' : 'FALTA'}`,
+      `[OutboundService] Cabeceras clave → Anuncio Revisado?: ${reviewHeader ? `OK ("${reviewHeader}" idx=${headers.indexOf(reviewHeader)})` : 'FALTA'} | Llamado: ${headers.includes(COL_LLAMADO) ? 'OK' : 'FALTA'} | Telefono1: ${headers.includes(COL_C1_TEL) ? 'OK' : 'FALTA'} | Contacto1 por: ${headers.includes(COL_C1_ROL) ? 'OK' : 'FALTA'} | Call ID: ${headers.includes(COL_CALL_ID) ? 'OK' : 'FALTA'} | Marca temporal: ${headers.includes(COL_MARCA_TEMPORAL) ? 'OK' : 'FALTA'}`,
     );
 
     this.logger.log(
@@ -442,9 +442,9 @@ export class OutboundService {
     rowNumber: number,
     headerValues?: string[],
   ): string | null {
-    if (!isPublicacionAutorizadaSi(row, headerValues)) {
-      const raw = readPublicacionAutorizadaRaw(row, headerValues);
-      return `Publicacion Autorizada? no es SI ("${String(raw).trim() || 'vacío'}") — no se llama ni se procesa`;
+    if (!isAnuncioRevisadoSi(row, headerValues)) {
+      const raw = readAnuncioRevisadoRaw(row, headerValues);
+      return `Anuncio Revisado? no es SI ("${String(raw).trim() || 'vacío'}") — no se llama ni se procesa`;
     }
 
     const llamadoRaw = row.get(COL_LLAMADO)?.toString().trim() || '';

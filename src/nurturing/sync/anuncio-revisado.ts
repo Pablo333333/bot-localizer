@@ -58,7 +58,7 @@ export function readAnuncioRevisadoRaw(
   return named ?? '';
 }
 
-/** true solo si la celda es estrictamente SI ("Anuncio Revisado?" por nombre). */
+/** true solo si la celda es estrictamente SI. Gate de llamadas outbound. */
 export function isAnuncioRevisadoSi(
   row: { get: (header: string) => unknown },
   headerValues?: string[],
