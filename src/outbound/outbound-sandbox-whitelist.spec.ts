@@ -4,8 +4,13 @@ import {
   guardOutboundRetellCall,
   isAllowedOutboundSandboxPhone,
   isOutboundSandboxWhitelistEnabled,
+  isSheetRowAllowedInSandbox,
   safeCreatePhoneCall,
 } from './outbound-sandbox-whitelist';
+
+function fakeRow(cells: Record<string, string>) {
+  return { get: (header: string) => cells[header] };
+}
 
 describe('outbound sandbox whitelist', () => {
   const prev = process.env.OUTBOUND_SANDBOX_WHITELIST_ENABLED;
@@ -30,6 +35,33 @@ describe('outbound sandbox whitelist', () => {
     expect(isOutboundSandboxWhitelistEnabled('false')).toBe(false);
     expect(isAllowedOutboundSandboxPhone('+34611111111', 'true')).toBe(false);
     expect(isAllowedOutboundSandboxPhone('+34644408099', 'true')).toBe(true);
+  });
+
+  it('con sandbox on el sync solo deja la fila de Toni', () => {
+    expect(
+      isSheetRowAllowedInSandbox(
+        fakeRow({ Telefono1: '+34611111111', Telefono2: '' }),
+        'true',
+      ),
+    ).toBe(false);
+    expect(
+      isSheetRowAllowedInSandbox(
+        fakeRow({ Telefono1: '644408099' }),
+        'true',
+      ),
+    ).toBe(true);
+    expect(
+      isSheetRowAllowedInSandbox(
+        fakeRow({ Telefono2: '+34 644 408 099' }),
+        'true',
+      ),
+    ).toBe(true);
+    expect(
+      isSheetRowAllowedInSandbox(
+        fakeRow({ Telefono1: '+34611111111' }),
+        'false',
+      ),
+    ).toBe(true);
   });
 
   it('con sandbox off permite cualquier número (incl. no-Toni)', () => {

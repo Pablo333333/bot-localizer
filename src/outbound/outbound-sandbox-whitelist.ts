@@ -65,6 +65,26 @@ export function isAllowedOutboundSandboxPhone(
   );
 }
 
+/** Teléfonos de la fila Localizados (mismo criterio que el match outbound). */
+const SHEET_ROW_PHONE_HEADERS = ['Telefono1', 'Telefono2', 'Telefono3'] as const;
+
+/**
+ * Con sandbox activo, la fila solo pasa si alguno de sus teléfonos es Toni.
+ * Con sandbox apagado, todas las filas pasan.
+ */
+export function isSheetRowAllowedInSandbox(
+  row: { get: (header: string) => unknown },
+  envRaw?: string | boolean | null,
+): boolean {
+  if (!isOutboundSandboxWhitelistEnabled(envRaw)) return true;
+  return SHEET_ROW_PHONE_HEADERS.some((header) =>
+    matchesOutboundTestPhone(
+      String(row.get(header) ?? ''),
+      OUTBOUND_SANDBOX_WHITELIST_E164,
+    ),
+  );
+}
+
 export type SandboxCallGuard =
   | { allowed: true }
   | { allowed: false; skipCode: typeof SKIPPED_SANDBOX_WHITELIST };

@@ -25,6 +25,12 @@ import {
   findPublicacionAutorizadaHeader,
   isPublicacionAutorizadaSi,
 } from '../../outbound/publicacion-autorizada';
+import {
+  OUTBOUND_SANDBOX_WHITELIST_E164,
+  SKIPPED_SANDBOX_WHITELIST,
+  isOutboundSandboxWhitelistEnabled,
+  isSheetRowAllowedInSandbox,
+} from '../../outbound/outbound-sandbox-whitelist';
 
 const SHEET_NAME = 'Localizados';
 
@@ -42,6 +48,7 @@ export type ReviewedWpSyncStats = {
  * Localizados → WordPress cuando "Publicación Autorizada?" = SI (por nombre de cabecera).
  * Sube imágenes Drive a la biblioteca WP y crea el post pending con destacada + galería.
  * Crea el post si no hay ID_WP; si existe, actualiza salvo protección de publicados.
+ * Con OUTBOUND_SANDBOX_WHITELIST_ENABLED, solo la fila de Toni (+34644408099).
  */
 @Injectable()
 export class SheetsReviewedSyncService {
@@ -120,6 +127,7 @@ export class SheetsReviewedSyncService {
       }
 
       stats.scanned = rows.length;
+      this.logSandboxScope();
 
       for (const row of rows) {
         const sheetRowNumber = row.rowNumber;
@@ -128,6 +136,11 @@ export class SheetsReviewedSyncService {
         }
 
         if (!isPublicacionAutorizadaSi(row, headers)) {
+          stats.skipped += 1;
+          continue;
+        }
+
+        if (!this.allowRowInSandbox(row, sheetRowNumber)) {
           stats.skipped += 1;
           continue;
         }
@@ -182,6 +195,7 @@ export class SheetsReviewedSyncService {
     const { sheet, rows } = await this.sheetsService.getAllRows(SHEET_NAME);
     const headers = sheet.headerValues || [];
     stats.scanned = rows.length;
+    this.logSandboxScope();
 
     for (const postId of uniqueIds) {
       const row = rows.find((r) => readWpPostIdFromSheetRow(r) === postId);
@@ -191,6 +205,11 @@ export class SheetsReviewedSyncService {
         this.logger.warn(
           `WP post ${postId}: no hay fila en Localizados con ese ID_WP`,
         );
+        continue;
+      }
+
+      if (!this.allowRowInSandbox(row, row.rowNumber)) {
+        stats.skipped += 1;
         continue;
       }
 
@@ -216,6 +235,31 @@ export class SheetsReviewedSyncService {
       `WP IDs sync: ids=${uniqueIds.join(',')} force=${!!options.force} created=${stats.created} updated=${stats.updated} skipped=${stats.skipped} missing=${stats.missing?.join(',') || '-'} errors=${stats.errors}`,
     );
     return stats;
+  }
+
+  private logSandboxScope(): void {
+    if (
+      !isOutboundSandboxWhitelistEnabled(
+        this.config.get('OUTBOUND_SANDBOX_WHITELIST_ENABLED'),
+      )
+    ) {
+      return;
+    }
+    this.logger.warn(
+      `[SANDBOX WHITELIST] Reviewed→WP solo filas con ${OUTBOUND_SANDBOX_WHITELIST_E164}. El resto de SI se omite.`,
+    );
+  }
+
+  private allowRowInSandbox(
+    row: { get: (header: string) => unknown },
+    rowNumber: number,
+  ): boolean {
+    const envRaw = this.config.get('OUTBOUND_SANDBOX_WHITELIST_ENABLED');
+    if (isSheetRowAllowedInSandbox(row, envRaw)) return true;
+    this.logger.log(
+      `Fila ${rowNumber} ${SKIPPED_SANDBOX_WHITELIST} — Reviewed→WP solo ${OUTBOUND_SANDBOX_WHITELIST_E164}`,
+    );
+    return false;
   }
 
   private async processReviewedRow(
