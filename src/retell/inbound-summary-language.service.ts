@@ -1,7 +1,9 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Retell from 'retell-sdk';
-import { INBOUND_SPANISH_SUMMARY_PROMPT } from './inbound-summary-language';
+import {
+  INBOUND_SPANISH_SUMMARY_PROMPT,
+  retellRequest,
+} from './inbound-summary-language';
 
 /**
  * Deja el agente inbound con el mismo criterio que el outbound:
@@ -24,30 +26,8 @@ export class InboundSummaryLanguageService implements OnModuleInit {
       return;
     }
 
-    const retell = new Retell({ apiKey });
     try {
-      const current = await retell.agent.retrieve(agentId);
-      if (current.analysis_summary_prompt === INBOUND_SPANISH_SUMMARY_PROMPT) {
-        if (current.is_published) {
-          this.logger.log(
-            `[Retell inbound] agent=${agentId} ya tiene call_summary en español en la versión publicada.`,
-          );
-          return;
-        }
-        await retell.agent.publish(agentId);
-        this.logger.log(
-          `[Retell inbound] agent=${agentId} publicado con el resumen en español.`,
-        );
-        return;
-      }
-
-      await retell.agent.update(agentId, {
-        analysis_summary_prompt: INBOUND_SPANISH_SUMMARY_PROMPT,
-      });
-      await retell.agent.publish(agentId);
-      this.logger.log(
-        `[Retell inbound] agent=${agentId} actualizado y publicado: call_summary siempre en español.`,
-      );
+      await this.ensureSpanishSummary(apiKey, agentId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(
@@ -55,5 +35,65 @@ export class InboundSummaryLanguageService implements OnModuleInit {
           'La respuesta call_inbound sigue enviando el override por llamada.',
       );
     }
+  }
+
+  private async ensureSpanishSummary(
+    apiKey: string,
+    agentId: string,
+  ): Promise<void> {
+    const current = await this.readAgent(apiKey, agentId);
+    const prompt = String(current?.analysis_summary_prompt ?? '');
+    const published = current?.is_published === true;
+
+    if (prompt === INBOUND_SPANISH_SUMMARY_PROMPT && published) {
+      this.logger.log(
+        `[Retell inbound] agent=${agentId} ya tiene call_summary en español en la versión publicada.`,
+      );
+      return;
+    }
+
+    if (prompt !== INBOUND_SPANISH_SUMMARY_PROMPT) {
+      await retellRequest({
+        fetchImpl: fetch,
+        apiKey,
+        method: 'PATCH',
+        path: `/update-agent/${encodeURIComponent(agentId)}`,
+        jsonBody: { analysis_summary_prompt: INBOUND_SPANISH_SUMMARY_PROMPT },
+        requireJsonBody: false,
+      });
+      const confirmed = await this.readAgent(apiKey, agentId);
+      if (
+        String(confirmed?.analysis_summary_prompt ?? '') !==
+        INBOUND_SPANISH_SUMMARY_PROMPT
+      ) {
+        throw new Error(
+          'Retell aceptó el update pero el agente sigue sin el prompt en español',
+        );
+      }
+    }
+
+    await retellRequest({
+      fetchImpl: fetch,
+      apiKey,
+      method: 'POST',
+      path: `/publish-agent/${encodeURIComponent(agentId)}`,
+      requireJsonBody: false,
+    });
+    this.logger.log(
+      `[Retell inbound] agent=${agentId} actualizado y publicado: call_summary siempre en español.`,
+    );
+  }
+
+  private async readAgent(
+    apiKey: string,
+    agentId: string,
+  ): Promise<Record<string, unknown> | null> {
+    return retellRequest({
+      fetchImpl: fetch,
+      apiKey,
+      method: 'GET',
+      path: `/get-agent/${encodeURIComponent(agentId)}`,
+      requireJsonBody: true,
+    });
   }
 }
