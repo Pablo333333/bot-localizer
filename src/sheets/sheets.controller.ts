@@ -17,6 +17,7 @@ import {
   isPhase3AllowedPhone,
 } from '../nurturing/phase3-allowlist';
 import { normalizeSiToken } from '../outbound/publicacion-autorizada';
+import { buildInboundSpanishSummaryOverride } from '../retell/inbound-summary-language';
 
 @Controller('webhooks')
 export class SheetsController {
@@ -42,17 +43,28 @@ export class SheetsController {
   }
 
   @Post('retell')
-  async handleRetellWebhook(@Body() body: Record<string, any>): Promise<void> {
+  async handleRetellWebhook(
+    @Body() body: Record<string, any>,
+  ): Promise<Record<string, unknown> | void> {
     this.logger.log('Cuerpo del webhook recibido:');
     console.log(JSON.stringify(body, null, 2));
 
     const eventType = body.event_type || body.event;
+    const inboundSetup =
+      eventType === 'call_inbound' || (body.call_inbound && !body.call);
+
+    if (inboundSetup) {
+      this.logger.log(
+        '[Retell inbound] call_inbound → override de call_summary en español (es-ES).',
+      );
+      return buildInboundSpanishSummaryOverride();
+    }
 
     // call_analyzed: flujo completo (CAD + WP + nurturing).
     // call_ended: nurturing temprano si no-contesta/busy/hangup (Retell a veces tarda el analyzed).
     if (eventType !== 'call_analyzed' && eventType !== 'call_ended') {
       this.logger.log(
-        `Ignorando evento de tipo: ${eventType}. Solo se procesan 'call_analyzed' y 'call_ended'.`,
+        `Ignorando evento de tipo: ${eventType}. Se procesan 'call_inbound', 'call_analyzed' y 'call_ended'.`,
       );
       return;
     }

@@ -1,8 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { GoogleSpreadsheetRow } from 'google-spreadsheet';
 import { SheetsService } from '../../sheets/sheets.service';
+import type { IsolatedSheetRow } from '../../sheets/sheet-row-isolation';
 import {
   readWpPostIdFromSheetRow,
   sheetRowToCallData,
@@ -220,7 +220,7 @@ export class SheetsReviewedSyncService {
 
   private async processReviewedRow(
     sheet: Parameters<SheetsService['updateTrackingCells']>[0],
-    row: GoogleSpreadsheetRow,
+    row: IsolatedSheetRow,
     headers: string[],
     options: { force?: boolean } = {},
   ): Promise<'created' | 'updated' | 'skipped'> {

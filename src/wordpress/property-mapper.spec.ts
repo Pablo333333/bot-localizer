@@ -1,6 +1,9 @@
 import {
   buildEstatePropertyPayload,
+  buildListingTitle,
+  buildWpSlug,
   extractImageUrlFromCad,
+  normalizeWpCountry,
   resolveOperation,
   resolvePrimaryPrice,
   toWordpressRequestBody,
@@ -31,6 +34,8 @@ describe('property-mapper (Retell → WP Residence)', () => {
         pueblo_barrio: 'Centro',
         municipio: 'Madrid',
         provincia: 'Madrid',
+        pais: 'España',
+        direccion: 'Calle Gran Vía, 45, Centro, Madrid',
         precio_alquiler: '1.500',
         precio_venta: '',
         fianza_meses: '2',
@@ -67,7 +72,8 @@ describe('property-mapper (Retell → WP Residence)', () => {
       property_bathrooms: '2',
       property_rooms: '1',
       property_state: 'Madrid',
-      property_country: 'Spain',
+      property_country: 'España',
+      property_address: 'Calle Gran Vía, 45, Centro, Madrid',
       property_status: 'Buen estado',
       energy_class: 'C',
       property_year: '1998',
@@ -82,8 +88,9 @@ describe('property-mapper (Retell → WP Residence)', () => {
       fianza: '2',
     });
 
-    expect(String((body.meta as any).property_address)).toContain('Gran Vía');
-    expect(String((body.meta as any).property_address)).toContain('Madrid');
+    expect(String((body.meta as any).property_address)).toBe(
+      'Calle Gran Vía, 45, Centro, Madrid',
+    );
     expect(body).not.toHaveProperty('_mapping');
     expect(body.author).toBe(1);
     expect(body.localicer_taxonomies).toMatchObject({
@@ -187,5 +194,85 @@ describe('property-mapper (Retell → WP Residence)', () => {
         }),
       }),
     );
+    expect(body.slug).toBe(payload.slug);
+  });
+
+  it('alinea título y slug con los anuncios de referencia', () => {
+    const restaurante = buildListingTitle(
+      {
+        negocio_anterior: 'Restaurante',
+        tipo_inmueble: 'Local',
+        tipo_via: 'Calle',
+        nombre_via: 'El califa',
+        numero_via: '31',
+        pueblo_barrio: 'Nueva Andalucía',
+        municipio: 'Marbella',
+        provincia: 'Málaga',
+        superficie_total: '126',
+        contrato: 'Traspaso',
+      },
+      'traspaso',
+    );
+    expect(restaurante).toBe(
+      'Restaurante en Calle El califa, 31, Nueva Andalucía, Marbella (MÁLAGA) – [TRASPASO] – 126 m2',
+    );
+    expect(buildWpSlug(restaurante)).toBe(
+      'restaurante-en-calle-el-califa-31-nueva-andalucia-marbella-malaga-traspaso-126-m2',
+    );
+
+    const nave = buildListingTitle(
+      {
+        tipo_inmueble: 'Nave',
+        tipo_via: 'Camino',
+        nombre_via: 'De Mollina',
+        numero_via: 's/n',
+        pueblo_barrio: 'centro-ciudad',
+        municipio: 'Alameda',
+        provincia: 'Málaga',
+        superficie_total: '4900',
+        contrato: 'Venta',
+      },
+      'venta',
+    );
+    expect(nave).toBe(
+      'Nave en Camino De Mollina s/n, Alameda (MÁLAGA) – [VENTA] – 4900 m2',
+    );
+    expect(buildWpSlug(nave)).toBe(
+      'nave-en-camino-de-mollina-s-n-alameda-malaga-venta-4900-m2',
+    );
+
+    const local = buildListingTitle(
+      {
+        tipo_inmueble: 'Local',
+        negocio_anterior: 'Almacén',
+        tipo_via: 'Calle',
+        nombre_via: 'Albaicín',
+        numero_via: '1',
+        municipio: 'Teba',
+        provincia: 'Málaga',
+        superficie_total: '95',
+        contrato: 'Alquiler',
+      },
+      'alquiler',
+    );
+    expect(buildWpSlug(local)).toBe(
+      'local-en-calle-albaicin-1-teba-malaga-alquiler-95-m2',
+    );
+  });
+
+  it('el país sale de la columna de la fila y Spain no se publica como Afghanistan', () => {
+    expect(normalizeWpCountry('Spain')).toBe('España');
+    expect(normalizeWpCountry('España')).toBe('España');
+    const payload = buildEstatePropertyPayload({
+      call_analysis: { custom_analysis_data: { pais: 'España', direccion: 'Calle Alta, 104' } },
+    });
+    expect(payload.meta.property_country).toBe('España');
+    expect(payload.meta.property_address).toBe('Calle Alta, 104');
+
+    const empty = buildEstatePropertyPayload({
+      call_analysis: { custom_analysis_data: { municipio: 'Marbella' } },
+    });
+    expect(empty.meta.property_country).toBeUndefined();
+    expect(empty.meta.property_address).toBeUndefined();
   });
 });

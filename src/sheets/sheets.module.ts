@@ -5,6 +5,7 @@ import { NurturingModule } from '../nurturing/nurturing.module';
 import { WordpressModule } from '../wordpress/wordpress.module';
 import { SheetsController } from './sheets.controller';
 import { SheetsService } from './sheets.service';
+import { InboundSummaryLanguageService } from '../retell/inbound-summary-language.service';
 
 @Global()
 @Module({
@@ -14,7 +15,7 @@ import { SheetsService } from './sheets.service';
     forwardRef(() => NurturingModule),
   ],
   controllers: [SheetsController],
-  providers: [SheetsService, PropertyPublishEmailService],
+  providers: [SheetsService, PropertyPublishEmailService, InboundSummaryLanguageService],
   exports: [SheetsService, PropertyPublishEmailService],
 })
 export class SheetsModule {}

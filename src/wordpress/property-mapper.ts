@@ -32,6 +32,7 @@ export type RetellCad = Record<string, unknown>;
 
 export interface EstatePropertyPayload {
   title: string;
+  slug: string;
   content: string;
   status: string;
   author: number;
@@ -160,27 +161,110 @@ export function resolvePrimaryPrice(
   return toNumericMeta(cad?.precio_alquiler);
 }
 
-function buildAddress(cad: RetellCad | undefined): string {
-  const parts = [
-    sanitizeValue(cad?.tipo_via),
-    sanitizeValue(cad?.nombre_via),
-    sanitizeValue(cad?.numero_via || cad?.altura),
-  ].filter(Boolean);
-  return parts.join(' ').trim();
+function buildStreetLine(cad: RetellCad | undefined): string {
+  const via = [sanitizeValue(cad?.tipo_via), sanitizeValue(cad?.nombre_via)]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  const numero = sanitizeValue(cad?.numero_via || cad?.altura);
+  if (!via) return numero;
+  if (!numero) return via;
+  if (/^s\s*[/.-]?\s*n\.?$/i.test(numero) || numero.toLowerCase() === 'sn') {
+    return `${via} s/n`;
+  }
+  return `${via}, ${numero}`;
 }
 
-function buildTitle(cad: RetellCad | undefined, operation: string): string {
-  const tipo = displayValue(cad?.tipo_inmueble, 'Local');
-  const via = sanitizeValue(cad?.nombre_via);
-  const pueblo = sanitizeValue(cad?.pueblo_barrio || cad?.pueblo);
-  const municipio = sanitizeValue(cad?.municipio);
-  const ubicacion = [via, pueblo || municipio].filter(Boolean).join(', ');
-  const opTag = `[${operation.toUpperCase()}]`;
+const GENERIC_ACTIVITY =
+  /^(almac[eé]n|sin actividad|no consta|no|n\/a|na|cerrad[oa]|vac[ií]o|ningun[oa]|local|nave|oficina|local comercial|comercial)$/i;
 
-  if (!ubicacion && tipo === 'Local') {
-    return `${opTag} Inmueble Comercial en Localicer.com`;
+const GENERIC_AREA =
+  /^(centro|centro ciudad|centro-ciudad|casco|casco urbano|casco-urbano)$/i;
+
+function titleLead(cad: RetellCad | undefined): string {
+  const negocio = sanitizeValue(cad?.negocio_anterior);
+  if (negocio && !GENERIC_ACTIVITY.test(negocio)) return negocio;
+  const tipo = sanitizeValue(cad?.tipo_inmueble).toLowerCase();
+  if (tipo.includes('nave')) return 'Nave';
+  if (tipo.includes('oficina')) return 'Oficina';
+  if (tipo.includes('edificio')) return 'Edificio';
+  if (tipo.includes('complejo')) return 'Complejo';
+  return 'Local';
+}
+
+function formatSizeForTitle(v: unknown): string {
+  const s = toNumericMeta(v);
+  if (!s) return '';
+  const n = Number(s);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  return String(Math.round(n));
+}
+
+/**
+ * Mismo patrón que los anuncios publicados:
+ * "Restaurante en Calle El califa, 31, Nueva Andalucía, Marbella (MÁLAGA) – [TRASPASO] – 126 m2"
+ * WordPress deriva el slug al sanitizar este título.
+ */
+export function buildListingTitle(
+  cad: RetellCad | undefined,
+  operation: string,
+): string {
+  const lead = titleLead(cad);
+  const street = buildStreetLine(cad);
+  const municipio = sanitizeValue(cad?.municipio);
+  const barrio = sanitizeValue(cad?.pueblo_barrio || cad?.pueblo);
+  const provincia = sanitizeValue(cad?.provincia);
+  const parts: string[] = [];
+  if (street) parts.push(street);
+  if (
+    barrio &&
+    barrio.toLowerCase() !== municipio.toLowerCase() &&
+    !GENERIC_AREA.test(barrio)
+  ) {
+    parts.push(barrio);
   }
-  return `${opTag} ${tipo}${ubicacion ? ' en ' + ubicacion : ''}`;
+  if (municipio) parts.push(municipio);
+  const place = parts.join(', ');
+  const prov = provincia
+    ? ` (${provincia.toLocaleUpperCase('es-ES')})`
+    : '';
+  const op = operation.toUpperCase();
+  const size =
+    formatSizeForTitle(cad?.superficie_total) ||
+    formatSizeForTitle(cad?.superficie_util);
+  const sizeBit = size ? ` – ${size} m2` : '';
+  if (!place) {
+    return `${lead} – [${op}]${sizeBit}`.trim();
+  }
+  return `${lead} en ${place}${prov} – [${op}]${sizeBit}`;
+}
+
+/** Slug WP (sanitize_title) a partir del título del anuncio. */
+export function buildWpSlug(title: string): string {
+  return title
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/m²/g, 'm2')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/**
+ * WP Residence muestra Afganistán si el país no coincide con el desplegable.
+ * La ficha publicada usa "España", no "Spain".
+ */
+export function normalizeWpCountry(raw: unknown): string {
+  const s = sanitizeValue(raw);
+  if (!s) return '';
+  const key = s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (key === 'spain' || key === 'espana' || key === 'es' || key === 'esp') {
+    return 'España';
+  }
+  return s;
 }
 
 /**
@@ -265,7 +349,6 @@ export function buildEstatePropertyPayload(
   const cad = callData.call_analysis?.custom_analysis_data;
   const operation = resolveOperation(cad);
   const price = resolvePrimaryPrice(cad, operation);
-  const address = buildAddress(cad);
   const baths = toNumericMeta(
     cad?.numero_aseos || cad?.aseos || cad?.numero_banios,
   );
@@ -315,13 +398,12 @@ export function buildEstatePropertyPayload(
   if (baths) meta.property_bathrooms = baths;
   if (floors) meta.property_rooms = floors;
 
-  const area = sanitizeValue(cad?.pueblo_barrio || cad?.pueblo);
-  const city = sanitizeValue(cad?.municipio);
   const state = sanitizeValue(cad?.provincia);
-  const addressFull = [address, area, city].filter(Boolean).join(', ');
-  if (addressFull) meta.property_address = addressFull;
+  const sheetAddress = sanitizeValue(cad?.direccion);
+  if (sheetAddress) meta.property_address = sheetAddress;
   if (state) meta.property_state = state;
-  meta.property_country = 'Spain';
+  const country = normalizeWpCountry(cad?.pais ?? cad?.country);
+  if (country) meta.property_country = country;
 
   const zip = sanitizeValue(cad?.codigo_postal || cad?.cp || cad?.zip);
   if (zip) meta.property_zip = zip;
@@ -361,8 +443,10 @@ export function buildEstatePropertyPayload(
 
   Object.assign(meta, buildWpResidenceCustomFields(cad));
 
+  const title = buildListingTitle(cad, operation);
   const payload: EstatePropertyPayload = {
-    title: buildTitle(cad, operation),
+    title,
+    slug: buildWpSlug(title),
     content: buildCommercialContent(
       cad,
       callData.call_analysis?.call_summary,
@@ -405,6 +489,7 @@ export function toWordpressRequestBody(
   void _mapping;
   return {
     ...rest,
+    slug: payload.slug,
     author: payload.author,
     meta: { ...payload.meta },
     localicer_taxonomies: taxonomies,

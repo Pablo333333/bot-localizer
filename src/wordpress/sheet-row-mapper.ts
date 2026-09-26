@@ -3,10 +3,16 @@ import {
   extractDriveFileId,
   extractDriveFolderId,
 } from './property-media-sources';
+import {
+  SHEET_COL_DIRECCION,
+  SHEET_COL_PAIS,
+} from '../sheets/sheet-row-isolation';
 
 type SheetRowLike = {
   get: (header: string) => unknown;
   toObject?: () => Record<string, unknown>;
+  /** Lectura por letra A1 de ESTA fila (CI = país, CX = dirección). */
+  getByColumnLetter?: (letter: string) => unknown;
 };
 
 /** Sheet Localizados → claves CAD usadas por buildEstatePropertyPayload. */
@@ -193,18 +199,10 @@ function findHeaderByAliases(
   headers?: string[],
 ): string | null {
   if (!headers?.length) return null;
-  const wanted = aliases.map(normalizeHeader);
-  for (const h of headers) {
-    if (wanted.includes(normalizeHeader(h))) return h;
-  }
+  const wanted = new Set(aliases.map(normalizeHeader));
   for (const h of headers) {
     const n = normalizeHeader(h);
-    if (!n || isStreetViewOrMapsHeader(n)) continue;
-    for (const alias of wanted) {
-      if (alias.length >= 6 && (n.includes(alias) || alias.includes(n))) {
-        return h;
-      }
-    }
+    if (n && wanted.has(n)) return h;
   }
   return null;
 }
@@ -368,6 +366,16 @@ export function sheetRowToCad(
   const drive = collectDriveFromRow(row, headers);
   if (drive.url_imagen) cad.url_imagen = drive.url_imagen;
   if (drive.carpeta_drive) cad.carpeta_drive = drive.carpeta_drive;
+
+  // País (CI) y dirección (CX) de esta fila, nunca de una cabecera parecida ni de otra fila.
+  if (typeof row.getByColumnLetter === 'function') {
+    const pais = sanitizeValue(row.getByColumnLetter(SHEET_COL_PAIS));
+    const direccion = sanitizeValue(row.getByColumnLetter(SHEET_COL_DIRECCION));
+    if (pais) cad.pais = pais;
+    else delete cad.pais;
+    if (direccion) cad.direccion = direccion;
+    else delete cad.direccion;
+  }
 
   return cad;
 }

@@ -112,4 +112,18 @@ describe('sheet-row-mapper', () => {
     );
     expect(cad.url_imagen).toContain('foto111');
   });
+
+  it('país y dirección salen de CI y CX de la fila en curso', () => {
+    const cad = sheetRowToCad({
+      get: () => 'Afganistán',
+      getByColumnLetter: (letter: string) =>
+        letter === 'CI'
+          ? 'España'
+          : letter === 'CX'
+            ? 'Avenida Carlota Alessandri, 41, Carihuela, Torremolinos'
+            : '',
+    });
+    expect(cad.pais).toBe('España');
+    expect(cad.direccion).toContain('Carlota Alessandri');
+  });
 });

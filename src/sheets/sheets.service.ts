@@ -20,6 +20,14 @@ import {
   sheetRowToCad,
 } from '../wordpress/sheet-row-mapper';
 import type { RetellCad } from '../wordpress/property-mapper';
+import {
+  isolatedRowsFromGridPage,
+  parseA1RangeRows,
+  sheetReadColumnCount,
+  sheetReadLastColumnLetter,
+  type IsolatedSheetRow,
+  type SheetGridRow,
+} from './sheet-row-isolation';
 
 @Injectable()
 export class SheetsService implements OnModuleInit {
@@ -79,18 +87,18 @@ export class SheetsService implements OnModuleInit {
   }
 
   /**
-   * Recarga metadatos del doc (rowCount puede crecer tras el arranque) y lee
-   * todas las filas de datos en páginas. Evita el tope silencioso de
-   * `getRows()` sin opciones (= rowCount cacheado en loadInfo inicial).
+   * Lee cada fila con su número real de la hoja (includeGridData).
+   * values.get / getRows() omiten filas vacías y desplazan el índice:
+   * la descripción de la fila 488 puede acabar escrita en la 452.
    */
   async getAllRows(
     sheetNameOrSheet: string | GoogleSpreadsheetWorksheet,
     options?: { pageSize?: number },
   ): Promise<{
     sheet: GoogleSpreadsheetWorksheet;
-    rows: Awaited<ReturnType<GoogleSpreadsheetWorksheet['getRows']>>;
+    rows: IsolatedSheetRow[];
   }> {
-    const pageSize = Math.max(100, options?.pageSize ?? 500);
+    const pageSize = Math.max(50, options?.pageSize ?? 200);
 
     await this.doc.loadInfo();
 
@@ -108,35 +116,64 @@ export class SheetsService implements OnModuleInit {
     }
 
     await sheet.loadHeaderRow();
+    const headers = [...(sheet.headerValues || [])];
+    const columnCount = sheetReadColumnCount(headers.length);
+    const lastLetter = sheetReadLastColumnLetter(headers.length);
 
-    const gridRows = sheet.rowCount;
+    const probe = (await (
+      await this.doc.sheetsApi.get(
+        `values/${sheet.encodedA1SheetName}!A1:${lastLetter}`,
+      )
+    ).json()) as { range?: string };
+
+    const bounds = parseA1RangeRows(probe.range);
+    const endRow = Math.max(bounds?.end ?? 1, 1);
     this.logger.log(
-      `[getAllRows] "${sheet.title}" grid rowCount=${gridRows} → paginando de ${pageSize}`,
+      `[getAllRows] "${sheet.title}" rango=${probe.range || '-'} columnas=${columnCount} (${lastLetter}) → páginas de ${pageSize}`,
     );
 
-    const allRows: Awaited<ReturnType<GoogleSpreadsheetWorksheet['getRows']>> =
-      [];
-    let offset = 0;
+    const allRows: IsolatedSheetRow[] = [];
+    for (let start = 2; start <= endRow; start += pageSize) {
+      const end = Math.min(endRow, start + pageSize - 1);
+      const range = `${sheet.a1SheetName}!A${start}:${lastLetter}${end}`;
+      const grid = (await (
+        await this.doc.sheetsApi.get('', {
+          searchParams: {
+            includeGridData: 'true',
+            ranges: range,
+            fields:
+              'sheets.data(startRow,rowData(values(formattedValue,userEnteredValue,effectiveValue)))',
+          },
+        })
+      ).json()) as {
+        sheets?: Array<{
+          data?: Array<{
+            startRow?: number;
+            rowData?: Array<{ values?: unknown[] } | null>;
+          }>;
+        }>;
+      };
 
-    while (true) {
-      const batch = await sheet.getRows({ offset, limit: pageSize });
-      if (batch.length === 0) {
-        break;
+      const block = grid.sheets?.[0]?.data?.[0];
+      const startRowIndex0 = block?.startRow ?? start - 1;
+      if (startRowIndex0 !== start - 1) {
+        this.logger.warn(
+          `[getAllRows] "${sheet.title}" página A${start}: startRow API=${startRowIndex0} esperado=${start - 1}. Se usa el índice de la API para no mezclar filas.`,
+        );
       }
-      allRows.push(...batch);
-      this.logger.debug(
-        `[getAllRows] offset=${offset} batch=${batch.length} acumulado=${allRows.length}`,
-      );
-      if (batch.length < pageSize) {
-        break;
-      }
-      offset += batch.length;
+      const page = isolatedRowsFromGridPage({
+        startRowIndex0,
+        headers,
+        rowData: block?.rowData as SheetGridRow[] | undefined,
+        columnCount,
+      });
+      allRows.push(...page);
     }
 
     const lastRowNumber =
       allRows.length > 0 ? allRows[allRows.length - 1].rowNumber : 1;
     this.logger.log(
-      `[getAllRows] "${sheet.title}" total filas de datos=${allRows.length} (última sheet row=${lastRowNumber})`,
+      `[getAllRows] "${sheet.title}" total filas con datos=${allRows.length} (última sheet row=${lastRowNumber})`,
     );
 
     return { sheet, rows: allRows };
@@ -148,7 +185,7 @@ export class SheetsService implements OnModuleInit {
 
   async findLocalizadosRowByPhone(phoneCalled: string): Promise<{
     sheet: GoogleSpreadsheetWorksheet;
-    row: Awaited<ReturnType<GoogleSpreadsheetWorksheet['getRows']>>[number];
+    row: IsolatedSheetRow;
   } | null> {
     const { sheet, rows } = await this.getAllRows('Localizados');
     const target = this.normalizePhoneDigits(phoneCalled);
@@ -166,7 +203,7 @@ export class SheetsService implements OnModuleInit {
 
   async findLocalizadosRowByWpPostId(postId: number): Promise<{
     sheet: GoogleSpreadsheetWorksheet;
-    row: Awaited<ReturnType<GoogleSpreadsheetWorksheet['getRows']>>[number];
+    row: IsolatedSheetRow;
   } | null> {
     const { sheet, rows } = await this.getAllRows('Localizados');
     const row = rows.find((r) => readWpPostIdFromSheetRow(r) === postId);
@@ -385,10 +422,20 @@ export class SheetsService implements OnModuleInit {
       const value = String(raw).trim();
       if (!value) continue;
 
-      const header = headers.find(
-        (h) => String(h || '').trim().toLowerCase() === key.trim().toLowerCase(),
+      const wanted = key.trim().toLowerCase();
+      const matches = headers.filter(
+        (h) => String(h || '').trim().toLowerCase() === wanted,
       );
-      if (!header || !headerSet.has(header)) continue;
+      if (matches.length !== 1) {
+        if (matches.length > 1) {
+          this.logger.warn(
+            `[updateSpecificCells] Fila ${rowNumber}: cabecera "${key}" duplicada — no se escribe para no mezclar columnas.`,
+          );
+        }
+        continue;
+      }
+      const header = matches[0];
+      if (!headerSet.has(header)) continue;
 
       if (existingRow && !shouldWriteCell(existingRow.get(header), value)) {
         continue;
@@ -407,10 +454,14 @@ export class SheetsService implements OnModuleInit {
     }
 
     await sheet.loadCells(cells.map((c) => c.a1));
-    for (const { a1, value } of cells) {
-      sheet.getCellByA1(a1).value = value;
-    }
-    await sheet.saveUpdatedCells();
+    const dirty = cells.map(({ a1, value }) => {
+      const cell = sheet.getCellByA1(a1);
+      cell.value = value;
+      return cell;
+    });
+    // Solo estas celdas. saveUpdatedCells() volcaría otras celdas sucias de la caché
+    // y puede escribir la descripción de una fila encima de otra.
+    await sheet.saveCells(dirty);
 
     this.logger.log(
       `[updateSpecificCells] Fila ${rowNumber} → ${cells.map((c) => `${c.header}(${c.a1})="${c.value}"`).join(', ')}`,

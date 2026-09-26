@@ -1,9 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { LeadStatus as PrismaLeadStatus, Prisma } from '@prisma/client';
-import { GoogleSpreadsheetRow } from 'google-spreadsheet';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SheetsService } from '../../sheets/sheets.service';
+import type { IsolatedSheetRow } from '../../sheets/sheet-row-isolation';
 import { LeadStatus } from '../enums';
 import { normalizePhone, phoneDedupeKey } from '../utils/phone.util';
 import { buildLeadPropertyMetadataFromSheet } from '../followup/lead-sms-content-vars';
@@ -206,7 +206,7 @@ export class SheetsLeadSyncService {
       return;
     }
 
-    let row: GoogleSpreadsheetRow | undefined;
+    let row: IsolatedSheetRow | undefined;
 
     if (sheetsRowNumber != null) {
       row = rows.find((r) => r.rowNumber === sheetsRowNumber);
@@ -268,7 +268,7 @@ export class SheetsLeadSyncService {
     return sheet;
   }
 
-  private extractPhone(row: GoogleSpreadsheetRow): string | null {
+  private extractPhone(row: IsolatedSheetRow): string | null {
     const candidates = [
       row.get(COL_TEL_CONTACTO1),
       row.get(COL_TELEFONO1),
