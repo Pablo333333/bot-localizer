@@ -396,9 +396,10 @@ export function sheetRowToCad(
     }
   }
 
-  const fromHeader = cad.url_imagen;
+  const fromHeader =
+    typeof cad.url_imagen === 'string' ? cad.url_imagen : '';
   const drive = collectDriveFromRow(row, headers);
-  const principal = readColumnPImageUrl(row) || fromHeader || '';
+  const principal = readColumnPImageUrl(row) || fromHeader;
   const urlImagen = withPrincipalImageFirst(principal, drive.url_imagen);
   if (urlImagen) cad.url_imagen = urlImagen;
   if (drive.carpeta_drive) cad.carpeta_drive = drive.carpeta_drive;
