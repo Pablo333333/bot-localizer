@@ -11,6 +11,7 @@ import {
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 import { CreateCheckoutSessionDto } from './dto/create-checkout-session.dto';
+import { StartMembershipPaymentDto } from './dto/start-membership-payment.dto';
 import { StripeService } from './stripe.service';
 
 @Controller('stripe')
@@ -31,6 +32,14 @@ export class StripeController {
       sessionId: session.sessionId,
       url: session.url,
     };
+  }
+
+  @Post('start-membership-payment')
+  async startMembershipPayment(@Body() dto: StartMembershipPaymentDto) {
+    this.logger.log(
+      `Cobro de membresía: userId=${dto.userId} | mode=${dto.mode} | priceId=${dto.priceId} | pm=${dto.paymentMethodId}`,
+    );
+    return this.stripeService.startMembershipPayment(dto);
   }
 
   @Post('webhook')
