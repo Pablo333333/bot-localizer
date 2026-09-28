@@ -303,7 +303,7 @@ export class SheetsReviewedSyncService {
     );
     cad.descripcion_propietario = commercialContent;
     this.logger.log(
-      `Fila ${row.rowNumber} media Sheet url_imagen=${String(cad.url_imagen || '').slice(0, 120) || '(vacío)'} carpeta_drive=${String(cad.carpeta_drive || '').slice(0, 120) || '(vacío)'}`,
+      `Fila ${row.rowNumber} media Sheet URL Imagen (col P)=${String(cad.url_imagen || '').slice(0, 120) || '(vacío)'} carpeta_drive=${String(cad.carpeta_drive || '').slice(0, 120) || '(vacío)'}`,
     );
     await this.sheetsService.updateSpecificCells(sheet, row.rowNumber, {
       [COL_DESCRIPCION_PROPIETARIO]: commercialContent,

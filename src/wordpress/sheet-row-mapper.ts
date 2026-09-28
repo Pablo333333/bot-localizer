@@ -6,12 +6,13 @@ import {
 import {
   SHEET_COL_DIRECCION,
   SHEET_COL_PAIS,
+  SHEET_COL_URL_IMAGEN,
 } from '../sheets/sheet-row-isolation';
 
 type SheetRowLike = {
   get: (header: string) => unknown;
   toObject?: () => Record<string, unknown>;
-  /** Lectura por letra A1 de ESTA fila (CI = país, CX = dirección). */
+  /** Lectura por letra A1 de ESTA fila (P = URL Imagen, CI = país, CX = dirección). */
   getByColumnLetter?: (letter: string) => unknown;
 };
 
@@ -114,9 +115,9 @@ const SHEET_TO_CAD: ReadonlyArray<{
   {
     cadKey: 'url_imagen',
     columns: [
+      'URL Imagen',
       'URL imagen',
       'Url imagen',
-      'URL Imagen',
       'url_imagen',
       'Imagen URL',
       'URLs imagenes',
@@ -318,6 +319,38 @@ function collectDriveFromRow(
   };
 }
 
+/** Columna P de esta fila. Es la imagen principal, aunque haya otros enlaces Drive. */
+function readColumnPImageUrl(row: SheetRowLike): string {
+  if (typeof row.getByColumnLetter !== 'function') return '';
+  return sanitizeValue(
+    unwrapSheetCellValue(row.getByColumnLetter(SHEET_COL_URL_IMAGEN)),
+  );
+}
+
+function splitImageParts(raw: string): string[] {
+  return raw
+    .split(/[\n,;|]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** La URL de la columna P queda la primera: esa es la destacada en WordPress. */
+function withPrincipalImageFirst(principal: string, scanned?: string): string {
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: string) => {
+    for (const part of splitImageParts(raw)) {
+      const key = (extractDriveFileId(part) || part).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      parts.push(part);
+    }
+  };
+  if (principal) push(principal);
+  if (scanned) push(scanned);
+  return parts.join(', ');
+}
+
 function readSheetCell(
   row: SheetRowLike,
   columns: readonly string[],
@@ -363,8 +396,11 @@ export function sheetRowToCad(
     }
   }
 
+  const fromHeader = cad.url_imagen;
   const drive = collectDriveFromRow(row, headers);
-  if (drive.url_imagen) cad.url_imagen = drive.url_imagen;
+  const principal = readColumnPImageUrl(row) || fromHeader || '';
+  const urlImagen = withPrincipalImageFirst(principal, drive.url_imagen);
+  if (urlImagen) cad.url_imagen = urlImagen;
   if (drive.carpeta_drive) cad.carpeta_drive = drive.carpeta_drive;
 
   // País (CI) y dirección (CX) de esta fila, nunca de una cabecera parecida ni de otra fila.

@@ -1,3 +1,4 @@
+import { createIsolatedSheetRow } from '../sheets/sheet-row-isolation';
 import {
   readWpPostIdFromSheetRow,
   sheetRowToCad,
@@ -99,6 +100,26 @@ describe('sheet-row-mapper', () => {
     expect(cad.url_imagen).toContain('zzz999');
     expect(cad.carpeta_drive).toContain('folderAAA');
     expect(String(cad.url_imagen)).not.toContain('maps');
+  });
+
+  it('la imagen principal es la columna P (URL Imagen), aunque haya otro enlace Drive', () => {
+    const headers = Array.from({ length: 16 }, () => '');
+    headers[0] = 'Fotos';
+    headers[15] = 'URL Imagen';
+    const values = Array.from({ length: 16 }, () => '');
+    values[0] = 'https://drive.google.com/file/d/otraFoto/view';
+    values[15] =
+      '=HYPERLINK("https://drive.google.com/file/d/principalP/view";"ver")';
+    const row = createIsolatedSheetRow({
+      rowNumber: 12,
+      headers,
+      values,
+    });
+
+    const cad = sheetRowToCad(row, headers);
+    const first = String(cad.url_imagen).split(',')[0];
+    expect(first).toContain('principalP');
+    expect(String(cad.url_imagen)).toContain('otraFoto');
   });
 
   it('escanea cualquier celda con URL de Drive (p.ej. columna Fotos)', () => {

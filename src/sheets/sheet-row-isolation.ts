@@ -10,6 +10,8 @@ import { columnIndexToA1 } from './sheets-tracking';
 export const SHEET_COL_PAIS = 'CI';
 /** Dirección del anuncio. Columna CX de la fila en curso (1-based 102). */
 export const SHEET_COL_DIRECCION = 'CX';
+/** Imagen principal del anuncio. Columna P, cabecera "URL Imagen". */
+export const SHEET_COL_URL_IMAGEN = 'P';
 
 export const SHEET_COL_PAIS_INDEX0 = columnLetterToIndex0(SHEET_COL_PAIS);
 export const SHEET_COL_DIRECCION_INDEX0 = columnLetterToIndex0(SHEET_COL_DIRECCION);

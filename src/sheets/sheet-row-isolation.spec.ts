@@ -5,6 +5,7 @@ import {
   parseA1RangeRows,
   SHEET_COL_DIRECCION,
   SHEET_COL_PAIS,
+  SHEET_COL_URL_IMAGEN,
   sheetReadColumnCount,
 } from './sheet-row-isolation';
 
@@ -14,6 +15,11 @@ describe('sheet-row-isolation', () => {
     expect(columnLetterToIndex0('CX')).toBe(101);
     expect(columnLetterToIndex0(SHEET_COL_PAIS)).toBe(86);
     expect(columnLetterToIndex0(SHEET_COL_DIRECCION)).toBe(101);
+  });
+
+  it('P es la columna URL Imagen', () => {
+    expect(columnLetterToIndex0('P')).toBe(15);
+    expect(columnLetterToIndex0(SHEET_COL_URL_IMAGEN)).toBe(15);
   });
 
   it('un hueco en medio no desplaza la descripción de la fila siguiente', () => {
