@@ -81,14 +81,15 @@ describe('outbound-schedule', () => {
       expect(isWithinOutboundCallHours(tue(16, 59))).toBe(false);
     });
 
-    it('permite tarde 17:00–20:30', () => {
+    it('permite tarde 17:00–22:30', () => {
       expect(isWithinOutboundCallHours(tue(17, 0))).toBe(true);
       expect(isWithinOutboundCallHours(tue(20, 30))).toBe(true);
+      expect(isWithinOutboundCallHours(tue(22, 30))).toBe(true);
     });
 
-    it('bloquea fuera de 10:00–20:30 y fines de semana', () => {
+    it('bloquea fuera de 10:00–22:30 y fines de semana', () => {
       expect(isWithinOutboundCallHours(tue(9, 59))).toBe(false);
-      expect(isWithinOutboundCallHours(tue(20, 31))).toBe(false);
+      expect(isWithinOutboundCallHours(tue(22, 31))).toBe(false);
       expect(
         isWithinOutboundCallHours({ weekday: 0, hour: 11, minute: 0 }),
       ).toBe(false);
