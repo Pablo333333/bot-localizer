@@ -3,7 +3,7 @@ export const DEFAULT_MAX_DAILY_CALLS = 35;
 
 export const OUTBOUND_TIMEZONE = 'Europe/Madrid';
 
-/** L-V ventana general: 10:00–22:30 Madrid. */
+/** L-V ventana general: 10:00–22:00 Madrid. */
 export const BUSINESS_START_MINUTES = 10 * 60;
 export const BUSINESS_END_MINUTES = 22 * 60 + 30;
 
@@ -12,7 +12,7 @@ export const LUNCH_BREAK_START_MINUTES = 14 * 60;
 export const LUNCH_BREAK_END_MINUTES = 17 * 60;
 
 export const OUTBOUND_HOURS_DESCRIPTION =
-  'L-V 10:00-14:00 y 17:00-22:30 Europe/Madrid (pausa 14:00-17:00)';
+  'L-V 10:00-14:00 y 17:00-22:00 Europe/Madrid (pausa 14:00-17:00)';
 
 /** Espaciado orgánico entre llamadas (anti-ráfaga / antispam operadoras). */
 export const DEFAULT_OUTBOUND_DELAY_MIN_MS = 5 * 60_000;
@@ -77,7 +77,7 @@ export function pickOutboundInterCallDelayMs(
 
 /**
  * Horario permitido para disparar llamadas (hora civil Madrid).
- * L-V, 10:00–22:30, excluyendo 14:00–17:00.
+ * L-V, 10:00–22:00, excluyendo 14:00–17:00.
  */
 export function isWithinOutboundCallHours(parts: {
   weekday: number;
