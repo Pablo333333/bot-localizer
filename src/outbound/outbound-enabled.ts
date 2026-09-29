@@ -9,7 +9,7 @@
  *   OUTBOUND_TEST_PHONE_ONLY=        ← vacío
  *   OUTBOUND_SANDBOX_WHITELIST_ENABLED=false  ← env (default off; no sandbox)
  *   MAX_DAILY_CALLS=35
- *   Horario: L-V 10:00-14:00 y 17:00-22:00 Europe/Madrid
+ *   Horario: L-V 10:00-14:00 y 17:00-20:30 Europe/Madrid
  *
  * Si OUTBOUND_CALLS_ENABLED está vacío, hereda NURTURING_PHASE3_ENABLED
  * (compat). Para Fase 1 con Fase 3 off, hay que poner OUTBOUND_CALLS_ENABLED=true.
