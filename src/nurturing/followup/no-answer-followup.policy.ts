@@ -101,37 +101,47 @@ function isNoContactOutcome(outcome: CallOutcome): boolean {
 }
 
 /**
- * Llamada 2 (T+7): SMS de respaldo + encolar llamada 3 si no contestó o contestó y colgó.
- * Llamada 3 (T+10): ILOCALIZABLE solo si no hubo contacto.
+ * Secuencia fija de Toni (no depende del canal por env):
+ * - Llamada 1, contesta y cuelga (o no contesta): WhatsApp con enlace y se programa la llamada 2.
+ * - Llamada 2, contesta y cuelga (o no contesta): SMS de respaldo y se programa la llamada 3.
+ * - Llamada 3, no contesta: ILOCALIZABLE y fin.
  */
-export function adjustPlanForCallOutcome(
-  plan: NoContactFollowupPlan,
+export function planToniSequence(
   phase: NurturingCallPhase,
   outcome: CallOutcome,
 ): NoContactFollowupPlan {
-  if (phase === 't7') {
-    const continueFlow = isNoContactOutcome(outcome) || outcome === CallOutcome.HANGUP;
+  const answeredAndHungUp = outcome === CallOutcome.HANGUP;
+  const noContact = isNoContactOutcome(outcome);
+  const continueFlow = answeredAndHungUp || noContact;
+  const none: NoContactFollowupPlan = {
+    sendWhatsApp: false,
+    sendSms: false,
+    enroll: false,
+    scheduleNextCall: false,
+    markIlocalizable: false,
+    endSequence: false,
+  };
+
+  if (phase === 't0' && continueFlow) {
     return {
-      ...plan,
-      sendWhatsApp: false,
-      sendSms: continueFlow,
-      enroll: false,
-      scheduleNextCall: continueFlow,
-      markIlocalizable: false,
-      endSequence: false,
+      ...none,
+      sendWhatsApp: true,
+      enroll: true,
     };
   }
-  if (phase === 't10') {
-    const unreachable = isNoContactOutcome(outcome);
+  if (phase === 't7' && continueFlow) {
     return {
-      ...plan,
-      sendWhatsApp: false,
-      sendSms: false,
-      enroll: false,
-      scheduleNextCall: false,
-      markIlocalizable: unreachable,
-      endSequence: unreachable,
+      ...none,
+      sendSms: true,
+      scheduleNextCall: true,
     };
   }
-  return plan;
+  if (phase === 't10' && noContact) {
+    return {
+      ...none,
+      markIlocalizable: true,
+      endSequence: true,
+    };
+  }
+  return none;
 }

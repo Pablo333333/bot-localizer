@@ -1,7 +1,7 @@
 import { CallOutcome } from '../enums';
 import {
-  adjustPlanForCallOutcome,
   planNoContactFollowup,
+  planToniSequence,
   resolveT0MessageChannel,
 } from './no-answer-followup.policy';
 
@@ -123,39 +123,49 @@ describe('planNoContactFollowup', () => {
   });
 });
 
-describe('adjustPlanForCallOutcome', () => {
-  const t7 = planNoContactFollowup('t7');
-  const t10 = planNoContactFollowup('t10');
+describe('planToniSequence', () => {
+  it('llamada 1: contesta y cuelga → WhatsApp y programa la llamada 2', () => {
+    expect(planToniSequence('t0', CallOutcome.HANGUP)).toEqual({
+      sendWhatsApp: true,
+      sendSms: false,
+      enroll: true,
+      scheduleNextCall: false,
+      markIlocalizable: false,
+      endSequence: false,
+    });
+  });
 
-  it('llamada 2 cuelgue: SMS y programa llamada 3', () => {
-    expect(adjustPlanForCallOutcome(t7, 't7', CallOutcome.HANGUP)).toMatchObject({
+  it('llamada 2: contesta y cuelga → SMS y programa la llamada 3', () => {
+    expect(planToniSequence('t7', CallOutcome.HANGUP)).toEqual({
+      sendWhatsApp: false,
       sendSms: true,
+      enroll: false,
       scheduleNextCall: true,
       markIlocalizable: false,
+      endSequence: false,
     });
   });
 
-  it('llamada 2 no contesta: SMS y programa llamada 3', () => {
-    expect(
-      adjustPlanForCallOutcome(t7, 't7', CallOutcome.NO_ANSWER),
-    ).toMatchObject({
-      sendSms: true,
-      scheduleNextCall: true,
-    });
+  it('llamada 2 no contesta: también SMS y llama 3', () => {
+    expect(planToniSequence('t7', CallOutcome.NO_ANSWER).scheduleNextCall).toBe(
+      true,
+    );
+    expect(planToniSequence('t7', CallOutcome.NO_ANSWER).sendSms).toBe(true);
   });
 
-  it('llamada 3 no contesta: ILOCALIZABLE y fin', () => {
-    expect(
-      adjustPlanForCallOutcome(t10, 't10', CallOutcome.NO_ANSWER),
-    ).toMatchObject({
+  it('llamada 3 no contesta → ILOCALIZABLE y fin', () => {
+    expect(planToniSequence('t10', CallOutcome.NO_ANSWER)).toEqual({
+      sendWhatsApp: false,
       sendSms: false,
+      enroll: false,
+      scheduleNextCall: false,
       markIlocalizable: true,
       endSequence: true,
     });
   });
 
   it('llamada 3 cuelgue no cierra como ilocalizable', () => {
-    expect(adjustPlanForCallOutcome(t10, 't10', CallOutcome.HANGUP)).toMatchObject({
+    expect(planToniSequence('t10', CallOutcome.HANGUP)).toMatchObject({
       markIlocalizable: false,
       endSequence: false,
     });

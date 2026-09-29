@@ -47,7 +47,8 @@ export class WhatsappChannel implements NurturingChannel {
   }
 
   async send(payload: ChannelSendPayload): Promise<ChannelSendResult> {
-    if (!this.isEnabled()) {
+    const bypassGate = payload.templatePayload?.bypassWhatsappGate === true;
+    if (!this.isEnabled() && !bypassGate) {
       const error =
         'WhatsApp nurturing deshabilitado (NURTURING_WHATSAPP_ENABLED≠true; plantilla WA no aprobada)';
       this.logger.warn(

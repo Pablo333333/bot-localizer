@@ -38,9 +38,7 @@ import {
 } from '../../outbound/outbound-sandbox-whitelist';
 import { CallOutcomeClassifier } from './call-outcome.classifier';
 import {
-  adjustPlanForCallOutcome,
-  planNoContactFollowup,
-  resolveT0MessageChannel,
+  planToniSequence,
 } from './no-answer-followup.policy';
 import {
   buildSeguimientoSmsContentVariables,
@@ -239,9 +237,11 @@ export class NoAnswerFollowupService {
      * antes se perdía el enroll pese a no_answer. Con outcome enrollable y sin
      * template T+7/T+10, tratamos unknown como t0 — NUNCA si ya es follow-up.
      */
+    const continuesSequence =
+      enrollRetry || outcome === CallOutcome.HANGUP;
     const effectivePhase: NurturingCallPhase =
       phase === 'unknown' &&
-      enrollRetry &&
+      continuesSequence &&
       callData.agent_id !== followupAgentId
         ? 't0'
         : phase;
@@ -319,35 +319,16 @@ export class NoAnswerFollowupService {
     let smsSent = false;
     let enrolled = false;
     let markedIlocalizable = false;
-    const t0Channel = resolveT0MessageChannel(
-      this.config.get('NURTURING_T0_CHANNEL'),
-    );
-    const bookingFallback =
-      effectivePhase === 't0' &&
-      this.classifier.shouldSendBookingFallbackOnly(outcome);
-    const plan = adjustPlanForCallOutcome(
-      planNoContactFollowup(effectivePhase, {
-        t0Channel,
-        enroll: enrollRetry && effectivePhase === 't0',
-        bookingFallback,
-      }),
-      effectivePhase,
-      outcome,
-    );
+    const plan = planToniSequence(effectivePhase, outcome);
 
     this.logger.log(
-      `[FASE3][PLAN] phase=${effectivePhase} outcome=${outcome} channel=${t0Channel} ` +
+      `[FASE3][PLAN] phase=${effectivePhase} outcome=${outcome} ` +
         `wa=${plan.sendWhatsApp} sms=${plan.sendSms} enroll=${plan.enroll} ` +
         `scheduleNext=${plan.scheduleNextCall} ilocalizable=${plan.markIlocalizable} ` +
-        `endSequence=${plan.endSequence} bookingFallback=${bookingFallback}`,
+        `endSequence=${plan.endSequence}`,
     );
 
     if (plan.sendWhatsApp || plan.sendSms) {
-      if (effectivePhase === 't0' && !this.whatsapp.isEnabled()) {
-        this.logger.log(
-          `[FASE3][MENSAJE] llamada 1: WhatsApp desactivado → SMS con enlace de cita lead=${lead.id} phone=${lead.phone}`,
-        );
-      }
       const callVars = {
         ...(callData.retell_llm_dynamic_variables || {}),
         ...(callData.collected_dynamic_variables || {}),
@@ -640,6 +621,8 @@ export class NoAnswerFollowupService {
       body: renderToniNoAnswerFallback(contentVariables, lead.name),
       booking_link: bookingLink,
       contentVariables,
+      /** La llamada 1 de la secuencia siempre intenta WhatsApp, aunque el flag esté en false. */
+      bypassWhatsappGate: true,
     };
     const explicitSid =
       this.config.get<string>('TWILIO_SMS_CONTENT_SID') ??
@@ -655,16 +638,10 @@ export class NoAnswerFollowupService {
     let whatsappFailed = false;
 
     if (opts.whatsapp) {
-      if (!this.whatsapp.isEnabled()) {
-        this.logger.warn(
-          `[FASE3][MENSAJE] WhatsApp desactivado (NURTURING_WHATSAPP_ENABLED≠true) lead=${lead.id} phone=${lead.phone} — se usa SMS de respaldo si el plan lo pide`,
-        );
-        whatsappFailed = true;
-      } else {
-        this.logger.log(
-          `[FASE3][MENSAJE] enviando WhatsApp lead=${lead.id} phone=${lead.phone} call=${callId}`,
-        );
-        const result = await this.whatsapp.send({
+      this.logger.log(
+        `[FASE3][MENSAJE] enviando WhatsApp con enlace de cita lead=${lead.id} phone=${lead.phone} call=${callId}`,
+      );
+      const result = await this.whatsapp.send({
           leadId: lead.id,
           phone: lead.phone,
           name: lead.name,
@@ -694,7 +671,6 @@ export class NoAnswerFollowupService {
             },
           });
         }
-      }
     }
 
     const shouldSms =
