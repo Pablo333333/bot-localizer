@@ -1,5 +1,5 @@
 /** Límite diario por defecto de llamadas outbound (Localizados → Retell). */
-export const DEFAULT_MAX_DAILY_CALLS = 30;
+export const DEFAULT_MAX_DAILY_CALLS = 35;
 
 export const OUTBOUND_TIMEZONE = 'Europe/Madrid';
 

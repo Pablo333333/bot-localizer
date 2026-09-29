@@ -6,7 +6,7 @@ import { matchesOutboundTestPhone } from './outbound-test-phone';
  * También filtra follow-up Fase 3 (SMS/enroll) vía isAllowedOutboundSandboxPhone.
  *
  * Producción: OUTBOUND_SANDBOX_WHITELIST_ENABLED=false (o ausente).
- * Fase 1 lote diario (30) a números reales del Sheet.
+ * Fase 1 lote diario (35) a números reales del Sheet.
  * Fase 3 (T+7/T+10 de Toni u otros enrollados) sigue vía NURTURING_PHASE3_ENABLED.
  *
  * Constante de código = default si env vacío. Env puede forzar true/false en Railway

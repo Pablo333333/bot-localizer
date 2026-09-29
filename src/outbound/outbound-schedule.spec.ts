@@ -10,11 +10,11 @@ import {
 
 describe('outbound-schedule', () => {
   describe('resolveMaxDailyCalls', () => {
-    it('por defecto 30', () => {
-      expect(resolveMaxDailyCalls(undefined)).toBe(30);
-      expect(resolveMaxDailyCalls(null)).toBe(30);
-      expect(resolveMaxDailyCalls('')).toBe(30);
-      expect(DEFAULT_MAX_DAILY_CALLS).toBe(30);
+    it('por defecto 35', () => {
+      expect(resolveMaxDailyCalls(undefined)).toBe(35);
+      expect(resolveMaxDailyCalls(null)).toBe(35);
+      expect(resolveMaxDailyCalls('')).toBe(35);
+      expect(DEFAULT_MAX_DAILY_CALLS).toBe(35);
     });
 
     it('lee MAX_DAILY_CALLS numérico', () => {
@@ -24,9 +24,9 @@ describe('outbound-schedule', () => {
     });
 
     it('valores inválidos caen al default', () => {
-      expect(resolveMaxDailyCalls('0')).toBe(30);
-      expect(resolveMaxDailyCalls('-5')).toBe(30);
-      expect(resolveMaxDailyCalls('abc')).toBe(30);
+      expect(resolveMaxDailyCalls('0')).toBe(35);
+      expect(resolveMaxDailyCalls('-5')).toBe(35);
+      expect(resolveMaxDailyCalls('abc')).toBe(35);
     });
   });
 

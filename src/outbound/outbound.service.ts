@@ -130,7 +130,7 @@ export class OutboundService {
 
   /**
    * Lote Fase 1 cada 5 min. Solo llama L-V 10:00-14:00 y 17:00-20:30 Madrid,
-   * máximo MAX_DAILY_CALLS (30). Máx. 1 llamada por ciclo, espaciadas 5–10 min
+   * máximo MAX_DAILY_CALLS (35). Máx. 1 llamada por ciclo, espaciadas 5–10 min
    * al azar (anti-ráfaga). Fase 3 no entra aquí.
    */
   @Cron(CronExpression.EVERY_5_MINUTES)

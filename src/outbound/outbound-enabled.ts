@@ -3,12 +3,12 @@
  * Independiente de Fase 3 (nurturing WA / enroll T+7/T+10).
  *
  * Producción (en paralelo):
- *   OUTBOUND_CALLS_ENABLED=true      ← lote Fase 1 (30/día) a todo el Sheet
+ *   OUTBOUND_CALLS_ENABLED=true      ← lote Fase 1 (35/día) a todo el Sheet
  *   NURTURING_PHASE3_ENABLED=true    ← master; código limita a Toni (allowlist)
  *   NURTURING_PHASE3_PHONE_ALLOWLIST= ← vacío = solo +34644408099
  *   OUTBOUND_TEST_PHONE_ONLY=        ← vacío
  *   OUTBOUND_SANDBOX_WHITELIST_ENABLED=false  ← env (default off; no sandbox)
- *   MAX_DAILY_CALLS=30
+ *   MAX_DAILY_CALLS=35
  *   Horario: L-V 10:00-14:00 y 17:00-20:30 Europe/Madrid
  *
  * Si OUTBOUND_CALLS_ENABLED está vacío, hereda NURTURING_PHASE3_ENABLED
@@ -16,6 +16,8 @@
  *
  * OUTBOUND_AUTO_DIAL_PAUSED=true bloquea el cron de Fase 1 ( palanca de emergencia ).
  */
+import { DEFAULT_MAX_DAILY_CALLS } from './outbound-schedule';
+
 export const OUTBOUND_AUTO_DIAL_PAUSED = false;
 
 export const OUTBOUND_AUTO_DIAL_PAUSED_LOG =
@@ -70,6 +72,6 @@ export function describeOutboundMode(params: {
     /** Lote masivo Fase 1: outbound on, sin filtro Toni (Fase 3 puede estar off). */
     phase1MassBatch: outboundEnabled && !testFilterActive,
     testFilterActive,
-    maxDailyCalls: params.maxDailyCalls ?? 30,
+    maxDailyCalls: params.maxDailyCalls ?? DEFAULT_MAX_DAILY_CALLS,
   };
 }
