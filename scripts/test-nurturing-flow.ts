@@ -1,5 +1,5 @@
 /**
- * E2E aislado del flujo Fase 3 (nurturing):
+ * E2E aislado del flujo Fase 3e (nurturing):
  * create lead → enroll → validar StepRuns T+7/T+10 →
  * status cita_programada → cancel jobs → metrics → cleanup
  *
