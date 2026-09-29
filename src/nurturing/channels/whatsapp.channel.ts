@@ -113,7 +113,7 @@ export class WhatsappChannel implements NurturingChannel {
       );
 
       this.logger.log(
-        `[WhatsAppService] OK sid=${message.sid} to=${to} e164=${e164} status=${message.status}`,
+        `[FASE3][MENSAJE] WhatsApp enviado sid=${message.sid} to=${to} e164=${e164} status=${message.status}`,
       );
       return { success: true, providerRef: message.sid };
     } catch (error: any) {

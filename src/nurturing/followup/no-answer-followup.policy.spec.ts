@@ -1,4 +1,6 @@
+import { CallOutcome } from '../enums';
 import {
+  adjustPlanForCallOutcome,
   planNoContactFollowup,
   resolveT0MessageChannel,
 } from './no-answer-followup.policy';
@@ -23,7 +25,9 @@ describe('planNoContactFollowup', () => {
       sendWhatsApp: false,
       sendSms: false,
       enroll: false,
+      scheduleNextCall: false,
       markIlocalizable: false,
+      endSequence: false,
     });
   });
 
@@ -32,7 +36,9 @@ describe('planNoContactFollowup', () => {
       sendWhatsApp: false,
       sendSms: true,
       enroll: true,
+      scheduleNextCall: false,
       markIlocalizable: false,
+      endSequence: false,
     });
   });
 
@@ -46,7 +52,9 @@ describe('planNoContactFollowup', () => {
       sendWhatsApp: true,
       sendSms: false,
       enroll: true,
+      scheduleNextCall: false,
       markIlocalizable: false,
+      endSequence: false,
     });
   });
 
@@ -57,36 +65,99 @@ describe('planNoContactFollowup', () => {
       sendWhatsApp: true,
       sendSms: true,
       enroll: true,
+      scheduleNextCall: false,
       markIlocalizable: false,
+      endSequence: false,
     });
   });
 
-  it('T+0 hangup bookingFallback → SMS sin enroll', () => {
+  it('T+0 hangup bookingFallback → SMS y programa la llamada 2', () => {
     expect(
       planNoContactFollowup('t0', { bookingFallback: true }),
     ).toEqual({
       sendWhatsApp: false,
       sendSms: true,
-      enroll: false,
+      enroll: true,
+      scheduleNextCall: false,
       markIlocalizable: false,
+      endSequence: false,
     });
   });
 
-  it('T+7: SMS de seguimiento; no WhatsApp', () => {
+  it('T+0 hangup + whatsapp: WA y enroll', () => {
+    expect(
+      planNoContactFollowup('t0', {
+        bookingFallback: true,
+        t0Channel: 'whatsapp',
+      }),
+    ).toEqual({
+      sendWhatsApp: true,
+      sendSms: false,
+      enroll: true,
+      scheduleNextCall: false,
+      markIlocalizable: false,
+      endSequence: false,
+    });
+  });
+
+  it('T+7: SMS de seguimiento y encola llamada 3', () => {
     expect(planNoContactFollowup('t7')).toEqual({
       sendWhatsApp: false,
       sendSms: true,
       enroll: false,
+      scheduleNextCall: true,
       markIlocalizable: false,
+      endSequence: false,
     });
   });
 
-  it('T+10: marca ilocalizable', () => {
+  it('T+10: marca ilocalizable y termina', () => {
     expect(planNoContactFollowup('t10')).toEqual({
       sendWhatsApp: false,
       sendSms: false,
       enroll: false,
+      scheduleNextCall: false,
       markIlocalizable: true,
+      endSequence: true,
+    });
+  });
+});
+
+describe('adjustPlanForCallOutcome', () => {
+  const t7 = planNoContactFollowup('t7');
+  const t10 = planNoContactFollowup('t10');
+
+  it('llamada 2 cuelgue: SMS y programa llamada 3', () => {
+    expect(adjustPlanForCallOutcome(t7, 't7', CallOutcome.HANGUP)).toMatchObject({
+      sendSms: true,
+      scheduleNextCall: true,
+      markIlocalizable: false,
+    });
+  });
+
+  it('llamada 2 no contesta: SMS y programa llamada 3', () => {
+    expect(
+      adjustPlanForCallOutcome(t7, 't7', CallOutcome.NO_ANSWER),
+    ).toMatchObject({
+      sendSms: true,
+      scheduleNextCall: true,
+    });
+  });
+
+  it('llamada 3 no contesta: ILOCALIZABLE y fin', () => {
+    expect(
+      adjustPlanForCallOutcome(t10, 't10', CallOutcome.NO_ANSWER),
+    ).toMatchObject({
+      sendSms: false,
+      markIlocalizable: true,
+      endSequence: true,
+    });
+  });
+
+  it('llamada 3 cuelgue no cierra como ilocalizable', () => {
+    expect(adjustPlanForCallOutcome(t10, 't10', CallOutcome.HANGUP)).toMatchObject({
+      markIlocalizable: false,
+      endSequence: false,
     });
   });
 });

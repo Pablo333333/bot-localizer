@@ -50,6 +50,15 @@ export class SheetsController {
     console.log(JSON.stringify(body, null, 2));
 
     const eventType = body.event_type || body.event;
+    const previewCall = (body.call || body) as Record<string, any>;
+    const previewPhone = resolveRetellLeadPhone(previewCall, body);
+    this.logger.log(
+      `[FASE3][WEBHOOK] recibido event=${eventType || '?'} ` +
+        `call=${previewCall.call_id || body.call_id || '?'} ` +
+        `agent=${previewCall.agent_id || body.agent_id || '?'} ` +
+        `phone=${previewPhone || '?'} ` +
+        `reason=${previewCall.disconnection_reason || previewCall.call_status || '?'}`,
+    );
     const inboundSetup =
       eventType === 'call_inbound' || (body.call_inbound && !body.call);
 

@@ -9,6 +9,7 @@ import { LeadStatus } from '../enums';
 import { CallOutcome } from '../enums/lead-status.enum';
 import { LeadsService } from '../leads/leads.service';
 import {
+  TEMPLATE_CALL_FOLLOWUP_D10,
   TEMPLATE_SMS_T0,
   TEMPLATE_SMS_T7,
   TEMPLATE_WA_T0,
@@ -23,6 +24,7 @@ import {
   NURTURING_PHASE3_DISABLED_LOG,
   isNurturingPhase3Enabled,
 } from '../phase3-enabled';
+import { isNurturingFastTest } from '../nurturing-fast-delay';
 import {
   PHASE3_LEAD_NOT_ALLOWED_LOG,
   PHASE3_TONI_PHONE_E164,
@@ -35,7 +37,11 @@ import {
   isOutboundSandboxWhitelistEnabled,
 } from '../../outbound/outbound-sandbox-whitelist';
 import { CallOutcomeClassifier } from './call-outcome.classifier';
-import { planNoContactFollowup, resolveT0MessageChannel } from './no-answer-followup.policy';
+import {
+  adjustPlanForCallOutcome,
+  planNoContactFollowup,
+  resolveT0MessageChannel,
+} from './no-answer-followup.policy';
 import {
   buildSeguimientoSmsContentVariables,
   resolveLeadContactName,
@@ -44,13 +50,11 @@ import {
 import { resolveRetellLeadPhone } from './retell-call-phone';
 
 /**
- * Retell outbound / follow-up:
- * - Crea Lead si el teléfono no existe.
- * - NO_ANSWER / POSTPONE (/ busy / voicemail / user_declined): SMS T+0
- *   (Content SID seguimiento_lead_fase3) + enroll T+7/T+10 + PENDIENTE.
- *   WhatsApp solo si NURTURING_WHATSAPP_ENABLED=true y canal lo pide.
- * - HANGUP u otras casuísticas: PENDIENTE, sin cola T+7/T+10.
- * - T+7: SMS si la rellamada no contacta. T+10: ILOCALIZABLE.
+ * Retell outbound / follow-up (Fase 3):
+ * - Llamada 1, no contesta o cuelga: WhatsApp con enlace (SMS si WA está off) y encola llamada 2.
+ * - Llamada 2, no contesta o contesta y cuelga: SMS de respaldo y encola llamada 3.
+ * - Llamada 3, no contesta: ILOCALIZABLE y fin de secuencia.
+ * - Contesta con éxito o rechazo explícito: se detiene, sin siguiente reintento.
  */
 @Injectable()
 export class NoAnswerFollowupService {
@@ -114,7 +118,7 @@ export class NoAnswerFollowupService {
     const enrollRetry = this.classifier.shouldEnrollRetrySequence(outcome);
     const markPendiente = this.classifier.shouldMarkPendiente(outcome);
     this.logger.log(
-      `[Followup] outcome=${outcome} enrollRetry=${enrollRetry} pendiente=${markPendiente} call=${callData.call_id}`,
+      `[FASE3][RESULTADO] call=${callData.call_id || '?'} outcome=${outcome} enrollRetry=${enrollRetry} pendiente=${markPendiente} reason=${callData.disconnection_reason || callData.call_status || '?'}`,
     );
     const phoneRaw =
       resolveRetellLeadPhone(callData) || callData.to_number || '';
@@ -282,6 +286,9 @@ export class NoAnswerFollowupService {
     }
 
     if (outcome === CallOutcome.ANSWERED_SUCCESS) {
+      this.logger.log(
+        `[FASE3][RESULTADO] call=${callData.call_id || '?'} phase=${effectivePhase} outcome=answered_success — secuencia detenida, sin SMS ni siguiente reintento`,
+      );
       await this.enrollments.stopActiveForLead(lead.id, 'answered_success');
       await this.prisma.lead.update({
         where: { id: lead.id },
@@ -318,38 +325,29 @@ export class NoAnswerFollowupService {
     const bookingFallback =
       effectivePhase === 't0' &&
       this.classifier.shouldSendBookingFallbackOnly(outcome);
-    const plan = planNoContactFollowup(effectivePhase, {
-      t0Channel,
-      // Solo no_answer / postpone (y busy/voicemail) enrollan en T+0
-      enroll: enrollRetry && effectivePhase === 't0',
-      bookingFallback,
-    });
+    const plan = adjustPlanForCallOutcome(
+      planNoContactFollowup(effectivePhase, {
+        t0Channel,
+        enroll: enrollRetry && effectivePhase === 't0',
+        bookingFallback,
+      }),
+      effectivePhase,
+      outcome,
+    );
 
-    // T+7 SMS / T+10 ilocalizable solo si el outcome sigue siendo no-contacto enrollable
-    if (effectivePhase === 't7' && enrollRetry) {
-      plan.sendSms = true;
-    }
-    if (effectivePhase === 't10' && enrollRetry) {
-      plan.markIlocalizable = true;
-    }
-    if (effectivePhase === 't7' && !enrollRetry) {
-      plan.sendSms = false;
-    }
-    if (effectivePhase === 't10' && !enrollRetry) {
-      plan.markIlocalizable = false;
-    }
-
-    if (effectivePhase === 't0') {
-      this.logger.log(
-        `[Followup] T+0 enroll=${plan.enroll} bookingFallback=${bookingFallback} channel=${t0Channel} WA=${plan.sendWhatsApp} SMS=${plan.sendSms}`,
-      );
-    } else if (enrollRetry && !plan.enroll) {
-      this.logger.warn(
-        `[Followup] enrollRetry=true pero enroll=false phase=${effectivePhase} (raw=${phase}) — no se encolará BullMQ`,
-      );
-    }
+    this.logger.log(
+      `[FASE3][PLAN] phase=${effectivePhase} outcome=${outcome} channel=${t0Channel} ` +
+        `wa=${plan.sendWhatsApp} sms=${plan.sendSms} enroll=${plan.enroll} ` +
+        `scheduleNext=${plan.scheduleNextCall} ilocalizable=${plan.markIlocalizable} ` +
+        `endSequence=${plan.endSequence} bookingFallback=${bookingFallback}`,
+    );
 
     if (plan.sendWhatsApp || plan.sendSms) {
+      if (effectivePhase === 't0' && !this.whatsapp.isEnabled()) {
+        this.logger.log(
+          `[FASE3][MENSAJE] llamada 1: WhatsApp desactivado → SMS con enlace de cita lead=${lead.id} phone=${lead.phone}`,
+        );
+      }
       const callVars = {
         ...(callData.retell_llm_dynamic_variables || {}),
         ...(callData.collected_dynamic_variables || {}),
@@ -378,38 +376,69 @@ export class NoAnswerFollowupService {
         reason: `${outcome}:${effectivePhase}`,
       });
       this.logger.log(
-        `Lead ${lead.id} → PENDIENTE (outcome=${outcome} phase=${effectivePhase} enroll=${plan.enroll})`,
+        `[FASE3][ESTADO] lead=${lead.id} → PENDIENTE (outcome=${outcome} phase=${effectivePhase} enroll=${plan.enroll})`,
       );
     }
 
     if (plan.enroll) {
       try {
-        await this.enrollments.enrollLead(lead.id);
+        if (isNurturingFastTest(this.config.get('NURTURING_FAST_TEST'))) {
+          const restarted = await this.enrollments.stopActiveForLead(
+            lead.id,
+            'fast_test_restart',
+          );
+          if (restarted > 0) {
+            this.logger.warn(
+              `[FASE3][BULLMQ] prueba rápida: enrollment anterior cancelado (${restarted}) para empezar el ciclo desde la llamada 1`,
+            );
+          }
+        }
+        const enrolledResult = await this.enrollments.enrollLead(lead.id);
         enrolled = true;
         this.logger.log(
-          `Lead ${lead.id} enrollado en secuencia T+7/T+10 (outcome=${outcome})`,
+          `[FASE3][BULLMQ] lead=${lead.id} enrollado enrollment=${enrolledResult.enrollmentId} pasos=${enrolledResult.stepsScheduled} outcome=${outcome} phase=${effectivePhase}`,
         );
       } catch (err) {
-        this.logger.warn(
-          `Enroll after ${outcome} skipped: ${
+        this.logger.error(
+          `[FASE3][BULLMQ] enroll FALLÓ lead=${lead.id} outcome=${outcome}: ${
             err instanceof Error ? err.message : err
           }`,
         );
       }
     } else if (effectivePhase === 't0' && markPendiente) {
       this.logger.log(
-        `Lead ${lead.id} sin enroll T+7/T+10 (outcome=${outcome} — solo PENDIENTE)`,
+        `[FASE3][PLAN] lead=${lead.id} sin enroll (outcome=${outcome} — solo PENDIENTE)`,
       );
     }
 
+    if (plan.scheduleNextCall) {
+      try {
+        const queued = await this.enrollments.scheduleNextFollowup(
+          lead.id,
+          TEMPLATE_CALL_FOLLOWUP_D10,
+        );
+        this.logger.log(
+          `[FASE3][BULLMQ] llamada 3 tras llamada 2 status=${queued.status} ` +
+            `scheduledFor=${queued.scheduledFor ?? 'n/a'} madrid=${queued.scheduledForMadrid ?? 'n/a'} ` +
+            `delayMin=${queued.delayMinutes ?? 'n/a'} jobId=${queued.jobId ?? 'n/a'} stepRun=${queued.stepRunId ?? 'n/a'} lead=${lead.id}`,
+        );
+      } catch (err) {
+        this.logger.error(
+          `[FASE3][BULLMQ] no se pudo encolar la llamada 3 lead=${lead.id}: ${
+            err instanceof Error ? err.message : err
+          }`,
+        );
+      }
+    }
+
     if (plan.markIlocalizable) {
-      await this.leads.updateStatus(lead.id, {
+      const statusResult = await this.leads.updateStatus(lead.id, {
         status: LeadStatus.ILOCALIZABLE,
         reason: 't10_no_contact',
       });
       markedIlocalizable = true;
       this.logger.log(
-        `Lead ${lead.id} → ILOCALIZABLE tras T+10 sin contacto (outcome=${outcome})`,
+        `[FASE3][ESTADO] lead=${lead.id} → ILOCALIZABLE (llamada 3 sin contacto, outcome=${outcome}). Secuencia terminada, enrollments detenidos=${statusResult.sequencesStopped}.`,
       );
     }
 
@@ -433,7 +462,7 @@ export class NoAnswerFollowupService {
     });
 
     this.logger.log(
-      `Follow-up lead=${lead.id} phase=${effectivePhase} outcome=${outcome} wa=${whatsappSent} sms=${smsSent} enroll=${enrolled} ilocalizable=${markedIlocalizable}`,
+      `[FASE3][HECHO] lead=${lead.id} phase=${effectivePhase} outcome=${outcome} wa=${whatsappSent} sms=${smsSent} enroll=${enrolled} ilocalizable=${markedIlocalizable} call=${callData.call_id || '?'}`,
     );
 
     return {
@@ -628,12 +657,12 @@ export class NoAnswerFollowupService {
     if (opts.whatsapp) {
       if (!this.whatsapp.isEnabled()) {
         this.logger.warn(
-          `[Followup] WhatsApp omitido (NURTURING_WHATSAPP_ENABLED≠true) lead=${lead.id} — usará SMS si aplica`,
+          `[FASE3][MENSAJE] WhatsApp desactivado (NURTURING_WHATSAPP_ENABLED≠true) lead=${lead.id} phone=${lead.phone} — se usa SMS de respaldo si el plan lo pide`,
         );
         whatsappFailed = true;
       } else {
         this.logger.log(
-          `[Followup] Disparando WhatsApp lead=${lead.id} phone=${lead.phone} call=${callId}`,
+          `[FASE3][MENSAJE] enviando WhatsApp lead=${lead.id} phone=${lead.phone} call=${callId}`,
         );
         const result = await this.whatsapp.send({
           leadId: lead.id,
@@ -652,6 +681,9 @@ export class NoAnswerFollowupService {
           );
         }
         if (result.success) {
+          this.logger.log(
+            `[FASE3][MENSAJE] WhatsApp enviado lead=${lead.id} phone=${lead.phone} sid=${result.providerRef || '?'} call=${callId || '?'}`,
+          );
           await this.prisma.communicationLog.create({
             data: {
               leadId: lead.id,
@@ -691,6 +723,9 @@ export class NoAnswerFollowupService {
         );
       }
       if (result.success) {
+        this.logger.log(
+          `[FASE3][MENSAJE] SMS enviado lead=${lead.id} phone=${lead.phone} sid=${result.providerRef || '?'} template=${opts.smsKey || TEMPLATE_SMS_T0} call=${callId || '?'}`,
+        );
         await this.prisma.communicationLog.create({
           data: {
             leadId: lead.id,

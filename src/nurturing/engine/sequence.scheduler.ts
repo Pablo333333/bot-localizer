@@ -1,7 +1,7 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { SequenceStep, StepRunStatus } from '@prisma/client';
+import { EnrollmentStatus, SequenceStep, StepRunStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NURTURING_STEP_JOB, NURTURING_STEPS_QUEUE } from '../../queue/queue.constants';
@@ -20,6 +20,37 @@ import {
   isOutboundSandboxWhitelistEnabled,
 } from '../../outbound/outbound-sandbox-whitelist';
 import { NurturingStepJobData, stepRunJobId } from './nurturing-step.job';
+import {
+  formatMadridDateTime,
+  isNurturingFastTest,
+  nurturingStepLabel,
+  resolveNurturingStepDelayMinutes,
+} from '../nurturing-fast-delay';
+import {
+  TEMPLATE_CALL_FOLLOWUP_D7,
+} from '../toni-fase3.constants';
+
+const OPEN_STEP_STATUSES: StepRunStatus[] = [
+  StepRunStatus.pending,
+  StepRunStatus.scheduled,
+  StepRunStatus.processing,
+  StepRunStatus.sent,
+];
+
+export interface ScheduledFollowupResult {
+  status:
+    | 'scheduled'
+    | 'already_scheduled'
+    | 'no_enrollment'
+    | 'no_step'
+    | 'disabled'
+    | 'not_allowed';
+  scheduledFor?: string;
+  scheduledForMadrid?: string;
+  delayMinutes?: number;
+  jobId?: string | null;
+  stepRunId?: string;
+}
 
 @Injectable()
 export class SequenceScheduler {
@@ -39,12 +70,12 @@ export class SequenceScheduler {
     leadId: string,
     steps: SequenceStep[],
     enrolledAt: Date = new Date(),
-  ): Promise<void> {
+  ): Promise<number> {
     if (
       !isNurturingPhase3Enabled(this.config.get('NURTURING_PHASE3_ENABLED'))
     ) {
       this.logger.log(NURTURING_PHASE3_DISABLED_LOG);
-      return;
+      return 0;
     }
 
     const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
@@ -58,52 +89,208 @@ export class SequenceScheduler {
       this.logger.warn(
         `${PHASE3_LEAD_NOT_ALLOWED_LOG} — no se encola BullMQ enrollment=${enrollmentId} lead=${leadId} phone=${lead?.phone ?? '?'}`,
       );
-      return;
+      return 0;
     }
 
+    const fast = isNurturingFastTest(this.config.get('NURTURING_FAST_TEST'));
     const ordered = [...steps].sort((a, b) => a.order - b.order);
+    const selected = fast
+      ? ordered.filter((step) => step.templateKey === TEMPLATE_CALL_FOLLOWUP_D7)
+      : ordered;
 
-    for (const step of ordered) {
-      const scheduledFor = new Date(enrolledAt.getTime() + step.delayMinutes * 60_000);
-      const delayMs = Math.max(0, scheduledFor.getTime() - Date.now());
-
-      const stepRun = await this.prisma.sequenceStepRun.create({
-        data: {
-          enrollmentId,
-          stepId: step.id,
-          status: StepRunStatus.scheduled,
-          scheduledFor,
-          attempts: 0,
-        },
+    if (fast) {
+      const call2Minutes = this.resolveDelayMinutes({
+        templateKey: TEMPLATE_CALL_FOLLOWUP_D7,
+        delayMinutes: 10_080,
       });
-
-      const jobId = stepRunJobId(stepRun.id);
-      const job = await this.queue.add(
-        NURTURING_STEP_JOB,
-        {
-          stepRunId: stepRun.id,
-          enrollmentId,
-          leadId,
-        },
-        {
-          jobId,
-          delay: delayMs,
-          attempts: Math.max(1, step.maxRetries),
-          backoff: { type: 'exponential', delay: 60_000 },
-          removeOnComplete: 100,
-          removeOnFail: 200,
-        },
+      this.logger.warn(
+        `[FASE3][BULLMQ] NURTURING_FAST_TEST activo — llamada 2 en ${call2Minutes} min desde ahora. ` +
+          `La llamada 3 no se encola todavía: sale al cerrar la llamada 2.`,
       );
-
-      await this.prisma.sequenceStepRun.update({
-        where: { id: stepRun.id },
-        data: { jobId: job.id ?? jobId },
-      });
-
-      this.logger.log(
-        `Scheduled stepRun=${stepRun.id} lead=${leadId} channel=${step.channel} delayMs=${delayMs}`,
-      );
+      if (selected.length === 0) {
+        this.logger.error(
+          `[FASE3][BULLMQ] la secuencia no tiene paso ${TEMPLATE_CALL_FOLLOWUP_D7}; no hay llamada 2 que encolar`,
+        );
+      }
     }
+
+    let queued = 0;
+    for (const step of selected) {
+      await this.enqueueStep({
+        enrollmentId,
+        leadId,
+        step,
+        baseTime: enrolledAt,
+      });
+      queued += 1;
+    }
+    return queued;
+  }
+
+  /**
+   * Encola la llamada 3 si la llamada 2 ya cerró y ese paso aún no está en cola.
+   * En modo rápido el delay cuenta desde ahora (no desde el enroll de la llamada 1).
+   */
+  async scheduleFollowupStepIfMissing(
+    leadId: string,
+    templateKey: string,
+  ): Promise<ScheduledFollowupResult> {
+    if (!isNurturingPhase3Enabled(this.config.get('NURTURING_PHASE3_ENABLED'))) {
+      this.logger.log(NURTURING_PHASE3_DISABLED_LOG);
+      return { status: 'disabled' };
+    }
+
+    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
+    if (
+      !lead ||
+      !isPhase3AllowedPhone(
+        lead.phone,
+        this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+      )
+    ) {
+      this.logger.warn(
+        `${PHASE3_LEAD_NOT_ALLOWED_LOG} — no se encola ${templateKey} lead=${leadId}`,
+      );
+      return { status: 'not_allowed' };
+    }
+
+    const enrollment = await this.prisma.sequenceEnrollment.findFirst({
+      where: { leadId, status: EnrollmentStatus.active },
+      orderBy: { enrolledAt: 'desc' },
+      include: {
+        sequence: { include: { steps: true } },
+        stepRuns: true,
+      },
+    });
+    if (!enrollment) {
+      this.logger.warn(
+        `[FASE3][BULLMQ] no hay enrollment activo para encolar ${templateKey} lead=${leadId}`,
+      );
+      return { status: 'no_enrollment' };
+    }
+
+    const step = enrollment.sequence.steps.find(
+      (item) => item.templateKey === templateKey,
+    );
+    if (!step) {
+      this.logger.error(
+        `[FASE3][BULLMQ] la secuencia ${enrollment.sequenceId} no tiene template=${templateKey}`,
+      );
+      return { status: 'no_step' };
+    }
+
+    const existing = enrollment.stepRuns.find(
+      (run) => run.stepId === step.id && OPEN_STEP_STATUSES.includes(run.status),
+    );
+    if (existing) {
+      this.logger.log(
+        `[FASE3][BULLMQ] ${nurturingStepLabel(templateKey)} ya en cola ` +
+          `status=${existing.status} scheduledFor=${existing.scheduledFor.toISOString()} ` +
+          `madrid=${formatMadridDateTime(existing.scheduledFor)} jobId=${existing.jobId ?? 'n/a'} ` +
+          `stepRun=${existing.id} lead=${leadId}`,
+      );
+      return {
+        status: 'already_scheduled',
+        scheduledFor: existing.scheduledFor.toISOString(),
+        scheduledForMadrid: formatMadridDateTime(existing.scheduledFor),
+        jobId: existing.jobId,
+        stepRunId: existing.id,
+      };
+    }
+
+    const queued = await this.enqueueStep({
+      enrollmentId: enrollment.id,
+      leadId,
+      step,
+      baseTime: new Date(),
+    });
+    return {
+      status: 'scheduled',
+      scheduledFor: queued.scheduledFor.toISOString(),
+      scheduledForMadrid: formatMadridDateTime(queued.scheduledFor),
+      delayMinutes: queued.delayMinutes,
+      jobId: queued.jobId,
+      stepRunId: queued.stepRunId,
+    };
+  }
+
+  private resolveDelayMinutes(step: {
+    templateKey: string;
+    delayMinutes: number;
+  }): number {
+    return resolveNurturingStepDelayMinutes({
+      templateKey: step.templateKey,
+      storedDelayMinutes: step.delayMinutes,
+      fastTestRaw: this.config.get('NURTURING_FAST_TEST'),
+      fastT7MinutesRaw: this.config.get('NURTURING_FAST_T7_MINUTES'),
+      fastT10MinutesRaw: this.config.get('NURTURING_FAST_T10_MINUTES'),
+    });
+  }
+
+  private async enqueueStep(params: {
+    enrollmentId: string;
+    leadId: string;
+    step: SequenceStep;
+    baseTime: Date;
+  }): Promise<{
+    stepRunId: string;
+    jobId: string;
+    scheduledFor: Date;
+    delayMinutes: number;
+  }> {
+    const delayMinutes = this.resolveDelayMinutes(params.step);
+    const scheduledFor = new Date(
+      params.baseTime.getTime() + delayMinutes * 60_000,
+    );
+    const delayMs = Math.max(0, scheduledFor.getTime() - Date.now());
+
+    const stepRun = await this.prisma.sequenceStepRun.create({
+      data: {
+        enrollmentId: params.enrollmentId,
+        stepId: params.step.id,
+        status: StepRunStatus.scheduled,
+        scheduledFor,
+        attempts: 0,
+      },
+    });
+
+    const jobId = stepRunJobId(stepRun.id);
+    const job = await this.queue.add(
+      NURTURING_STEP_JOB,
+      {
+        stepRunId: stepRun.id,
+        enrollmentId: params.enrollmentId,
+        leadId: params.leadId,
+      },
+      {
+        jobId,
+        delay: delayMs,
+        attempts: Math.max(1, params.step.maxRetries),
+        backoff: { type: 'exponential', delay: 60_000 },
+        removeOnComplete: 100,
+        removeOnFail: 200,
+      },
+    );
+
+    await this.prisma.sequenceStepRun.update({
+      where: { id: stepRun.id },
+      data: { jobId: job.id ?? jobId },
+    });
+
+    this.logger.log(
+      `[FASE3][BULLMQ] encolado ${nurturingStepLabel(params.step.templateKey)} ` +
+        `template=${params.step.templateKey} channel=${params.step.channel} ` +
+        `delay=${delayMinutes} min (${delayMs} ms) ` +
+        `scheduledFor=${scheduledFor.toISOString()} madrid=${formatMadridDateTime(scheduledFor)} ` +
+        `jobId=${job.id ?? jobId} stepRun=${stepRun.id} lead=${params.leadId} enrollment=${params.enrollmentId}`,
+    );
+
+    return {
+      stepRunId: stepRun.id,
+      jobId: String(job.id ?? jobId),
+      scheduledFor,
+      delayMinutes,
+    };
   }
 
   async cancelJobs(jobIds: Array<string | null | undefined>): Promise<number> {

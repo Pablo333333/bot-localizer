@@ -34,7 +34,7 @@ describe('CallOutcomeClassifier', () => {
     ).toBe(true);
   });
 
-  it('NO_ANSWER enrolla; HANGUP solo PENDIENTE sin enroll', () => {
+  it('NO_ANSWER enrolla; HANGUP manda cita y el follow-up decide el reintento', () => {
     expect(classifier.shouldEnrollRetrySequence(CallOutcome.NO_ANSWER)).toBe(
       true,
     );
@@ -45,7 +45,7 @@ describe('CallOutcomeClassifier', () => {
       false,
     );
     expect(classifier.shouldSendBookingWhatsApp(CallOutcome.HANGUP)).toBe(
-      false,
+      true,
     );
     expect(classifier.shouldMarkPendiente(CallOutcome.HANGUP)).toBe(true);
     expect(classifier.shouldMarkPendiente(CallOutcome.NO_ANSWER)).toBe(true);

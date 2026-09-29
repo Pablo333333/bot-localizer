@@ -4,9 +4,11 @@ import { CallOutcome } from '../enums';
 /**
  * Clasifica el resultado de una llamada Retell.
  *
- * - NO_ANSWER / BUSY / VOICEMAIL / POSTPONE → mensaje T+0 + enroll T+7/T+10 + PENDIENTE
- * - HANGUP (cuelgue a mitad) u otras casuísticas → PENDIENTE, sin cola T+7/T+10
+ * - NO_ANSWER / BUSY / VOICEMAIL / POSTPONE → no hubo contacto
+ * - HANGUP (cuelgue con conversación) → interacción incompleta
+ *   (la llamada 1 igual programa el reintento; la llamada 2 manda SMS y programa la 3)
  * - EXPLICIT_REJECTION → cerrado
+ * - ANSWERED_SUCCESS → corta la secuencia (no sigue el ciclo de prueba)
  *
  * @see https://docs.retellai.com/reliability/debug-call-disconnect
  */
@@ -71,7 +73,7 @@ export class CallOutcomeClassifier {
     // user_hangup con conversación → PENDIENTE sin enroll
     if (this.isUserHangupReason(reason)) {
       this.logger.log(
-        `user_hangup → HANGUP (PENDIENTE, sin enroll T+7/T+10). call_successful=${callData.call_analysis?.call_successful}`,
+        `user_hangup → HANGUP (conversación incompleta; en llamada 1 programa reintento, en llamada 2 SMS + llamada 3). call_successful=${callData.call_analysis?.call_successful}`,
       );
       return CallOutcome.HANGUP;
     }

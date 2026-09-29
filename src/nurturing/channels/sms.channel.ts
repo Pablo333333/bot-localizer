@@ -137,7 +137,7 @@ export class SmsChannel implements NurturingChannel {
         'SmsService',
       );
       this.logger.log(
-        `[SmsService] OK sid=${message.sid} to=${to} status=${message.status} ` +
+        `[FASE3][MENSAJE] SMS enviado sid=${message.sid} to=${to} status=${message.status} ` +
           `contentSid=${contentSid || 'n/a'} lead=${payload.leadId}`,
       );
       return { success: true, providerRef: message.sid };

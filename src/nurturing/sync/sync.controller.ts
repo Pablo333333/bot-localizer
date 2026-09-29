@@ -5,6 +5,7 @@ import { SequenceScheduler } from '../engine/sequence.scheduler';
 import { EnrollmentsService } from '../enrollments/enrollments.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { isNurturingPhase3Enabled } from '../phase3-enabled';
+import { isNurturingFastTest } from '../nurturing-fast-delay';
 import {
   PHASE3_TONI_PHONE_E164,
   isPhase3AllowedPhone,
@@ -121,6 +122,9 @@ export class SyncController {
         whatsappEnabled: String(
           this.config.get('NURTURING_WHATSAPP_ENABLED') ?? 'false',
         ),
+        fastTest: isNurturingFastTest(this.config.get('NURTURING_FAST_TEST')),
+        fastT7Minutes: this.config.get('NURTURING_FAST_T7_MINUTES') ?? 3,
+        fastT10Minutes: this.config.get('NURTURING_FAST_T10_MINUTES') ?? 5,
         outboundAgentId: this.config.get('RETELL_OUTBOUND_AGENT_ID') || null,
         followupAgentId:
           this.config.get('RETELL_AGENT_ID_FOLLOWUP') ||

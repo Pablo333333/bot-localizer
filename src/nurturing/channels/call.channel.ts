@@ -149,7 +149,7 @@ export class CallChannel implements NurturingChannel {
       }
 
       this.logger.log(
-        `Retell call started lead=${payload.leadId} call_id=${guarded.call.call_id} agent=${agentId} from=${this.fromNumber} to=${toNumber}`,
+        `[FASE3][LLAMADA] Retell iniciada fase=${nurturingPhase} lead=${payload.leadId} call_id=${guarded.call.call_id} agent=${agentId} from=${this.fromNumber} to=${toNumber} template=${payload.templateKey}`,
       );
       return { success: true, providerRef: guarded.call.call_id };
     } catch (error) {

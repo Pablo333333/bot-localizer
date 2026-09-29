@@ -44,7 +44,7 @@ export class SequenceProcessor extends WorkerHost {
 
     const { stepRunId, enrollmentId, leadId } = job.data;
     this.logger.log(
-      `Processing job=${job.id} stepRun=${stepRunId} attempt=${job.attemptsMade + 1}`,
+      `[FASE3][COLA] ejecutando job=${job.id} stepRun=${stepRunId} attempt=${job.attemptsMade + 1} lead=${leadId} enrollment=${enrollmentId}`,
     );
 
     const stepRun = await this.prisma.sequenceStepRun.findUnique({
@@ -117,6 +117,10 @@ export class SequenceProcessor extends WorkerHost {
       string,
       unknown
     >;
+
+    this.logger.log(
+      `[FASE3][COLA] disparando channel=${stepRun.step.channel} template=${stepRun.step.templateKey} lead=${lead.id} phone=${lead.phone} stepRun=${stepRunId}`,
+    );
 
     const result = await adapter.send({
       leadId: lead.id,
@@ -191,7 +195,9 @@ export class SequenceProcessor extends WorkerHost {
     ]);
 
     await this.maybeCompleteEnrollment(enrollmentId);
-    this.logger.log(`StepRun ${stepRunId} sent via ${stepRun.step.channel}`);
+    this.logger.log(
+      `[FASE3][COLA] paso enviado stepRun=${stepRunId} channel=${stepRun.step.channel} template=${stepRun.step.templateKey} lead=${lead.id} providerRef=${result.providerRef || '?'}`,
+    );
     return { status: 'sent' };
   }
 

@@ -112,7 +112,7 @@ export class EnrollmentsService {
       },
     });
 
-    await this.scheduler.scheduleEnrollmentSteps(
+    const stepsScheduled = await this.scheduler.scheduleEnrollmentSteps(
       enrollment.id,
       leadId,
       sequence.steps,
@@ -120,13 +120,13 @@ export class EnrollmentsService {
     );
 
     this.logger.log(
-      `Enrolled lead=${leadId} sequence=${sequence.id} enrollment=${enrollment.id} steps=${sequence.steps.length}`,
+      `[FASE3][BULLMQ] enrolled lead=${leadId} sequence=${sequence.id} enrollment=${enrollment.id} pasosEncolados=${stepsScheduled}`,
     );
 
     return {
       enrollmentId: enrollment.id,
       sequenceId: sequence.id,
-      stepsScheduled: sequence.steps.length,
+      stepsScheduled,
     };
   }
 
@@ -195,6 +195,11 @@ export class EnrollmentsService {
     }
 
     return stopped;
+  }
+
+  /** Encola la llamada 3 cuando cierra la llamada 2, si aún no está en BullMQ. */
+  async scheduleNextFollowup(leadId: string, templateKey: string) {
+    return this.scheduler.scheduleFollowupStepIfMissing(leadId, templateKey);
   }
 
   async cancelEnrollment(
