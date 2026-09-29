@@ -150,6 +150,34 @@ export function extractImageUrlsFromCad(cad: CadLike): string[] {
   return urls.slice(0, MAX_PROPERTY_IMAGES);
 }
 
+const LOCAL_IMAGE_PATH =
+  /(?:^|[\s,;|])((?:[\w.-]+\/)+[\w.-]+\.(?:jpe?g|png|webp|gif))/gi;
+
+/** Rutas relativas del Sheet, p. ej. Localizados_Images/image_80.jpg. */
+export function extractLocalImagePathsFromCad(cad: CadLike): string[] {
+  if (!cad) return [];
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  const blobs = [
+    sanitizeRaw(cad.imagenes_locales),
+    ...Object.values(cad).map((value) => sanitizeRaw(value)),
+  ];
+  for (const raw of blobs) {
+    if (!raw || !raw.includes('/')) continue;
+    LOCAL_IMAGE_PATH.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = LOCAL_IMAGE_PATH.exec(raw))) {
+      const path = match[1];
+      const key = path.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      paths.push(path);
+      if (paths.length >= MAX_PROPERTY_IMAGES) return paths;
+    }
+  }
+  return paths;
+}
+
 /** Primera URL de imagen (compat con extractImageUrlFromCad). */
 export function extractFirstImageUrlFromCad(cad: CadLike): string | undefined {
   return extractImageUrlsFromCad(cad)[0];

@@ -147,4 +147,56 @@ describe('sheet-row-mapper', () => {
     expect(cad.pais).toBe('España');
     expect(cad.direccion).toContain('Carlota Alessandri');
   });
+
+  it('lee operación, traspaso, precio filtro, etiqueta, anunciantes y enlaces', () => {
+    const cells: Record<string, string> = {
+      F: 'Traspaso',
+      G: 'Venta negocio',
+      DH: '12.000 €',
+      DK: 'NEGOCIO Y EQUIPAMIENTO',
+      S: '600111222',
+      T: 'Ana',
+      U: 'WhatsApp',
+      V: 'https://www.idealista.com/inmueble/1',
+      X: '611222333',
+      Y: 'Luis',
+      Z: 'Llamada',
+      AA: 'https://www.fotocasa.es/2',
+      AC: '622333444',
+      AD: 'Marta',
+    };
+    const cad = sheetRowToCad({
+      get: () => '',
+      getByColumnLetter: (letter: string) => cells[letter] || '',
+    });
+    expect(cad.contrato).toBe('Traspaso');
+    expect(cad.modalidad_traspaso).toBe('Venta negocio');
+    expect(cad.precio_filtro_busqueda).toBe('12000');
+    expect(cad.etiqueta_precio_antes).toBe('NEGOCIO Y EQUIPAMIENTO');
+    expect(cad.notas_anunciante).toContain(
+      'Anunciante 1: Ana · 600111222 · WhatsApp',
+    );
+    expect(cad.notas_anunciante).toContain(
+      'Anunciante 2: Luis · 611222333 · Llamada',
+    );
+    expect(cad.notas_anunciante).toContain('Anunciante 3: Marta · 622333444');
+    expect(cad.notas_anunciante).toContain('idealista.com');
+    expect(cad.notas_anunciante).toContain('fotocasa.es');
+  });
+
+  it('pone Foto-entrada la primera aunque la ruta no sea un enlace de Drive', () => {
+    const cad = sheetRowToCad(
+      fakeRow({
+        'Foto-carteles': 'Localizados_Images/cartel.jpg',
+        'Foto-entrada': 'Localizados_Images/image_80.jpg',
+        'Foto-interior-1': 'Localizados_Images/interior.jpg',
+      }),
+      ['Foto-carteles', 'Foto-entrada', 'Foto-interior-1'],
+    );
+    expect(String(cad.imagenes_locales).split(', ')[0]).toBe(
+      'Localizados_Images/image_80.jpg',
+    );
+    expect(cad.imagenes_locales).toContain('cartel.jpg');
+    expect(cad.imagenes_locales).toContain('interior.jpg');
+  });
 });

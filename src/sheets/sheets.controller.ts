@@ -3,6 +3,7 @@ import { SheetsService } from './sheets.service';
 import { WordpressService } from '../wordpress/wordpress.service';
 import { ConfigService } from '@nestjs/config';
 import { preferCallCad } from '../wordpress/call-cad-priority';
+import { isCadPublishable } from '../wordpress/property-mapper';
 import { CommercialDescriptionService } from '../wordpress/commercial-description.service';
 import { PropertyMediaService } from '../wordpress/property-media.service';
 import {
@@ -241,12 +242,7 @@ export class SheetsController {
         callData.call_analysis.custom_analysis_data = mergedCad;
       }
 
-      const dispValue = String(mergedCad.disponibilidad || cad?.disponibilidad || '')
-        .toUpperCase()
-        .trim();
-      const isAvailable = ['DISPONIBLE', 'SÍ', 'SI', 'TRUE', 'YES'].includes(
-        dispValue,
-      );
+      const isAvailable = isCadPublishable(mergedCad);
       this.logger.log(
         `Procesando webhook para Agent ID: ${agentId}. Éxito: ${isSuccessful}, Disponible: ${isAvailable} (Valor: ${mergedCad.disponibilidad || cad?.disponibilidad})`,
       );

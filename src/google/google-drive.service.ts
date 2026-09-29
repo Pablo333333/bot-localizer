@@ -102,6 +102,58 @@ export class GoogleDriveService implements OnModuleInit {
   /**
    * Busca una subcarpeta cuyo nombre contenga el término (p.ej. Call ID / ID_WP).
    */
+  /**
+   * `Localizados_Images/image_80.jpg` → archivo dentro de la carpeta con ese nombre.
+   */
+  async findImageByRelativePath(relativePath: string): Promise<{
+    id: string;
+    name?: string | null;
+    mimeType?: string | null;
+  } | null> {
+    const parts = String(relativePath || '')
+      .trim()
+      .replace(/\\/g, '/')
+      .split('/')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length < 2) return null;
+    const fileName = parts[parts.length - 1].replace(/'/g, "\\'");
+    const folderName = parts[parts.length - 2].replace(/'/g, "\\'");
+    if (!fileName || !folderName) return null;
+
+    try {
+      const folders = await this.driveClient.files.list({
+        q: `mimeType = 'application/vnd.google-apps.folder' and name = '${folderName}' and trashed = false`,
+        fields: 'files(id, name)',
+        pageSize: 10,
+        ...DRIVE_LIST_OPTS,
+      });
+      for (const folder of folders.data.files || []) {
+        if (!folder.id) continue;
+        const files = await this.driveClient.files.list({
+          q: `'${folder.id}' in parents and name = '${fileName}' and trashed = false`,
+          fields: 'files(id, name, mimeType)',
+          pageSize: 5,
+          ...DRIVE_LIST_OPTS,
+        });
+        const file = files.data.files?.[0];
+        if (file?.id) {
+          return {
+            id: file.id,
+            name: file.name,
+            mimeType: file.mimeType,
+          };
+        }
+      }
+      return null;
+    } catch (error: any) {
+      this.logger.warn(
+        `No se pudo resolver ${folderName}/${fileName}: ${error.message}`,
+      );
+      return null;
+    }
+  }
+
   async findSubfolderByName(
     parentFolderId: string,
     nameContains: string,

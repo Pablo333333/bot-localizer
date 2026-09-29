@@ -12,6 +12,16 @@ export const SHEET_COL_PAIS = 'CI';
 export const SHEET_COL_DIRECCION = 'CX';
 /** Imagen principal del anuncio. Columna P, cabecera "URL Imagen". */
 export const SHEET_COL_URL_IMAGEN = 'P';
+/** Operación (Alquiler / Venta / Traspaso). Columna F. */
+export const SHEET_COL_OPERACION = 'F';
+/** Modalidad de traspaso (Venta negocio / Venta con inmueble). Columna G. */
+export const SHEET_COL_TRASPASO_MODALIDAD = 'G';
+/** Precio que va al buscador de WordPress. Columna DH. */
+export const SHEET_COL_PRECIO_FILTRO = 'DH';
+/** Texto de "antes de la etiqueta de precio". Columna DK. */
+export const SHEET_COL_ETIQUETA_PRECIO = 'DK';
+/** Última columna de fotos (Foto-exterior-12). Hay que leerla para la galería. */
+export const SHEET_COL_LAST_READ = 'DZ';
 
 export const SHEET_COL_PAIS_INDEX0 = columnLetterToIndex0(SHEET_COL_PAIS);
 export const SHEET_COL_DIRECCION_INDEX0 = columnLetterToIndex0(SHEET_COL_DIRECCION);
@@ -39,14 +49,22 @@ export function columnLetterToIndex0(letter: string): number {
   return n - 1;
 }
 
-/** Última columna que hay que leer: cubre cabeceras y, como mínimo, CX. */
+/** Última columna que hay que leer: cubre cabeceras y, como mínimo, DZ. */
 export function sheetReadLastColumnLetter(headerCount: number): string {
-  const lastIndex = Math.max(headerCount - 1, SHEET_COL_DIRECCION_INDEX0, 0);
+  const lastIndex = Math.max(
+    headerCount - 1,
+    columnLetterToIndex0(SHEET_COL_LAST_READ),
+    0,
+  );
   return columnIndexToA1(lastIndex);
 }
 
 export function sheetReadColumnCount(headerCount: number): number {
-  return Math.max(headerCount, SHEET_COL_DIRECCION_INDEX0 + 1, 1);
+  return Math.max(
+    headerCount,
+    columnLetterToIndex0(SHEET_COL_LAST_READ) + 1,
+    1,
+  );
 }
 
 /**
@@ -71,6 +89,10 @@ export function parseA1RangeRows(
 
 type GridCell = {
   formattedValue?: string | null;
+  hyperlink?: string | null;
+  textFormatRuns?: Array<{
+    format?: { link?: { uri?: string | null } | null } | null;
+  }> | null;
   userEnteredValue?: {
     formulaValue?: string;
     stringValue?: string;
@@ -84,10 +106,24 @@ type GridCell = {
   } | null;
 };
 
+function driveUrlFromCell(cell: GridCell): string {
+  const candidates = [
+    cell.hyperlink,
+    ...(cell.textFormatRuns || []).map((run) => run?.format?.link?.uri),
+  ];
+  for (const raw of candidates) {
+    const link = String(raw || '').trim();
+    if (/drive\.google\.com|docs\.google\.com/i.test(link)) return link;
+  }
+  return '';
+}
+
 export function gridCellToText(cell: GridCell | null | undefined): string {
   if (!cell) return '';
   const formula = cell.userEnteredValue?.formulaValue;
   if (formula && /HYPERLINK/i.test(formula)) return formula;
+  const driveUrl = driveUrlFromCell(cell);
+  if (driveUrl) return driveUrl;
   if (cell.formattedValue != null && String(cell.formattedValue) !== '') {
     return String(cell.formattedValue);
   }
@@ -126,7 +162,7 @@ export function createIsolatedSheetRow(args: {
     args.columnCount ?? 0,
     args.headers.length,
     args.values.length,
-    SHEET_COL_DIRECCION_INDEX0 + 1,
+    columnLetterToIndex0(SHEET_COL_LAST_READ) + 1,
   );
   const cells: string[] = new Array(columnCount).fill('');
   for (let i = 0; i < columnCount; i++) {

@@ -3,6 +3,7 @@ import {
   buildListingTitle,
   buildWpSlug,
   extractImageUrlFromCad,
+  isCadPublishable,
   normalizeWpCountry,
   resolveOperation,
   resolvePrimaryPrice,
@@ -58,6 +59,7 @@ describe('property-mapper (Retell → WP Residence)', () => {
     });
     const body = toWordpressRequestBody(payload);
 
+    expect(payload.title.startsWith('Local en')).toBe(true);
     expect(payload.title).toContain('[ALQUILER]');
     expect(payload.title).toContain('Gran Vía');
     expect(payload.status).toBe('pending');
@@ -274,5 +276,74 @@ describe('property-mapper (Retell → WP Residence)', () => {
     });
     expect(empty.meta.property_country).toBeUndefined();
     expect(empty.meta.property_address).toBeUndefined();
+  });
+
+  it('venta o alquiler empieza por el tipo y lista las dos operaciones', () => {
+    const title = buildListingTitle({
+      tipo_inmueble: 'Local',
+      negocio_anterior: 'Peluquería',
+      tipo_via: 'Calle',
+      nombre_via: 'Ciudad de Salamanca',
+      numero_via: '38',
+      pueblo_barrio: 'Zona de la Quinta',
+      municipio: 'Antequera',
+      provincia: 'Málaga',
+      superficie_total: '100',
+      contrato: 'Venta, Alquiler',
+    });
+    expect(title).toBe(
+      'Local en Calle Ciudad de Salamanca, 38, Zona de la Quinta, Antequera (MÁLAGA) – [VENTA, ALQUILER] – 100 m2',
+    );
+  });
+
+  it('prioriza venta para el buscador y deja el alquiler delante de la etiqueta', () => {
+    const payload = buildEstatePropertyPayload({
+      call_id: 'call_x',
+      call_analysis: {
+        custom_analysis_data: {
+          contrato: 'Venta, Alquiler',
+          precio_venta: '180000',
+          precio_alquiler: '800',
+          notas_anunciante: 'Anunciante 1: Ana · 600111222 | Enlace: https://idealista.com/1',
+        },
+      },
+    });
+    expect(payload.meta.property_price).toBe('180000');
+    expect(payload.meta.property_label).toBeUndefined();
+    expect(payload.meta.property_label_before).toBe('Alquiler 800 €/mes');
+    expect(payload.meta.owner_notes).toContain('Ana');
+    expect(payload.meta.owner_notes).toContain('idealista.com');
+    expect(payload.meta.owner_notes).toContain('call_x');
+  });
+
+  it('DH fija el precio, DK la etiqueta y el traspaso lleva la actividad', () => {
+    const payload = buildEstatePropertyPayload({
+      call_analysis: {
+        custom_analysis_data: {
+          contrato: 'Traspaso',
+          precio_traspaso: '12000',
+          precio_filtro_busqueda: '9000',
+          etiqueta_precio_antes: 'NEGOCIO Y EQUIPAMIENTO',
+          modalidad_traspaso: 'Venta negocio',
+          negocio_anterior: 'Peluquería',
+          tipo_inmueble: 'Local',
+          tipo_via: 'Calle',
+          nombre_via: 'Mayor',
+          municipio: 'Antequera',
+        },
+      },
+    });
+    expect(payload.meta.property_price).toBe('9000');
+    expect(payload.meta.property_label_before).toBe('NEGOCIO Y EQUIPAMIENTO');
+    expect(payload.meta['traspaso']).toBe('Venta negocio');
+    expect(payload.title.startsWith('Peluquería en')).toBe(true);
+    expect(payload.title).toContain('[TRASPASO]');
+  });
+
+  it('publica si la operación es venta aunque disponibilidad ya no diga SI', () => {
+    expect(isCadPublishable({ contrato: 'Venta', precio_venta: '1000' })).toBe(true);
+    expect(isCadPublishable({ disponibilidad: 'SI' })).toBe(true);
+    expect(isCadPublishable({ disponibilidad: 'NO' })).toBe(false);
+    expect(isCadPublishable({})).toBe(false);
   });
 });

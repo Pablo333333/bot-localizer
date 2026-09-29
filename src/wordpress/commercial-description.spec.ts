@@ -12,6 +12,17 @@ describe('commercial-description', () => {
     ).toBe(false);
   });
 
+  it('prioriza descripcion_generada de la llamada sobre el texto viejo del Sheet', () => {
+    expect(
+      pickExistingCommercialDescription({
+        descripcion_generada:
+          'Local en buen estado ubicado en calle Sindicato, Zona Sindicato, Palma, Mallorca.',
+        descripcion_propietario:
+          'Local super bien situado, junto al Teatro Cervantes, ideal hamburgueseria.',
+      }),
+    ).toContain('Sindicato');
+  });
+
   it('reutiliza descripción comercial existente y descarta dumps', () => {
     expect(
       pickExistingCommercialDescription({

@@ -163,7 +163,8 @@ export function buildCadPropertyUpdates(
     out,
     'Descripción por el propietario',
     val(
-      cad.descripcion_propietario ||
+      cad.descripcion_generada ||
+        cad.descripcion_propietario ||
         cad.descripcion_por_el_propietario ||
         cad.comentario_anunciante,
     ),
@@ -199,7 +200,7 @@ export function buildCadPropertyUpdates(
   pickIfChanged(
     out,
     'Terraza propia (Superficie m2)',
-    val(cad.terraza_patio, true),
+    val(cad.terraza_patio),
     getExisting,
   );
   pickIfChanged(out, 'Equipamiento', val(cad.equipamiento), getExisting);
@@ -250,7 +251,7 @@ export function buildCadPropertyUpdates(
   pickIfChanged(out, 'Negociable', val(cad.es_negociable), getExisting);
   pickIfChanged(out, 'Vado (SI/NO)', yesNoExplicit(cad.vado), getExisting);
   pickIfChanged(out, 'Altura techos', val(cad.altura_techos), getExisting);
-  pickIfChanged(out, 'Numero plantas', val(cad.num_plantas), getExisting);
+  pickIfChanged(out, 'Numero plantas', val(cad.numero_plantas || cad.num_plantas), getExisting);
   pickIfChanged(out, 'Iluminacion', val(cad.iluminacion), getExisting);
   pickIfChanged(out, 'Suelos', val(cad.suelos), getExisting);
   pickIfChanged(out, 'Contrato', val(cad.contrato), getExisting);
@@ -261,11 +262,11 @@ export function buildCadPropertyUpdates(
     val(cad.email_propietario_gestor || cad.email),
     getExisting,
   );
-  pickIfChanged(out, 'Email Avisos', val(cad.email_avisos), getExisting);
+  pickIfChanged(out, 'Email Avisos', val(cad.email || cad.email_avisos), getExisting);
   pickIfChanged(
     out,
     'Publicacion Autorizada?',
-    yesNoExplicit(cad.publicacion_autorizada),
+    yesNoExplicit(cad['publicacion_autorizada?'] || cad.publicacion_autorizada),
     getExisting,
   );
 
@@ -312,9 +313,16 @@ export function buildCadPropertyUpdates(
     pickIfChanged(
       out,
       'Nombre contacto1',
-      val(cad.nombre_contacto_1 || cad.nombre_contacto || cad.nombre_propietario),
+      val(
+        cad.nombre_contacto_1 ||
+          cad.nombre_contacto ||
+          cad.nombre_propietario ||
+          cad.first_name,
+      ),
       getExisting,
     );
+    pickIfChanged(out, 'Contacto1 por', val(cad.contacto_1_por), getExisting);
+    pickIfChanged(out, 'Contacto1 con', val(cad.contacto_1_con), getExisting);
     pickIfChanged(out, 'Nombre contacto2', val(cad.nombre_contacto_2), getExisting);
     pickIfChanged(out, 'Nombre contacto3', val(cad.nombre_contacto_3), getExisting);
   }

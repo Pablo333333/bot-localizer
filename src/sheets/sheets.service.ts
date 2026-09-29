@@ -142,7 +142,7 @@ export class SheetsService implements OnModuleInit {
             includeGridData: 'true',
             ranges: range,
             fields:
-              'sheets.data(startRow,rowData(values(formattedValue,userEnteredValue,effectiveValue)))',
+              'sheets.data(startRow,rowData(values(formattedValue,hyperlink,textFormatRuns,userEnteredValue,effectiveValue)))',
           },
         })
       ).json()) as {
@@ -430,6 +430,10 @@ export class SheetsService implements OnModuleInit {
         if (matches.length > 1) {
           this.logger.warn(
             `[updateSpecificCells] Fila ${rowNumber}: cabecera "${key}" duplicada — no se escribe para no mezclar columnas.`,
+          );
+        } else {
+          this.logger.warn(
+            `[updateSpecificCells] Fila ${rowNumber}: cabecera "${key}" no está en Localizados — valor no guardado.`,
           );
         }
         continue;

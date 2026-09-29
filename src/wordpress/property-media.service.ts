@@ -4,6 +4,7 @@ import { GoogleDriveService } from '../google/google-drive.service';
 import {
   extractDriveFolderIdsFromCad,
   extractImageUrlsFromCad,
+  extractLocalImagePathsFromCad,
   MAX_PROPERTY_IMAGES,
 } from './property-media-sources';
 import type { RetellCad } from './property-mapper';
@@ -191,6 +192,30 @@ export class PropertyMediaService {
           { id: fileId, name: `drive_${fileId}.jpg`, mimeType: 'image/jpeg' },
         ]);
       }
+    }
+
+    if (out.length >= MAX_PROPERTY_IMAGES) {
+      return out.slice(0, MAX_PROPERTY_IMAGES);
+    }
+
+    const localPaths = extractLocalImagePathsFromCad(cad);
+    if (localPaths.length > 0) {
+      this.logger.log(
+        `[PropertyMedia] Rutas locales: ${localPaths.length} (${localPaths[0]})`,
+      );
+    }
+    for (const relativePath of localPaths) {
+      if (out.length >= MAX_PROPERTY_IMAGES) break;
+      const file = await this.googleDrive.findImageByRelativePath(relativePath);
+      if (!file) {
+        this.logger.warn(
+          `[PropertyMedia] No está en Drive: ${relativePath}`,
+        );
+        continue;
+      }
+      pushUnique([
+        { id: file.id, name: file.name, mimeType: file.mimeType },
+      ]);
     }
 
     if (out.length >= MAX_PROPERTY_IMAGES) {

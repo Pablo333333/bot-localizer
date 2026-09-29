@@ -5,7 +5,11 @@ import {
 } from './property-media-sources';
 import {
   SHEET_COL_DIRECCION,
+  SHEET_COL_ETIQUETA_PRECIO,
+  SHEET_COL_OPERACION,
   SHEET_COL_PAIS,
+  SHEET_COL_PRECIO_FILTRO,
+  SHEET_COL_TRASPASO_MODALIDAD,
   SHEET_COL_URL_IMAGEN,
 } from '../sheets/sheet-row-isolation';
 
@@ -105,7 +109,27 @@ const SHEET_TO_CAD: ReadonlyArray<{
   { cadKey: 'vado', columns: ['Vado (SI/NO)'] },
   { cadKey: 'altura_techos', columns: ['Altura techos'] },
   { cadKey: 'num_plantas', columns: ['Numero plantas'] },
-  { cadKey: 'contrato', columns: ['Contrato'] },
+  {
+    cadKey: 'contrato',
+    columns: ['Operación', 'Operacion', 'Contrato'],
+  },
+  {
+    cadKey: 'modalidad_traspaso',
+    columns: [
+      'Modalidad traspaso',
+      'Modalidad de Traspaso',
+      'Modalidad de traspaso',
+    ],
+  },
+  {
+    cadKey: 'precio_filtro_busqueda',
+    columns: ['Precio filtro búsqueda', 'Precio filtro busqueda'],
+    cleanSymbols: true,
+  },
+  {
+    cadKey: 'etiqueta_precio_antes',
+    columns: ['Etiqueta precio antes', 'Antes etiqueta precio'],
+  },
   { cadKey: 'iluminacion', columns: ['Iluminacion'] },
   { cadKey: 'suelos', columns: ['Suelos'] },
   {
@@ -414,7 +438,170 @@ export function sheetRowToCad(
     else delete cad.direccion;
   }
 
+  applyOperationAndContactColumns(row, cad);
+  const localImages = collectLocalImagePaths(row, headers);
+  if (localImages) cad.imagenes_locales = localImages;
+
   return cad;
+}
+
+const LOCAL_IMAGE_FILE =
+  /(?:[\w.-]+\/)+[\w.-]+\.(?:jpe?g|png|webp|gif)/gi;
+
+/** Foto-entrada primero (destacada); el resto sigue el orden de columnas. */
+function collectLocalImagePaths(
+  row: SheetRowLike,
+  headers?: string[],
+): string {
+  const rest: string[] = [];
+  const seen = new Set<string>();
+  let entrada = '';
+  const push = (header: string, raw: string) => {
+    LOCAL_IMAGE_FILE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    const isEntrada = /foto\s*-?\s*entrada/i.test(header);
+    while ((match = LOCAL_IMAGE_FILE.exec(raw))) {
+      const path = match[0];
+      const key = path.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (isEntrada && !entrada) entrada = path;
+      else rest.push(path);
+    }
+  };
+  for (const { header, value } of rowEntries(row, headers)) {
+    if (value) push(header, value);
+  }
+  const ordered = entrada ? [entrada, ...rest] : rest;
+  return ordered.join(', ');
+}
+
+const OPERATION_ORDER = ['Venta', 'Traspaso', 'Alquiler'] as const;
+
+function parseOperationList(raw: unknown): string[] {
+  const stripped = sanitizeValue(raw)
+    .replace(/venta\s+con\s+inmueble/gi, ' ')
+    .replace(/venta\s+negocio/gi, ' ');
+  const found = new Set<string>();
+  if (/traspaso/i.test(stripped)) found.add('Traspaso');
+  if (/alquiler|renta/i.test(stripped)) found.add('Alquiler');
+  if (/\bventa\b|\bcompra\b/i.test(stripped)) found.add('Venta');
+  return OPERATION_ORDER.filter((item) => found.has(item));
+}
+
+function parseTraspasoModalidad(raw: unknown): string {
+  const s = sanitizeValue(raw);
+  if (/venta\s+con\s+inmueble/i.test(s)) return 'Venta con inmueble';
+  if (/venta\s+negocio/i.test(s)) return 'Venta negocio';
+  return '';
+}
+
+function isDisponibleToken(raw: unknown): boolean {
+  return ['DISPONIBLE', 'SI', 'SÍ', 'TRUE', 'YES'].includes(
+    sanitizeValue(raw).toUpperCase(),
+  );
+}
+
+function readLetter(row: SheetRowLike, letter: string): string {
+  if (typeof row.getByColumnLetter !== 'function') return '';
+  return sanitizeValue(row.getByColumnLetter(letter));
+}
+
+/**
+ * Columnas por letra (aunque cambie el encabezado):
+ * F operación, G modalidad de traspaso, DH precio del buscador, DK etiqueta,
+ * S+U / Y+Z / AC+AD anunciante, V y AA enlaces externos.
+ */
+function applyOperationAndContactColumns(
+  row: SheetRowLike,
+  cad: RetellCad,
+): void {
+  const fromLetter = parseOperationList(readLetter(row, SHEET_COL_OPERACION));
+  const fromHeader = parseOperationList(cad.contrato);
+  const ops = fromLetter.length > 0 ? fromLetter : fromHeader;
+  if (ops.length > 0) {
+    cad.contrato = ops.join(', ');
+  }
+  if (parseOperationList(cad.disponibilidad).length > 0) {
+    delete cad.disponibilidad;
+  } else if (isDisponibleToken(readLetter(row, SHEET_COL_OPERACION))) {
+    cad.disponibilidad = readLetter(row, SHEET_COL_OPERACION);
+  }
+
+  const modalidad =
+    parseTraspasoModalidad(readLetter(row, SHEET_COL_TRASPASO_MODALIDAD)) ||
+    parseTraspasoModalidad(cad.modalidad_traspaso);
+  if (modalidad) cad.modalidad_traspaso = modalidad;
+  else delete cad.modalidad_traspaso;
+
+  const filtro = sanitizeValue(
+    readLetter(row, SHEET_COL_PRECIO_FILTRO) || cad.precio_filtro_busqueda,
+    true,
+  );
+  if (filtro) cad.precio_filtro_busqueda = filtro;
+
+  const etiqueta = sanitizeValue(
+    readLetter(row, SHEET_COL_ETIQUETA_PRECIO) || cad.etiqueta_precio_antes,
+  );
+  if (etiqueta) cad.etiqueta_precio_antes = etiqueta;
+
+  const groups: Array<{
+    index: string;
+    phoneHeaders: string[];
+    phoneCol: string;
+    nameHeaders: string[];
+    nameCol: string;
+    viaHeaders: string[];
+    viaCol: string;
+  }> = [
+    {
+      index: '1',
+      phoneHeaders: ['Telefono1', 'Teléfono1'],
+      phoneCol: 'S',
+      nameHeaders: ['Nombre contacto1'],
+      nameCol: 'T',
+      viaHeaders: ['Contacto1 por'],
+      viaCol: 'U',
+    },
+    {
+      index: '2',
+      phoneHeaders: ['Telefono2', 'Teléfono2'],
+      phoneCol: 'X',
+      nameHeaders: ['Nombre contacto2'],
+      nameCol: 'Y',
+      viaHeaders: ['Contacto2 por'],
+      viaCol: 'Z',
+    },
+    {
+      index: '3',
+      phoneHeaders: ['Telefono3', 'Teléfono3'],
+      phoneCol: 'AC',
+      nameHeaders: ['Nombre contacto3'],
+      nameCol: 'AD',
+      viaHeaders: ['Contacto3 por'],
+      viaCol: 'AE',
+    },
+  ];
+  const lines: string[] = [];
+  for (const group of groups) {
+    const phone =
+      readSheetCell(row, group.phoneHeaders) || readLetter(row, group.phoneCol);
+    const name =
+      readSheetCell(row, group.nameHeaders) || readLetter(row, group.nameCol);
+    const via =
+      readSheetCell(row, group.viaHeaders) || readLetter(row, group.viaCol);
+    if (!phone && !name && !via) continue;
+    lines.push(
+      `Anunciante ${group.index}: ${[name, phone, via].filter(Boolean).join(' · ')}`,
+    );
+  }
+  for (const col of ['V', 'AA']) {
+    const link = readLetter(row, col);
+    if (!link) continue;
+    if (/drive\.google\.com|\/file\/d\//i.test(link)) continue;
+    lines.push(`Enlace: ${link}`);
+  }
+  if (lines.length) cad.notas_anunciante = lines.join(' | ');
 }
 
 /** Objeto callData compatible con buildEstatePropertyPayload / createPropertyPost. */

@@ -1,9 +1,11 @@
 import {
   columnLetterToIndex0,
   createIsolatedSheetRow,
+  gridCellToText,
   isolatedRowsFromGridPage,
   parseA1RangeRows,
   SHEET_COL_DIRECCION,
+  SHEET_COL_ETIQUETA_PRECIO,
   SHEET_COL_PAIS,
   SHEET_COL_URL_IMAGEN,
   sheetReadColumnCount,
@@ -20,6 +22,22 @@ describe('sheet-row-isolation', () => {
   it('P es la columna URL Imagen', () => {
     expect(columnLetterToIndex0('P')).toBe(15);
     expect(columnLetterToIndex0(SHEET_COL_URL_IMAGEN)).toBe(15);
+  });
+
+  it('la lectura llega hasta las fotos de DZ y DK sigue siendo la etiqueta', () => {
+    expect(columnLetterToIndex0(SHEET_COL_ETIQUETA_PRECIO)).toBe(114);
+    expect(columnLetterToIndex0('DH')).toBe(111);
+    expect(columnLetterToIndex0('DZ')).toBe(129);
+    expect(sheetReadColumnCount(3)).toBe(130);
+  });
+
+  it('un hipervínculo de Drive sustituye al texto visible de la celda', () => {
+    expect(
+      gridCellToText({
+        formattedValue: 'Localizados_Images/563.jpg',
+        hyperlink: 'https://drive.google.com/file/d/abcFILE123/view',
+      }),
+    ).toContain('abcFILE123');
   });
 
   it('un hueco en medio no desplaza la descripción de la fila siguiente', () => {

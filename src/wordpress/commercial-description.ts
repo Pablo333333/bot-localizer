@@ -27,6 +27,7 @@ export function looksLikeTechnicalDump(html: unknown): boolean {
 
 export function pickExistingCommercialDescription(cad: CadLike | undefined): string {
   const candidates = [
+    cad?.descripcion_generada,
     cad?.descripcion_propietario,
     cad?.descripcion_por_el_propietario,
     cad?.comentario_anunciante,

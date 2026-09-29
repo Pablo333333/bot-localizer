@@ -161,6 +161,69 @@ export function resolvePrimaryPrice(
   return toNumericMeta(cad?.precio_alquiler);
 }
 
+export type ListingOperation = 'venta' | 'traspaso' | 'alquiler';
+
+/** Operaciones presentes en el anuncio, en el orden Venta → Traspaso → Alquiler. */
+export function listedOperations(
+  cad: RetellCad | undefined,
+): ListingOperation[] {
+  const contrato = sanitizeValue(cad?.contrato).toLowerCase();
+  const ops: ListingOperation[] = [];
+  if (
+    contrato.includes('venta') ||
+    contrato.includes('compra') ||
+    !!toNumericMeta(cad?.precio_venta)
+  ) {
+    ops.push('venta');
+  }
+  if (contrato.includes('traspaso') || !!toNumericMeta(cad?.precio_traspaso)) {
+    ops.push('traspaso');
+  }
+  if (
+    contrato.includes('alquiler') ||
+    contrato.includes('renta') ||
+    !!toNumericMeta(cad?.precio_alquiler)
+  ) {
+    ops.push('alquiler');
+  }
+  return ops;
+}
+
+export function resolveListingOperations(
+  cad: RetellCad | undefined,
+): ListingOperation[] {
+  const ops = listedOperations(cad);
+  return ops.length > 0 ? ops : [resolveOperation(cad)];
+}
+
+/**
+ * Precio del buscador (meta property_price).
+ * Si el Sheet trae "Precio filtro búsqueda" (columna DH), manda esa cifra.
+ * Si no, prioridad Venta → Traspaso → Alquiler.
+ */
+export function resolveSearchPrice(cad: RetellCad | undefined): {
+  amount: string;
+  source: 'filtro' | ListingOperation | '';
+} {
+  const filtro = toNumericMeta(cad?.precio_filtro_busqueda);
+  const venta = toNumericMeta(cad?.precio_venta);
+  const traspaso = toNumericMeta(cad?.precio_traspaso);
+  const alquiler = toNumericMeta(cad?.precio_alquiler);
+  if (filtro) return { amount: filtro, source: 'filtro' };
+  if (venta) return { amount: venta, source: 'venta' };
+  if (traspaso) return { amount: traspaso, source: 'traspaso' };
+  if (alquiler) return { amount: alquiler, source: 'alquiler' };
+  return { amount: '', source: '' };
+}
+
+/** Fila publicable: disponibilidad SI, u operación Alquiler/Venta/Traspaso. */
+export function isCadPublishable(cad: RetellCad | undefined): boolean {
+  const disp = sanitizeValue(cad?.disponibilidad).toUpperCase();
+  if (['NO', 'FALSE', 'NO DISPONIBLE', 'OCUPADO'].includes(disp)) return false;
+  if (['DISPONIBLE', 'SÍ', 'SI', 'TRUE', 'YES'].includes(disp)) return true;
+  return listedOperations(cad).length > 0;
+}
+
 function buildStreetLine(cad: RetellCad | undefined): string {
   const via = [sanitizeValue(cad?.tipo_via), sanitizeValue(cad?.nombre_via)]
     .filter(Boolean)
@@ -181,15 +244,26 @@ const GENERIC_ACTIVITY =
 const GENERIC_AREA =
   /^(centro|centro ciudad|centro-ciudad|casco|casco urbano|casco-urbano)$/i;
 
-function titleLead(cad: RetellCad | undefined): string {
-  const negocio = sanitizeValue(cad?.negocio_anterior);
-  if (negocio && !GENERIC_ACTIVITY.test(negocio)) return negocio;
+function propertyTypeLead(cad: RetellCad | undefined): string {
   const tipo = sanitizeValue(cad?.tipo_inmueble).toLowerCase();
   if (tipo.includes('nave')) return 'Nave';
   if (tipo.includes('oficina')) return 'Oficina';
   if (tipo.includes('edificio')) return 'Edificio';
   if (tipo.includes('complejo')) return 'Complejo';
   return 'Local';
+}
+
+function titleLead(
+  cad: RetellCad | undefined,
+  operations: readonly string[],
+): string {
+  const onlyTraspaso =
+    operations.length > 0 && operations.every((op) => op === 'traspaso');
+  if (onlyTraspaso) {
+    const negocio = sanitizeValue(cad?.negocio_anterior);
+    if (negocio && !GENERIC_ACTIVITY.test(negocio)) return negocio;
+  }
+  return propertyTypeLead(cad);
 }
 
 function formatSizeForTitle(v: unknown): string {
@@ -207,9 +281,19 @@ function formatSizeForTitle(v: unknown): string {
  */
 export function buildListingTitle(
   cad: RetellCad | undefined,
-  operation: string,
+  operation?: string | readonly string[],
 ): string {
-  const lead = titleLead(cad);
+  const fromCad = listedOperations(cad);
+  const operations: string[] = Array.isArray(operation)
+    ? [...operation]
+    : typeof operation === 'string' && operation
+      ? fromCad.length > 1
+        ? fromCad
+        : [operation]
+      : fromCad.length > 0
+        ? fromCad
+        : [resolveOperation(cad)];
+  const lead = titleLead(cad, operations);
   const street = buildStreetLine(cad);
   const municipio = sanitizeValue(cad?.municipio);
   const barrio = sanitizeValue(cad?.pueblo_barrio || cad?.pueblo);
@@ -228,7 +312,7 @@ export function buildListingTitle(
   const prov = provincia
     ? ` (${provincia.toLocaleUpperCase('es-ES')})`
     : '';
-  const op = operation.toUpperCase();
+  const op = operations.map((item) => item.toUpperCase()).join(', ');
   const size =
     formatSizeForTitle(cad?.superficie_total) ||
     formatSizeForTitle(cad?.superficie_util);
@@ -295,10 +379,16 @@ export function buildWpResidenceCustomFields(
   );
   if (disposicion) out['disposicion'] = disposicion;
 
-  const traspaso =
-    sanitizeValue(cad?.contrato) ||
-    (toNumericMeta(cad?.precio_traspaso) ? 'Traspaso' : '');
-  if (traspaso) out['traspaso'] = traspaso;
+  const modalidad = sanitizeValue(cad?.modalidad_traspaso);
+  if (modalidad) {
+    out['traspaso'] = modalidad;
+  } else if (
+    listedOperations(cad).includes('traspaso') &&
+    !listedOperations(cad).includes('venta') &&
+    !listedOperations(cad).includes('alquiler')
+  ) {
+    out['traspaso'] = 'Traspaso';
+  }
 
   const fianza = sanitizeValue(cad?.fianza_meses || cad?.fianza);
   if (fianza) out['fianza'] = fianza;
@@ -347,8 +437,9 @@ export function buildEstatePropertyPayload(
   } = {},
 ): EstatePropertyPayload {
   const cad = callData.call_analysis?.custom_analysis_data;
-  const operation = resolveOperation(cad);
-  const price = resolvePrimaryPrice(cad, operation);
+  const operations = resolveListingOperations(cad);
+  const search = resolveSearchPrice(cad);
+  const price = search.amount;
   const baths = toNumericMeta(
     cad?.numero_aseos || cad?.aseos || cad?.numero_banios,
   );
@@ -366,27 +457,31 @@ export function buildEstatePropertyPayload(
 
   const meta: Record<string, string | number> = {};
 
-  if (price) {
-    meta.property_price = price;
-    if (operation === 'alquiler') {
-      meta.property_label = '/mes';
-    } else if (operation === 'traspaso') {
-      meta.property_label = 'traspaso';
-      meta.property_label_before = 'TRASPASO';
-    } else if (operation === 'venta') {
-      meta.property_label_before = 'VENTA';
-    }
-  }
-
   const alquiler = toNumericMeta(cad?.precio_alquiler);
   const venta = toNumericMeta(cad?.precio_venta);
-  const traspaso = toNumericMeta(cad?.precio_traspaso);
-  if (operation === 'alquiler' && (venta || traspaso)) {
-    meta.property_second_price = venta || traspaso;
-    meta.property_second_price_label = venta ? 'venta' : 'traspaso';
-  } else if (operation !== 'alquiler' && alquiler) {
-    meta.property_second_price = alquiler;
-    meta.property_second_price_label = '/mes';
+  const traspasoPrice = toNumericMeta(cad?.precio_traspaso);
+  const onlyRent = !venta && !traspasoPrice && !!alquiler;
+  const priceIsRent =
+    search.source === 'alquiler' || (search.source === 'filtro' && onlyRent);
+  const onlyTraspaso =
+    operations.length === 1 && operations[0] === 'traspaso';
+
+  if (price) {
+    meta.property_price = price;
+    if (priceIsRent) meta.property_label = '/mes';
+    else if (onlyTraspaso) meta.property_label = 'traspaso';
+  }
+
+  const beforeLabel = sanitizeValue(cad?.etiqueta_precio_antes);
+  if (beforeLabel) {
+    meta.property_label_before = beforeLabel;
+  } else if ((venta || traspasoPrice) && alquiler) {
+    const amount = new Intl.NumberFormat('es-ES').format(Number(alquiler));
+    meta.property_label_before = `Alquiler ${amount} €/mes`;
+  } else if (onlyTraspaso) {
+    meta.property_label_before = 'TRASPASO';
+  } else if (operations.includes('venta') && !alquiler) {
+    meta.property_label_before = 'VENTA';
   }
 
   // WP Residence: property_size = superficie útil/habitable; lot = parcela/total
@@ -425,6 +520,7 @@ export function buildEstatePropertyPayload(
   const notesParts = [
     sanitizeValue(callData.call_analysis?.call_summary),
     sanitizeValue(cad?.informacion_adicional),
+    sanitizeValue(cad?.notas_anunciante),
     callData.call_id ? `Call ID: ${callData.call_id}` : '',
   ].filter(Boolean);
   if (notesParts.length) {
@@ -443,7 +539,7 @@ export function buildEstatePropertyPayload(
 
   Object.assign(meta, buildWpResidenceCustomFields(cad));
 
-  const title = buildListingTitle(cad, operation);
+  const title = buildListingTitle(cad, operations);
   const payload: EstatePropertyPayload = {
     title,
     slug: buildWpSlug(title),
@@ -457,7 +553,7 @@ export function buildEstatePropertyPayload(
     meta,
     taxonomies,
     _mapping: {
-      operation,
+      operation: operations[0],
       categorySlug: taxonomies.property_category[0],
       imageUrl,
     },
