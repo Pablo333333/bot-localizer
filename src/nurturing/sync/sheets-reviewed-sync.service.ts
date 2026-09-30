@@ -81,8 +81,8 @@ export class SheetsReviewedSyncService {
     try {
       await this.syncReviewedRowsToWordpress();
     } catch (error) {
-      this.logger.error(
-        `Reviewed→WP sync failed: ${error instanceof Error ? error.message : error}`,
+      this.logger.warn(
+        `Reviewed→WP sync omitido: ${error instanceof Error ? error.message : error}. Llamadas y seguimiento siguen.`,
       );
     }
   }
@@ -156,10 +156,10 @@ export class SheetsReviewedSyncService {
           else stats.skipped += 1;
         } catch (err) {
           stats.errors += 1;
-          this.logger.error(
-            `Fila ${sheetRowNumber} Reviewed→WP error: ${
+          this.logger.warn(
+            `Fila ${sheetRowNumber} Reviewed→WP omitida: ${
               err instanceof Error ? err.message : err
-            }`,
+            }. El resto de filas, llamadas y seguimiento siguen.`,
           );
         }
       }
@@ -223,10 +223,10 @@ export class SheetsReviewedSyncService {
         else stats.skipped += 1;
       } catch (err) {
         stats.errors += 1;
-        this.logger.error(
-          `WP post ${postId} fila ${row.rowNumber} error: ${
+        this.logger.warn(
+          `WP post ${postId} fila ${row.rowNumber} omitido: ${
             err instanceof Error ? err.message : err
-          }`,
+          }. Llamadas y seguimiento siguen.`,
         );
       }
     }
@@ -310,11 +310,21 @@ export class SheetsReviewedSyncService {
       [COL_DESCRIPCION_PROPIETARIO_ALT]: commercialContent,
     });
 
-    const media = await this.propertyMedia.resolveAndUploadPropertyMedia(
-      cad,
-      callData.call_id,
-      { postId: existingPostId },
-    );
+    let media: { featuredMediaId?: number; galleryMediaIds: number[] } = {
+      galleryMediaIds: [],
+    };
+    try {
+      media = await this.propertyMedia.resolveAndUploadPropertyMedia(
+        cad,
+        callData.call_id,
+        { postId: existingPostId },
+      );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Fila ${row.rowNumber}: subida de imágenes a WordPress omitida: ${message}. Se sigue sin galería.`,
+      );
+    }
 
     if (!media.featuredMediaId && media.galleryMediaIds.length === 0) {
       this.logger.warn(
@@ -331,27 +341,35 @@ export class SheetsReviewedSyncService {
       !!existingPostId &&
       (wpStatus === 'publish' || forzarSync);
 
-    const { id: postId, created } =
-      await this.wordpress.upsertPropertyFromCallData(callData, {
-        postId: existingPostId,
-        featuredMediaId: media.featuredMediaId,
-        galleryMediaIds: media.galleryMediaIds,
-        status,
-        preserveStatus,
-        commercialContent,
-      });
+    const upserted = await this.wordpress.upsertPropertyFromCallData(callData, {
+      postId: existingPostId,
+      featuredMediaId: media.featuredMediaId,
+      galleryMediaIds: media.galleryMediaIds,
+      status,
+      preserveStatus,
+      commercialContent,
+    });
 
-    if (!postId) {
+    if (!upserted?.id) {
       this.logger.warn(
-        `Fila ${row.rowNumber}: WP no devolvió ID — omitiendo write-back`,
+        `Fila ${row.rowNumber}: WordPress no creó ni actualizó la entrada. Se omite el write-back; llamadas y seguimiento siguen.`,
       );
       return 'skipped';
     }
 
-    if (media.galleryMediaIds.length > 0) {
-      await this.propertyMedia.attachGalleryToProperty(
-        postId,
-        media.galleryMediaIds,
+    const { id: postId, created } = upserted;
+
+    try {
+      if (media.galleryMediaIds.length > 0) {
+        await this.propertyMedia.attachGalleryToProperty(
+          postId,
+          media.galleryMediaIds,
+        );
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Fila ${row.rowNumber}: galería WP omitida en post ${postId}: ${message}.`,
       );
     }
 

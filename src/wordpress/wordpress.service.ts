@@ -84,7 +84,7 @@ export class WordpressService {
       preserveStatus?: boolean;
       commercialContent?: string;
     } = {},
-  ): Promise<{ id: number; created: boolean }> {
+  ): Promise<{ id: number; created: boolean } | null> {
     const status =
       options.status ||
       this.configService.get<string>('WP_POST_STATUS') ||
@@ -114,24 +114,29 @@ export class WordpressService {
           ),
         );
         return { id: response.data.id ?? options.postId, created: false };
-      } catch (error: any) {
-        this.logger.error(
-          `Error al actualizar estate_property ${options.postId}: ${
-            error.response?.data?.message || error.message
-          }`,
+      } catch (error: unknown) {
+        this.warnWpApiFailure(
+          `actualizar estate_property ${options.postId}`,
+          error,
         );
-        throw error;
+        return null;
       }
     }
 
-    const created = await this.createPropertyPost(
-      callData,
-      options.featuredMediaId,
-      status,
-      options.commercialContent,
-      options.galleryMediaIds,
-    );
-    return { id: created.id, created: true };
+    try {
+      const created = await this.createPropertyPost(
+        callData,
+        options.featuredMediaId,
+        status,
+        options.commercialContent,
+        options.galleryMediaIds,
+      );
+      if (!created?.id) return null;
+      return { id: created.id, created: true };
+    } catch (error: unknown) {
+      this.warnWpApiFailure('crear estate_property', error);
+      return null;
+    }
   }
 
   /** Lectura ligera de estado WP (para protección de publicados). */
@@ -203,17 +208,9 @@ export class WordpressService {
         `Inmueble estate_property creado. ID: ${response.data.id}`,
       );
       return response.data;
-    } catch (error) {
-      this.logger.error(
-        `Error al crear estate_property: ${error.response?.data?.message || error.message}`,
-        error.stack,
-      );
-      if (error.response?.data) {
-        this.logger.error(
-          `Detalle WP: ${JSON.stringify(error.response.data)}`,
-        );
-      }
-      throw error;
+    } catch (error: unknown) {
+      this.warnWpApiFailure('crear estate_property', error);
+      return null;
     }
   }
 
@@ -293,13 +290,9 @@ export class WordpressService {
         `estate_property ${postId} actualizado desde Sheets sync`,
       );
       return response.data;
-    } catch (error: any) {
-      this.logger.error(
-        `Error updating estate_property ${postId}: ${
-          error.response?.data?.message || error.message
-        }`,
-      );
-      throw error;
+    } catch (error: unknown) {
+      this.warnWpApiFailure(`actualizar estate_property ${postId}`, error);
+      return null;
     }
   }
 
@@ -308,7 +301,7 @@ export class WordpressService {
     fileName: string,
     mimeType = 'image/jpeg',
     options: { postId?: number } = {},
-  ): Promise<number> {
+  ): Promise<number | null> {
     try {
       const contentType = normalizeImageMimeType(mimeType);
       const safeName = this.sanitizeMediaFileName(fileName, contentType);
@@ -335,12 +328,9 @@ export class WordpressService {
         `Imagen subida exitosamente a WP. ID: ${response.data.id}`,
       );
       return response.data.id;
-    } catch (error) {
-      this.logger.error(
-        `Error al subir imagen a WordPress: ${error.response?.data?.message || error.message}`,
-        error.stack,
-      );
-      throw error;
+    } catch (error: unknown) {
+      this.warnWpApiFailure(`subir imagen ${fileName}`, error);
+      return null;
     }
   }
 
@@ -368,12 +358,41 @@ export class WordpressService {
 
   /** Asocia un adjunto existente como hijo del estate_property (galería WPResidence). */
   async attachMediaToPost(mediaId: number, postId: number): Promise<void> {
-    await lastValueFrom(
-      this.httpService.post(
-        `${this.apiUrl}/wp/v2/media/${mediaId}`,
-        { post: postId },
-        { headers: this.getAuthHeaders() },
-      ),
+    try {
+      await lastValueFrom(
+        this.httpService.post(
+          `${this.apiUrl}/wp/v2/media/${mediaId}`,
+          { post: postId },
+          { headers: this.getAuthHeaders() },
+        ),
+      );
+    } catch (error: unknown) {
+      this.warnWpApiFailure(
+        `asociar media ${mediaId} al post ${postId}`,
+        error,
+      );
+    }
+  }
+
+  /**
+   * Un 403 u otro fallo de la REST API no debe abortar llamadas ni seguimientos.
+   */
+  private warnWpApiFailure(action: string, error: unknown): void {
+    const err = error as {
+      message?: string;
+      stack?: string;
+      response?: { status?: number; data?: { message?: string } | string };
+    };
+    const status = err?.response?.status;
+    const dataMessage =
+      typeof err?.response?.data === 'string'
+        ? err.response.data
+        : err?.response?.data?.message;
+    const message = dataMessage || err?.message || String(error);
+    this.logger.warn(
+      `[WordPress] ${action} omitido` +
+        (status != null ? ` (HTTP ${status})` : '') +
+        `: ${message}. Llamadas y seguimiento no se detienen.`,
     );
   }
 

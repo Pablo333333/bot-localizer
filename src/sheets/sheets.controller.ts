@@ -322,14 +322,21 @@ export class SheetsController {
                       'pending',
                   },
                 );
-              if (media.galleryMediaIds.length > 0) {
-                await this.propertyMedia.attachGalleryToProperty(
-                  upserted.id,
-                  media.galleryMediaIds,
+              if (!upserted?.id) {
+                this.logger.warn(
+                  `[Webhook] Call ${callId}: WordPress no actualizó el post ${existingPostId}. Se sigue con Sheets y el seguimiento.`,
                 );
+                publicadoWordpress = 'NO';
+              } else {
+                if (media.galleryMediaIds.length > 0) {
+                  await this.propertyMedia.attachGalleryToProperty(
+                    upserted.id,
+                    media.galleryMediaIds,
+                  );
+                }
+                publicadoWordpress = 'SI';
+                wpPostId = upserted.id;
               }
-              publicadoWordpress = 'SI';
-              wpPostId = upserted.id;
             }
           } else {
             const media =
@@ -350,14 +357,21 @@ export class SheetsController {
                     'pending',
                 },
               );
-            if (media.galleryMediaIds.length > 0) {
-              await this.propertyMedia.attachGalleryToProperty(
-                upserted.id,
-                media.galleryMediaIds,
+            if (!upserted?.id) {
+              this.logger.warn(
+                `[Webhook] Call ${callId}: WordPress no creó la entrada. Se sigue con Sheets y el seguimiento.`,
               );
+              publicadoWordpress = 'NO';
+            } else {
+              if (media.galleryMediaIds.length > 0) {
+                await this.propertyMedia.attachGalleryToProperty(
+                  upserted.id,
+                  media.galleryMediaIds,
+                );
+              }
+              publicadoWordpress = 'SI';
+              wpPostId = upserted.id;
             }
-            publicadoWordpress = 'SI';
-            wpPostId = upserted.id;
           }
 
           const propertyTitle = `Inmueble ${wpPostId}`;
@@ -380,8 +394,12 @@ export class SheetsController {
               callId,
             });
           }
-        } catch (wpError: any) {
-          this.logger.error(`Error en WordPress: ${wpError.message}`);
+        } catch (wpError: unknown) {
+          const message =
+            wpError instanceof Error ? wpError.message : String(wpError);
+          this.logger.warn(
+            `[Webhook] WordPress omitido en call ${callId}: ${message}. Sheets y el seguimiento siguen.`,
+          );
           publicadoWordpress = 'NO';
         }
       } else {

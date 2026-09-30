@@ -45,6 +45,23 @@ export class PropertyMediaService {
     options: { postId?: number } = {},
   ): Promise<PropertyMediaResult> {
     const empty: PropertyMediaResult = { galleryMediaIds: [] };
+    try {
+      return await this.uploadResolvedMedia(cad, callId, options);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `[PropertyMedia] Subida a WordPress omitida | call_id=${callId || 'n/a'} post=${options.postId || 'n/a'}: ${message}. Se continúa sin imágenes.`,
+      );
+      return empty;
+    }
+  }
+
+  private async uploadResolvedMedia(
+    cad: RetellCad | undefined,
+    callId: string | undefined,
+    options: { postId?: number },
+  ): Promise<PropertyMediaResult> {
+    const empty: PropertyMediaResult = { galleryMediaIds: [] };
     const driveFiles = await this.collectDriveImageFiles(cad, callId, options.postId);
 
     if (driveFiles.length === 0) {
@@ -73,6 +90,7 @@ export class PropertyMediaService {
           mimeType,
           { postId: options.postId },
         );
+        if (mediaId == null) continue;
         galleryMediaIds.push(mediaId);
         this.logger.log(
           `[PropertyMedia] OK media_id=${mediaId} drive=${file.id} name=${file.name} mime=${mimeType} bytes=${downloaded.buffer.length}`,
@@ -85,8 +103,8 @@ export class PropertyMediaService {
     }
 
     if (galleryMediaIds.length === 0) {
-      this.logger.error(
-        `[PropertyMedia] Había ${driveFiles.length} archivo(s) Drive pero ninguna subida a WP tuvo éxito`,
+      this.logger.warn(
+        `[PropertyMedia] Había ${driveFiles.length} archivo(s) Drive pero ninguna subida a WP tuvo éxito. Se continúa sin imágenes.`,
       );
       return empty;
     }
