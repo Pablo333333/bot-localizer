@@ -21,8 +21,13 @@ import {
   isPhase3AllowedPhone,
 } from '../phase3-allowlist';
 import { NurturingStepJobData } from './nurturing-step.job';
+import { lockPhase3Key } from './pg-advisory-lock';
+import {
+  isDuplicateCallStep,
+  sequenceHasUnfinishedStep,
+} from './sequence-step-guard';
 
-@Processor(NURTURING_STEPS_QUEUE)
+@Processor(NURTURING_STEPS_QUEUE, { concurrency: 1 })
 export class SequenceProcessor extends WorkerHost {
   private readonly logger = new Logger(SequenceProcessor.name);
 
@@ -65,9 +70,21 @@ export class SequenceProcessor extends WorkerHost {
     if (
       stepRun.status === StepRunStatus.cancelled ||
       stepRun.status === StepRunStatus.sent ||
-      stepRun.status === StepRunStatus.skipped
+      stepRun.status === StepRunStatus.skipped ||
+      stepRun.status === StepRunStatus.failed
     ) {
+      this.logger.log(
+        `[FASE3][COLA] stepRun=${stepRunId} ya cerrado status=${stepRun.status} — no se relanza`,
+      );
       return { status: stepRun.status };
+    }
+
+    const claim = await this.claimStepRun(stepRun, job.attemptsMade);
+    if (claim !== 'claimed') {
+      if (claim === 'duplicate' || claim === 'skipped') {
+        await this.maybeCompleteEnrollment(enrollmentId);
+      }
+      return { status: claim };
     }
 
     const { enrollment } = stepRun;
@@ -102,15 +119,6 @@ export class SequenceProcessor extends WorkerHost {
         `Job leadId mismatch (job=${leadId}, db=${lead.id}) — using DB lead`,
       );
     }
-
-    await this.prisma.sequenceStepRun.update({
-      where: { id: stepRunId },
-      data: {
-        status: StepRunStatus.processing,
-        startedAt: stepRun.startedAt ?? new Date(),
-        attempts: { increment: 1 },
-      },
-    });
 
     const adapter = this.channels.get(stepRun.step.channel);
     const templatePayload = (stepRun.step.templatePayload ?? {}) as Record<
@@ -201,6 +209,126 @@ export class SequenceProcessor extends WorkerHost {
     return { status: 'sent' };
   }
 
+  /**
+   * Un solo worker puede tomar el paso. Si otro job del mismo lead y plantilla
+   * ya está llamando o acaba de llamar, este se omite y no cierra el enrollment ganador.
+   */
+  private async claimStepRun(
+    stepRun: {
+      id: string;
+      status: StepRunStatus;
+      enrollmentId: string;
+      startedAt: Date | null;
+      step: { templateKey: string };
+      enrollment: { leadId: string };
+    },
+    attemptsMade: number,
+  ): Promise<'claimed' | 'duplicate' | 'processing' | 'missing' | 'skipped' | StepRunStatus> {
+    const leadId = stepRun.enrollment.leadId;
+    const templateKey = stepRun.step.templateKey;
+    const retry = attemptsMade > 0 && stepRun.status === StepRunStatus.processing;
+
+    return this.prisma.$transaction(async (tx) => {
+      await lockPhase3Key(tx, `fase3-dial:${leadId}:${templateKey}`);
+
+      const current = await tx.sequenceStepRun.findUnique({
+        where: { id: stepRun.id },
+      });
+      if (!current) return 'missing';
+
+      if (
+        current.status === StepRunStatus.cancelled ||
+        current.status === StepRunStatus.sent ||
+        current.status === StepRunStatus.skipped ||
+        current.status === StepRunStatus.failed
+      ) {
+        return current.status;
+      }
+
+      if (current.status === StepRunStatus.processing && !retry) {
+        this.logger.warn(
+          `[FASE3][COLA] stepRun=${stepRun.id} ya está processing — no se dispara otra vez`,
+        );
+        return 'processing';
+      }
+
+      const enrollment = await tx.sequenceEnrollment.findUnique({
+        where: { id: stepRun.enrollmentId },
+      });
+      if (!enrollment || enrollment.status !== EnrollmentStatus.active) {
+        await tx.sequenceStepRun.update({
+          where: { id: stepRun.id },
+          data: {
+            status: StepRunStatus.skipped,
+            finishedAt: new Date(),
+            lastError: `enrollment_${enrollment?.status ?? 'missing'}`,
+          },
+        });
+        return 'skipped';
+      }
+
+      const siblings = await tx.sequenceStepRun.findMany({
+        where: {
+          id: { not: stepRun.id },
+          step: { templateKey },
+          enrollment: { leadId },
+          status: { in: [StepRunStatus.processing, StepRunStatus.sent] },
+        },
+        select: {
+          id: true,
+          status: true,
+          startedAt: true,
+          enrollmentId: true,
+        },
+      });
+      const duplicate = siblings.find((other) =>
+        isDuplicateCallStep({
+          otherStatus: other.status,
+          otherStartedAt: other.startedAt,
+        }),
+      );
+      if (duplicate) {
+        await tx.sequenceStepRun.update({
+          where: { id: stepRun.id },
+          data: {
+            status: StepRunStatus.skipped,
+            finishedAt: new Date(),
+            lastError: `duplicate_call_step:${duplicate.id}`,
+          },
+        });
+        if (duplicate.enrollmentId !== stepRun.enrollmentId) {
+          await tx.sequenceEnrollment.updateMany({
+            where: {
+              id: stepRun.enrollmentId,
+              status: EnrollmentStatus.active,
+            },
+            data: {
+              status: EnrollmentStatus.cancelled,
+              cancelledAt: new Date(),
+              cancelReason: 'duplicate_call_step',
+            },
+          });
+        }
+        this.logger.warn(
+          `[FASE3][COLA] llamada duplicada omitida stepRun=${stepRun.id} ` +
+            `template=${templateKey} lead=${leadId} ya cubierto por stepRun=${duplicate.id} ` +
+            `status=${duplicate.status}`,
+        );
+        return 'duplicate';
+      }
+
+      await tx.sequenceStepRun.update({
+        where: { id: stepRun.id },
+        data: {
+          status: StepRunStatus.processing,
+          startedAt: current.startedAt ?? new Date(),
+          attempts: { increment: 1 },
+        },
+      });
+      return 'claimed';
+    });
+  }
+
   private isTerminal(status: LeadStatus): boolean {
     return TERMINAL_LEAD_STATUSES.has(status as AppLeadStatus);
   }
@@ -217,25 +345,26 @@ export class SequenceProcessor extends WorkerHost {
   }
 
   private async maybeCompleteEnrollment(enrollmentId: string): Promise<void> {
-    const open = await this.prisma.sequenceStepRun.count({
-      where: {
-        enrollmentId,
-        status: {
-          in: [
-            StepRunStatus.pending,
-            StepRunStatus.scheduled,
-            StepRunStatus.processing,
-          ],
-        },
-      },
-    });
-
-    if (open > 0) return;
-
     const enrollment = await this.prisma.sequenceEnrollment.findUnique({
       where: { id: enrollmentId },
+      include: {
+        sequence: { include: { steps: true } },
+        stepRuns: true,
+      },
     });
     if (!enrollment || enrollment.status !== EnrollmentStatus.active) return;
+
+    if (
+      sequenceHasUnfinishedStep({
+        steps: enrollment.sequence.steps,
+        runs: enrollment.stepRuns,
+      })
+    ) {
+      this.logger.log(
+        `[FASE3][BULLMQ] enrollment=${enrollmentId} sigue activo: queda un paso sin cerrar (la llamada 3 se encola al terminar la llamada 2)`,
+      );
+      return;
+    }
 
     await this.prisma.sequenceEnrollment.update({
       where: { id: enrollmentId },

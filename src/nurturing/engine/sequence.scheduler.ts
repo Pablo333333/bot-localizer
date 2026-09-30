@@ -19,6 +19,7 @@ import {
   OUTBOUND_SANDBOX_WHITELIST_E164,
   isOutboundSandboxWhitelistEnabled,
 } from '../../outbound/outbound-sandbox-whitelist';
+import { lockPhase3Key } from './pg-advisory-lock';
 import { NurturingStepJobData, stepRunJobId } from './nurturing-step.job';
 import {
   formatMadridDateTime,
@@ -154,14 +155,7 @@ export class SequenceScheduler {
       return { status: 'not_allowed' };
     }
 
-    const enrollment = await this.prisma.sequenceEnrollment.findFirst({
-      where: { leadId, status: EnrollmentStatus.active },
-      orderBy: { enrolledAt: 'desc' },
-      include: {
-        sequence: { include: { steps: true } },
-        stepRuns: true,
-      },
-    });
+    const enrollment = await this.findEnrollmentForFollowup(leadId, templateKey);
     if (!enrollment) {
       this.logger.warn(
         `[FASE3][BULLMQ] no hay enrollment activo para encolar ${templateKey} lead=${leadId}`,
@@ -214,6 +208,55 @@ export class SequenceScheduler {
     };
   }
 
+  /**
+   * Enrollment activo, o el último completado si se cerró antes de encolar este paso
+   * (la llamada 2 marca `sent` y la 3 todavía no tiene run).
+   */
+  private async findEnrollmentForFollowup(leadId: string, templateKey: string) {
+    const include = {
+      sequence: { include: { steps: true } },
+      stepRuns: true,
+    } as const;
+
+    const active = await this.prisma.sequenceEnrollment.findFirst({
+      where: { leadId, status: EnrollmentStatus.active },
+      orderBy: { enrolledAt: 'desc' },
+      include,
+    });
+    if (active) return active;
+
+    const latest = await this.prisma.sequenceEnrollment.findFirst({
+      where: { leadId, status: EnrollmentStatus.completed },
+      orderBy: { enrolledAt: 'desc' },
+      include,
+    });
+    if (!latest) return null;
+
+    const step = latest.sequence.steps.find(
+      (item) => item.templateKey === templateKey,
+    );
+    const alreadyQueued = latest.stepRuns.some(
+      (run) =>
+        step &&
+        run.stepId === step.id &&
+        OPEN_STEP_STATUSES.includes(run.status),
+    );
+    if (!step || alreadyQueued) return null;
+
+    await this.prisma.sequenceEnrollment.update({
+      where: { id: latest.id },
+      data: { status: EnrollmentStatus.active, completedAt: null },
+    });
+    this.logger.warn(
+      `[FASE3][BULLMQ] enrollment=${latest.id} reactivado para encolar ${nurturingStepLabel(templateKey)} ` +
+        `lead=${leadId} (se había cerrado antes de crear ese paso)`,
+    );
+    return this.prisma.sequenceEnrollment.findFirst({
+      where: { id: latest.id },
+      include,
+    });
+  }
+
   private resolveDelayMinutes(step: {
     templateKey: string;
     delayMinutes: number;
@@ -242,17 +285,49 @@ export class SequenceScheduler {
     const scheduledFor = new Date(
       params.baseTime.getTime() + delayMinutes * 60_000,
     );
-    const delayMs = Math.max(0, scheduledFor.getTime() - Date.now());
 
-    const stepRun = await this.prisma.sequenceStepRun.create({
-      data: {
-        enrollmentId: params.enrollmentId,
-        stepId: params.step.id,
-        status: StepRunStatus.scheduled,
-        scheduledFor,
-        attempts: 0,
-      },
+    const reserved = await this.prisma.$transaction(async (tx) => {
+      await lockPhase3Key(
+        tx,
+        `fase3-enqueue:${params.leadId}:${params.step.templateKey}`,
+      );
+      const existing = await tx.sequenceStepRun.findFirst({
+        where: {
+          enrollmentId: params.enrollmentId,
+          stepId: params.step.id,
+          status: { in: OPEN_STEP_STATUSES },
+        },
+        orderBy: { scheduledFor: 'desc' },
+      });
+      if (existing) return { existing };
+      const stepRun = await tx.sequenceStepRun.create({
+        data: {
+          enrollmentId: params.enrollmentId,
+          stepId: params.step.id,
+          status: StepRunStatus.scheduled,
+          scheduledFor,
+          attempts: 0,
+        },
+      });
+      return { stepRun };
     });
+
+    if (reserved.existing) {
+      this.logger.warn(
+        `[FASE3][BULLMQ] ${nurturingStepLabel(params.step.templateKey)} ya existe ` +
+          `status=${reserved.existing.status} stepRun=${reserved.existing.id} jobId=${reserved.existing.jobId ?? 'n/a'} ` +
+          `lead=${params.leadId} enrollment=${params.enrollmentId} — no se encola otro job`,
+      );
+      return {
+        stepRunId: reserved.existing.id,
+        jobId: reserved.existing.jobId ?? '',
+        scheduledFor: reserved.existing.scheduledFor,
+        delayMinutes,
+      };
+    }
+
+    const delayMs = Math.max(0, scheduledFor.getTime() - Date.now());
+    const stepRun = reserved.stepRun;
 
     const jobId = stepRunJobId(stepRun.id);
     const job = await this.queue.add(

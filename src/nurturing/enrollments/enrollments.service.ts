@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import {
   EnrollmentStatus,
   LeadStatus,
@@ -21,6 +22,7 @@ import {
   isPhase3AllowedPhone,
 } from '../phase3-allowlist';
 import { SequenceScheduler } from '../engine/sequence.scheduler';
+import { lockPhase3Key } from '../engine/pg-advisory-lock';
 
 @Injectable()
 export class EnrollmentsService {
@@ -35,6 +37,7 @@ export class EnrollmentsService {
   async enrollLead(
     leadId: string,
     sequenceId?: string,
+    options?: { replaceActive?: boolean },
   ): Promise<{ enrollmentId: string; sequenceId: string; stepsScheduled: number }> {
     if (
       !isNurturingPhase3Enabled(this.config.get('NURTURING_PHASE3_ENABLED'))
@@ -88,28 +91,41 @@ export class EnrollmentsService {
       throw new BadRequestException(`Sequence ${sequence.id} has no steps`);
     }
 
-    const existingActive = await this.prisma.sequenceEnrollment.findFirst({
-      where: {
-        leadId,
-        sequenceId: sequence.id,
-        status: EnrollmentStatus.active,
-      },
-    });
-    if (existingActive) {
-      throw new BadRequestException(
-        `Lead already has an active enrollment on sequence ${sequence.id}`,
-      );
-    }
-
     const enrolledAt = new Date();
-    const enrollment = await this.prisma.sequenceEnrollment.create({
-      data: {
-        leadId,
-        sequenceId: sequence.id,
-        status: EnrollmentStatus.active,
-        currentStepOrder: 1,
-        enrolledAt,
-      },
+    const enrollment = await this.prisma.$transaction(async (tx) => {
+      await lockPhase3Key(tx, `fase3-enroll:${leadId}`);
+
+      if (options?.replaceActive) {
+        const stopped = await this.cancelActiveEnrollments(tx, leadId, 'fast_test_restart');
+        if (stopped > 0) {
+          this.logger.warn(
+            `[FASE3][BULLMQ] prueba rápida: enrollment anterior cancelado (${stopped}) para empezar el ciclo desde la llamada 1`,
+          );
+        }
+      }
+
+      const existingActive = await tx.sequenceEnrollment.findFirst({
+        where: {
+          leadId,
+          sequenceId: sequence.id,
+          status: EnrollmentStatus.active,
+        },
+      });
+      if (existingActive) {
+        throw new BadRequestException(
+          `Lead already has an active enrollment on sequence ${sequence.id}`,
+        );
+      }
+
+      return tx.sequenceEnrollment.create({
+        data: {
+          leadId,
+          sequenceId: sequence.id,
+          status: EnrollmentStatus.active,
+          currentStepOrder: 1,
+          enrolledAt,
+        },
+      });
     });
 
     const stepsScheduled = await this.scheduler.scheduleEnrollmentSteps(
@@ -128,6 +144,63 @@ export class EnrollmentsService {
       sequenceId: sequence.id,
       stepsScheduled,
     };
+  }
+
+  private async cancelActiveEnrollments(
+    tx: Prisma.TransactionClient,
+    leadId: string,
+    reason: string,
+  ): Promise<number> {
+    const active = await tx.sequenceEnrollment.findMany({
+      where: { leadId, status: EnrollmentStatus.active },
+      include: {
+        stepRuns: {
+          where: {
+            status: {
+              in: [
+                StepRunStatus.pending,
+                StepRunStatus.scheduled,
+                StepRunStatus.processing,
+              ],
+            },
+          },
+        },
+      },
+    });
+    if (active.length === 0) return 0;
+
+    await this.scheduler.cancelJobs(
+      active.flatMap((enrollment) => enrollment.stepRuns.map((run) => run.jobId)),
+    );
+
+    for (const enrollment of active) {
+      await tx.sequenceStepRun.updateMany({
+        where: {
+          enrollmentId: enrollment.id,
+          status: {
+            in: [
+              StepRunStatus.pending,
+              StepRunStatus.scheduled,
+              StepRunStatus.processing,
+            ],
+          },
+        },
+        data: {
+          status: StepRunStatus.cancelled,
+          finishedAt: new Date(),
+          lastError: reason,
+        },
+      });
+      await tx.sequenceEnrollment.update({
+        where: { id: enrollment.id },
+        data: {
+          status: EnrollmentStatus.cancelled,
+          cancelledAt: new Date(),
+          cancelReason: reason,
+        },
+      });
+    }
+    return active.length;
   }
 
   /**

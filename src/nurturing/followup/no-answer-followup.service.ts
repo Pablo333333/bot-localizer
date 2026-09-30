@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { Channel as PrismaChannel } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SmsChannel } from '../channels/sms.channel';
@@ -46,6 +47,7 @@ import {
   resolveLeadPropertyLabel,
 } from './lead-sms-content-vars';
 import { resolveRetellLeadPhone } from './retell-call-phone';
+import { lockPhase3Key } from '../engine/pg-advisory-lock';
 
 /**
  * Retell outbound / follow-up (Fase 3):
@@ -177,34 +179,35 @@ export class NoAnswerFollowupService {
     const lead = await this.findOrCreateLeadFromCall(phoneRaw, callData, outcome);
 
     // Idempotencia: call_ended + call_analyzed del mismo call_id no deben
-    // reenviar WhatsApp ni re-enrollar.
+    // reenviar WhatsApp ni re-enrollar. El lock evita que los dos entren a la vez.
     const meta = (lead.metadata as Record<string, unknown>) || {};
-    if (
-      callData.call_id &&
-      meta.nurturing_handled_call_id === String(callData.call_id)
-    ) {
-      this.logger.log(
-        `Follow-up ya aplicado para call_id=${callData.call_id} lead=${lead.id} — skip`,
+    if (callData.call_id) {
+      const alreadyHandled = await this.claimCallHandling(
+        lead.id,
+        String(callData.call_id),
       );
-      return {
-        outcome,
-        phase: resolveCallPhase({
-          agentId: callData.agent_id,
-          templateKey: await this.resolveTemplateKey(callData),
-          nurturingPhase: meta.last_phase
-            ? String(meta.last_phase)
-            : null,
-          outboundAgentId: this.config.get<string>('RETELL_OUTBOUND_AGENT_ID'),
-          followupAgentId: resolveRetellFollowupAgentId(
-            this.config.get<string>('RETELL_AGENT_ID_FOLLOWUP'),
-          ),
-        }),
-        whatsappSent: false,
-        smsSent: false,
-        enrolled: false,
-        markedIlocalizable: false,
-        leadId: lead.id,
-      };
+      if (alreadyHandled) {
+        this.logger.log(
+          `Follow-up ya aplicado para call_id=${callData.call_id} lead=${lead.id} — skip`,
+        );
+        return {
+          outcome,
+          phase: resolveCallPhase({
+            agentId: callData.agent_id,
+            templateKey: await this.resolveTemplateKey(callData),
+            nurturingPhase: meta.last_phase ? String(meta.last_phase) : null,
+            outboundAgentId: this.config.get<string>('RETELL_OUTBOUND_AGENT_ID'),
+            followupAgentId: resolveRetellFollowupAgentId(
+              this.config.get<string>('RETELL_AGENT_ID_FOLLOWUP'),
+            ),
+          }),
+          whatsappSent: false,
+          smsSent: false,
+          enrolled: false,
+          markedIlocalizable: false,
+          leadId: lead.id,
+        };
+      }
     }
 
     const templateKey = await this.resolveTemplateKey(callData);
@@ -363,18 +366,9 @@ export class NoAnswerFollowupService {
 
     if (plan.enroll) {
       try {
-        if (isNurturingFastTest(this.config.get('NURTURING_FAST_TEST'))) {
-          const restarted = await this.enrollments.stopActiveForLead(
-            lead.id,
-            'fast_test_restart',
-          );
-          if (restarted > 0) {
-            this.logger.warn(
-              `[FASE3][BULLMQ] prueba rápida: enrollment anterior cancelado (${restarted}) para empezar el ciclo desde la llamada 1`,
-            );
-          }
-        }
-        const enrolledResult = await this.enrollments.enrollLead(lead.id);
+        const enrolledResult = await this.enrollments.enrollLead(lead.id, undefined, {
+          replaceActive: isNurturingFastTest(this.config.get('NURTURING_FAST_TEST')),
+        });
         enrolled = true;
         this.logger.log(
           `[FASE3][BULLMQ] lead=${lead.id} enrollado enrollment=${enrolledResult.enrollmentId} pasos=${enrolledResult.stepsScheduled} outcome=${outcome} phase=${effectivePhase}`,
@@ -537,6 +531,33 @@ export class NoAnswerFollowupService {
     }
 
     return lead;
+  }
+
+  /**
+   * Reserva el call_id antes de enviar mensajes o encolar. El segundo webhook
+   * del mismo id espera el lock y sale sin repetir la llamada 2.
+   */
+  private async claimCallHandling(
+    leadId: string,
+    callId: string,
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      await lockPhase3Key(tx, `fase3-call:${callId}`);
+      const fresh = await tx.lead.findUnique({ where: { id: leadId } });
+      const freshMeta =
+        (fresh?.metadata as Record<string, unknown> | null) || {};
+      if (freshMeta.nurturing_handled_call_id === callId) return true;
+      await tx.lead.update({
+        where: { id: leadId },
+        data: {
+          metadata: {
+            ...freshMeta,
+            nurturing_handled_call_id: callId,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return false;
+    });
   }
 
   /**
