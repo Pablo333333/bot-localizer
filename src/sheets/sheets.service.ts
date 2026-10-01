@@ -404,7 +404,7 @@ export class SheetsService implements OnModuleInit {
 
   /**
    * Escribe celdas concretas vía A1. Nunca row.save() (fila completa).
-   * Si se pasa existingRow, omite valores vacíos o equivalentes al original.
+   * Lee la celda viva y no pisa un valor existente con vacío, cero o relleno.
    */
   async updateSpecificCells(
     sheet: GoogleSpreadsheetWorksheet,
@@ -441,10 +441,6 @@ export class SheetsService implements OnModuleInit {
       const header = matches[0];
       if (!headerSet.has(header)) continue;
 
-      if (existingRow && !shouldWriteCell(existingRow.get(header), value)) {
-        continue;
-      }
-
       const a1 = a1ForHeader(header, headers, rowNumber);
       if (!a1) continue;
       cells.push({ a1, header, value });
@@ -458,17 +454,35 @@ export class SheetsService implements OnModuleInit {
     }
 
     await sheet.loadCells(cells.map((c) => c.a1));
-    const dirty = cells.map(({ a1, value }) => {
+    const written: { a1: string; header: string; value: string }[] = [];
+    const dirty = cells.flatMap(({ a1, header, value }) => {
       const cell = sheet.getCellByA1(a1);
+      const liveText = String(cell.value ?? '').trim();
+      const previous =
+        liveText !== '' ? cell.value : (existingRow?.get(header) ?? cell.value);
+      if (!shouldWriteCell(previous, value)) {
+        this.logger.log(
+          `[updateSpecificCells] Fila ${rowNumber}: se conserva "${header}" (entrante vacío, cero, relleno o igual al valor actual).`,
+        );
+        return [];
+      }
       cell.value = value;
-      return cell;
+      written.push({ a1, header, value });
+      return [cell];
     });
+
+    if (dirty.length === 0) {
+      this.logger.log(
+        `[updateSpecificCells] Fila ${rowNumber}: sin celdas que cambiar.`,
+      );
+      return;
+    }
     // Solo estas celdas. saveUpdatedCells() volcaría otras celdas sucias de la caché
     // y puede escribir la descripción de una fila encima de otra.
     await sheet.saveCells(dirty);
 
     this.logger.log(
-      `[updateSpecificCells] Fila ${rowNumber} → ${cells.map((c) => `${c.header}(${c.a1})="${c.value}"`).join(', ')}`,
+      `[updateSpecificCells] Fila ${rowNumber} → ${written.map((c) => `${c.header}(${c.a1})="${c.value}"`).join(', ')}`,
     );
   }
 

@@ -34,6 +34,13 @@ import {
 
 const SHEET_NAME = 'Localizados';
 
+export type ReviewedWpSyncPost = {
+  rowNumber: number;
+  postId: number;
+  action: 'created' | 'updated';
+  url: string;
+};
+
 export type ReviewedWpSyncStats = {
   scanned: number;
   eligible: number;
@@ -42,7 +49,12 @@ export type ReviewedWpSyncStats = {
   skipped: number;
   errors: number;
   missing?: number[];
+  posts?: ReviewedWpSyncPost[];
 };
+
+type RowSyncResult =
+  | { status: 'created' | 'updated'; postId: number }
+  | { status: 'skipped' };
 
 /**
  * Localizados → WordPress cuando "Publicación Autorizada?" = SI (por nombre de cabecera).
@@ -89,11 +101,14 @@ export class SheetsReviewedSyncService {
 
   /**
    * @param rowNumber Fila 1-based del Sheet (opcional; si se omite, procesa todas las SI).
+   * @param options.force Con fila concreta, ignora sandbox, Publicación Autorizada? y bloqueos temporales.
    */
   async syncReviewedRowsToWordpress(
     rowNumber?: number,
+    options: { force?: boolean } = {},
   ): Promise<ReviewedWpSyncStats> {
-    if (this.running) {
+    const forceThisRow = options.force === true && rowNumber !== undefined;
+    if (this.running && !forceThisRow) {
       return {
         scanned: 0,
         eligible: 0,
@@ -101,9 +116,11 @@ export class SheetsReviewedSyncService {
         updated: 0,
         skipped: 0,
         errors: 0,
+        posts: [],
       };
     }
-    this.running = true;
+    const ownsLock = !this.running;
+    if (ownsLock) this.running = true;
 
     const stats: ReviewedWpSyncStats = {
       scanned: 0,
@@ -112,6 +129,7 @@ export class SheetsReviewedSyncService {
       updated: 0,
       skipped: 0,
       errors: 0,
+      posts: [],
     };
 
     try {
@@ -136,11 +154,16 @@ export class SheetsReviewedSyncService {
         }
 
         if (!isPublicacionAutorizadaSi(row, headers)) {
-          stats.skipped += 1;
-          continue;
+          if (!forceThisRow) {
+            stats.skipped += 1;
+            continue;
+          }
+          this.logger.warn(
+            `Fila ${sheetRowNumber}: force sync — Publicación Autorizada? no es SI; se publica igual por autorización explícita.`,
+          );
         }
 
-        if (!this.allowRowInSandbox(row, sheetRowNumber)) {
+        if (!forceThisRow && !this.allowRowInSandbox(row, sheetRowNumber)) {
           stats.skipped += 1;
           continue;
         }
@@ -149,11 +172,10 @@ export class SheetsReviewedSyncService {
 
         try {
           const result = await this.processReviewedRow(sheet, row, headers, {
-            force: false,
+            force: forceThisRow,
+            ignoreSheetBlock: forceThisRow,
           });
-          if (result === 'created') stats.created += 1;
-          else if (result === 'updated') stats.updated += 1;
-          else stats.skipped += 1;
+          this.tallyRowResult(stats, sheetRowNumber, result);
         } catch (err) {
           stats.errors += 1;
           this.logger.warn(
@@ -165,11 +187,11 @@ export class SheetsReviewedSyncService {
       }
 
       this.logger.log(
-        `Reviewed→WP sync: scanned=${stats.scanned} eligible=${stats.eligible} created=${stats.created} updated=${stats.updated} skipped=${stats.skipped} errors=${stats.errors}`,
+        `Reviewed→WP sync: scanned=${stats.scanned} eligible=${stats.eligible} created=${stats.created} updated=${stats.updated} skipped=${stats.skipped} errors=${stats.errors} forceRow=${forceThisRow ? rowNumber : '-'}`,
       );
       return stats;
     } finally {
-      this.running = false;
+      if (ownsLock) this.running = false;
     }
   }
 
@@ -189,6 +211,7 @@ export class SheetsReviewedSyncService {
       skipped: 0,
       errors: 0,
       missing: [],
+      posts: [],
     };
 
     const uniqueIds = [...new Set(postIds.filter((n) => Number.isFinite(n)))];
@@ -218,9 +241,7 @@ export class SheetsReviewedSyncService {
         const result = await this.processReviewedRow(sheet, row, headers, {
           force: options.force === true,
         });
-        if (result === 'created') stats.created += 1;
-        else if (result === 'updated') stats.updated += 1;
-        else stats.skipped += 1;
+        this.tallyRowResult(stats, row.rowNumber, result);
       } catch (err) {
         stats.errors += 1;
         this.logger.warn(
@@ -235,6 +256,30 @@ export class SheetsReviewedSyncService {
       `WP IDs sync: ids=${uniqueIds.join(',')} force=${!!options.force} created=${stats.created} updated=${stats.updated} skipped=${stats.skipped} missing=${stats.missing?.join(',') || '-'} errors=${stats.errors}`,
     );
     return stats;
+  }
+
+  private tallyRowResult(
+    stats: ReviewedWpSyncStats,
+    rowNumber: number,
+    result: RowSyncResult,
+  ): void {
+    if (result.status === 'skipped') {
+      stats.skipped += 1;
+      return;
+    }
+    if (result.status === 'created') stats.created += 1;
+    else stats.updated += 1;
+    const base = String(this.config.get('WP_URL') || 'https://www.localicer.com').replace(
+      /\/$/,
+      '',
+    );
+    stats.posts = stats.posts || [];
+    stats.posts.push({
+      rowNumber,
+      postId: result.postId,
+      action: result.status,
+      url: `${base}/?p=${result.postId}`,
+    });
   }
 
   private logSandboxScope(): void {
@@ -266,8 +311,8 @@ export class SheetsReviewedSyncService {
     sheet: Parameters<SheetsService['updateTrackingCells']>[0],
     row: IsolatedSheetRow,
     headers: string[],
-    options: { force?: boolean } = {},
-  ): Promise<'created' | 'updated' | 'skipped'> {
+    options: { force?: boolean; ignoreSheetBlock?: boolean } = {},
+  ): Promise<RowSyncResult> {
     const callData = sheetRowToCallData(row, headers);
     const cad = callData.call_analysis.custom_analysis_data;
     const existingPostId = readWpPostIdFromSheetRow(row);
@@ -288,12 +333,13 @@ export class SheetsReviewedSyncService {
         protectPublished,
         forzarSync,
         bloquearSync,
+        ignoreSheetBlock: options.ignoreSheetBlock === true,
       });
       if (guard.skip) {
         this.logger.warn(
           `Fila ${row.rowNumber}: ${guard.reason} — cambios manuales en WP protegidos`,
         );
-        return 'skipped';
+        return { status: 'skipped' };
       }
     }
 
@@ -305,10 +351,15 @@ export class SheetsReviewedSyncService {
     this.logger.log(
       `Fila ${row.rowNumber} media Sheet URL Imagen (col P)=${String(cad.url_imagen || '').slice(0, 120) || '(vacío)'} carpeta_drive=${String(cad.carpeta_drive || '').slice(0, 120) || '(vacío)'}`,
     );
-    await this.sheetsService.updateSpecificCells(sheet, row.rowNumber, {
-      [COL_DESCRIPCION_PROPIETARIO]: commercialContent,
-      [COL_DESCRIPCION_PROPIETARIO_ALT]: commercialContent,
-    });
+    await this.sheetsService.updateSpecificCells(
+      sheet,
+      row.rowNumber,
+      {
+        [COL_DESCRIPCION_PROPIETARIO]: commercialContent,
+        [COL_DESCRIPCION_PROPIETARIO_ALT]: commercialContent,
+      },
+      row,
+    );
 
     let media: { featuredMediaId?: number; galleryMediaIds: number[] } = {
       galleryMediaIds: [],
@@ -354,7 +405,7 @@ export class SheetsReviewedSyncService {
       this.logger.warn(
         `Fila ${row.rowNumber}: WordPress no creó ni actualizó la entrada. Se omite el write-back; llamadas y seguimiento siguen.`,
       );
-      return 'skipped';
+      return { status: 'skipped' };
     }
 
     const { id: postId, created } = upserted;
@@ -382,6 +433,9 @@ export class SheetsReviewedSyncService {
     this.logger.log(
       `Fila ${row.rowNumber} Reviewed→WP ${created ? 'CREADO' : 'ACTUALIZADO'} post_id=${postId} featured=${media.featuredMediaId || '-'} gallery=${media.galleryMediaIds.length} | Propietario contactado?=SI`,
     );
-    return created ? 'created' : 'updated';
+    return {
+      status: created ? 'created' : 'updated',
+      postId,
+    };
   }
 }

@@ -1,5 +1,6 @@
 import {
   buildCadPropertyUpdates,
+  isGenericFillerText,
   shouldWriteCell,
   valuesAreEquivalent,
 } from './sheets-cad-updates';
@@ -10,6 +11,30 @@ describe('shouldWriteCell / valuesAreEquivalent', () => {
     expect(shouldWriteCell('1500', null)).toBe(false);
     expect(shouldWriteCell('1500', 'no especificado')).toBe(false);
     expect(shouldWriteCell('Inca', undefined)).toBe(false);
+  });
+
+  it('no pisa un dato válido con cero o texto genérico de relleno', () => {
+    expect(shouldWriteCell('1500', '0')).toBe(false);
+    expect(shouldWriteCell('1500', 0)).toBe(false);
+    expect(shouldWriteCell('120', '0,00')).toBe(false);
+    expect(shouldWriteCell('110', '0 m²')).toBe(false);
+    expect(shouldWriteCell('Inca', 'desconocido')).toBe(false);
+    expect(shouldWriteCell('Inca', 'sin datos')).toBe(false);
+    expect(shouldWriteCell('Inca', 'N/A')).toBe(false);
+    expect(shouldWriteCell('Palma', 'información no disponible')).toBe(false);
+    expect(shouldWriteCell('', '0')).toBe(false);
+    expect(shouldWriteCell('', 'texto genérico')).toBe(false);
+    expect(
+      isGenericFillerText(
+        '<p><strong>Oportunidad de local comercial en zona comercial</strong></p><p>Contacta con Localicer para agendar una visita y contrastar disponibilidad, condiciones y detalles con el anunciante.</p>',
+      ),
+    ).toBe(true);
+    expect(
+      shouldWriteCell(
+        'Local super bien situado, junto al Teatro Cervantes.',
+        '<p>Contacta con Localicer para agendar una visita y contrastar disponibilidad, condiciones y detalles con el anunciante.</p>',
+      ),
+    ).toBe(false);
   });
 
   it('no escribe si el valor no cambió (precio/superficie equivalentes)', () => {
@@ -60,6 +85,26 @@ describe('buildCadPropertyUpdates', () => {
     expect(updates).not.toHaveProperty('Superficie util');
     expect(updates).not.toHaveProperty('Municipio');
     expect(updates).not.toHaveProperty('Tipo de inmueble');
+  });
+
+  it('no sustituye precio, superficie ni municipio por cero o relleno', () => {
+    const updates = buildCadPropertyUpdates(
+      {
+        precio_alquiler: '0',
+        superficie_util: 0,
+        municipio: 'desconocido',
+        tipo_inmueble: 'sin datos',
+        vado: '0',
+        superficie_total: '200',
+      },
+      getExisting,
+    );
+
+    expect(updates).toEqual({ 'Superficie Total': '200' });
+    expect(updates).not.toHaveProperty('Precio ALQUILER/mes');
+    expect(updates).not.toHaveProperty('Superficie util');
+    expect(updates).not.toHaveProperty('Municipio');
+    expect(updates).not.toHaveProperty('Vado (SI/NO)');
   });
 
   it('escribe Descripción por el propietario si la llamada aporta texto nuevo', () => {

@@ -44,4 +44,17 @@ describe('wp-sync-guard', () => {
       }).skip,
     ).toBe(true);
   });
+
+  it('el disparo manual de una fila puede saltarse Bloquear sync', () => {
+    expect(
+      shouldSkipWpOverwrite({
+        existingPostId: 33595,
+        wpStatus: 'publish',
+        protectPublished: true,
+        forzarSync: true,
+        bloquearSync: true,
+        ignoreSheetBlock: true,
+      }).skip,
+    ).toBe(false);
+  });
 });

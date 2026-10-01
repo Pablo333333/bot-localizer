@@ -60,11 +60,13 @@ export function shouldSkipWpOverwrite(params: {
   protectPublished: boolean;
   forzarSync: boolean;
   bloquearSync: boolean;
+  /** Solo el disparo manual de una fila (?force=1&row=) puede saltarse Bloquear sync WP. */
+  ignoreSheetBlock?: boolean;
 }): { skip: boolean; reason?: string } {
   if (!params.existingPostId) {
     return { skip: false };
   }
-  if (params.bloquearSync) {
+  if (params.bloquearSync && !params.ignoreSheetBlock) {
     return {
       skip: true,
       reason: `post ${params.existingPostId} bloqueado (Bloquear sync WP=SI)`,

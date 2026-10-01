@@ -1,6 +1,6 @@
 /**
  * Updates celda-a-celda desde CAD de Retell.
- * Solo se escribe si el valor extraído es no vacío y distinto del original.
+ * Nunca se pisa un valor ya guardado con vacío, cero o texto genérico de relleno.
  */
 
 export type CadLike = Record<string, unknown> | undefined;
@@ -8,12 +8,120 @@ export type CadLike = Record<string, unknown> | undefined;
 const EMPTY_TOKENS = new Set([
   '',
   'no especificado',
+  'no especificada',
+  'sin especificar',
+  'sin datos',
+  'sin dato',
+  'sin informacion',
+  'sin información',
+  'informacion no disponible',
+  'información no disponible',
+  'no disponible',
+  'no indicado',
+  'no indicada',
+  'no mencionado',
+  'no mencionada',
+  'no se menciona',
+  'no se menciono',
+  'no se mencionó',
+  'no proporcionado',
+  'dato no proporcionado',
+  'desconocido',
+  'desconocida',
   'unknown',
   'undefined',
   'null',
   'n/a',
   'na',
+  'n/d',
+  'nd',
+  's/d',
+  's/n',
+  'tbd',
+  'pendiente de confirmar',
+  'por determinar',
+  'por confirmar',
+  'a consultar',
+  'placeholder',
+  'lorem ipsum',
+  'texto de ejemplo',
+  'texto generico',
+  'texto genérico',
+  'ejemplo',
+  'generico',
+  'genérico',
+  'prueba',
+  'test',
+  '-',
+  '--',
+  '---',
+  'n/c',
+  'nc',
+  'none',
+  'ninguno',
+  'ninguna',
+  'no aplica',
+  'no procede',
 ]);
+
+const FILLER_PATTERNS: RegExp[] = [
+  /contacta con localicer para agendar/i,
+  /una ubicacion con buen potencial comercial/i,
+  /oportunidad de .+ en zona comercial/i,
+  /^no se (especific|indic|mencion|dispon|proporcion)/i,
+  /^sin (datos|informacion|especificar)/i,
+  /lorem ipsum/i,
+  /texto (generico|de relleno|de ejemplo)/i,
+  /dato (inventado|no proporcionado|no disponible)/i,
+];
+
+function foldToken(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+/** 0, 0.0, 0,00, "0 €" o "0 m²". Un cero no es un dato analizado válido. */
+export function isNumericZeroValue(v: unknown): boolean {
+  let s = String(v ?? '')
+    .trim()
+    .replace(/[€$]/g, '')
+    .replace(/m²|m2/gi, '')
+    .replace(/\s/g, '');
+  if (!s) return false;
+  if (s.includes('.') && s.includes(',')) {
+    s = s.replace(/\./g, '').replace(',', '.');
+  } else if (s.includes(',')) {
+    s = s.replace(',', '.');
+  }
+  if (!/^-?\d+(\.\d+)?$/.test(s)) return false;
+  const n = Number(s);
+  return Number.isFinite(n) && n === 0;
+}
+
+/**
+ * Texto de relleno o alucinación típica del análisis (no un dato de ficha).
+ * No marca descripciones reales del anunciante.
+ */
+export function isGenericFillerText(v: unknown): boolean {
+  const raw = String(v ?? '').trim();
+  if (!raw) return false;
+  const folded = foldToken(raw);
+  const plain = folded.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (EMPTY_TOKENS.has(folded) || EMPTY_TOKENS.has(plain)) return true;
+  return FILLER_PATTERNS.some((re) => re.test(plain));
+}
+
+/** Vacío, cero o relleno: no debe escribirse encima de la celda. */
+export function isInvalidAnalyzedValue(v: unknown): boolean {
+  if (v === undefined || v === null) return true;
+  if (String(v).trim() === '') return true;
+  if (isNumericZeroValue(v)) return true;
+  if (isGenericFillerText(v)) return true;
+  return false;
+}
 
 const ESTADO_OPTIONS = [
   'En construcción',
@@ -40,9 +148,11 @@ export function sanitizeCadValue(
   v: unknown,
   cleanSymbols = false,
 ): string {
-  if (v === undefined || v === null) return '';
+  if (isInvalidAnalyzedValue(v)) return '';
   let s = String(v).trim();
-  if (EMPTY_TOKENS.has(s.toLowerCase())) return '';
+  if (EMPTY_TOKENS.has(s.toLowerCase()) || EMPTY_TOKENS.has(foldToken(s))) {
+    return '';
+  }
   if (cleanSymbols) {
     s = s.replace(/[€$m²\s]/g, '');
     if (s.includes('.') && s.includes(',')) {
@@ -76,9 +186,9 @@ function yesNoExplicit(v: unknown): 'SI' | 'NO' | '' {
     .trim()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
-  if (!s || EMPTY_TOKENS.has(s.toLowerCase())) return '';
+  if (!s || EMPTY_TOKENS.has(s.toLowerCase()) || isNumericZeroValue(s)) return '';
   if (['SI', 'TRUE', '1', 'YES'].includes(s)) return 'SI';
-  if (['NO', 'FALSE', '0'].includes(s)) return 'NO';
+  if (['NO', 'FALSE'].includes(s)) return 'NO';
   return '';
 }
 
@@ -117,8 +227,11 @@ export function valuesAreEquivalent(existing: unknown, incoming: unknown): boole
  * Original vacío + extraído con dato → true.
  */
 export function shouldWriteCell(existing: unknown, incoming: unknown): boolean {
+  if (isInvalidAnalyzedValue(incoming)) return false;
   const next = sanitizeCadValue(incoming);
   if (!next) return false;
+  const prev = String(existing ?? '').trim();
+  if (prev && isInvalidAnalyzedValue(next)) return false;
   return !valuesAreEquivalent(existing, next);
 }
 

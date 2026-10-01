@@ -38,6 +38,10 @@ import {
   isOutboundSandboxWhitelistEnabled,
   safeCreatePhoneCall,
 } from './outbound-sandbox-whitelist';
+import {
+  isWithinCallCooldown,
+  latestAttemptTimestamp,
+} from './outbound-call-cooldown';
 
 const SHEET_NAME = 'Localizados';
 const COL_LLAMADO = 'Llamado';
@@ -55,7 +59,6 @@ const COL_C2_TEL = 'Telefono2';
 const COL_C3_ROL = 'Contacto3 por';
 const COL_C3_TEL = 'Telefono3';
 
-const ANTI_REPEAT_MS = 12 * 60 * 60 * 1000;
 const TIMEZONE = OUTBOUND_TIMEZONE;
 
 @Injectable()
@@ -348,9 +351,9 @@ export class OutboundService {
       }
 
       const lastTs = this.lastAttemptByPhone.get(phoneKey);
-      if (lastTs && Date.now() - lastTs < ANTI_REPEAT_MS) {
+      if (lastTs && isWithinCallCooldown(lastTs)) {
         this.logger.log(
-          `[OutboundService] Fila ${rowNumber} descartada: Teléfono repetido en últimas 12h (memoria) → ${phone}`,
+          `[OutboundService] Fila ${rowNumber} descartada: Teléfono en cooldown 48h → ${phone}`,
         );
         continue;
       }
@@ -458,18 +461,9 @@ export class OutboundService {
       return `Call ID ya presente ("${callId}")`;
     }
 
-    // Anti-repetición 12h solo si parseamos bien la fecha; si el formato es desconocido, NO bloqueamos
-    const fechaRaw = row.get(COL_FECHA_ACTUALIZACION)?.toString().trim() || '';
-    if (fechaRaw) {
-      const ts = this.parseFlexibleDateTime(fechaRaw);
-      if (ts !== null && Date.now() - ts < ANTI_REPEAT_MS) {
-        return `Fecha actualización reciente (<12h): "${fechaRaw}"`;
-      }
-      if (ts === null) {
-        this.logger.debug(
-          `[OutboundService] Fila ${rowNumber}: Fecha actualización con formato no parseable ("${fechaRaw}"); se ignora para anti-12h.`,
-        );
-      }
+    const attemptTs = this.latestRowAttemptTimestamp(row);
+    if (attemptTs !== null && isWithinCallCooldown(attemptTs)) {
+      return `Cooldown 48h desde el último intento o llamada (fila ${rowNumber}, ${new Date(attemptTs).toISOString()})`;
     }
 
     const phoneResult = this.getBestPhoneWithReason(row);
@@ -485,8 +479,8 @@ export class OutboundService {
     }
 
     const lastTs = this.lastAttemptByPhone.get(phoneKey);
-    if (lastTs && Date.now() - lastTs < ANTI_REPEAT_MS) {
-      return `Teléfono repetido en últimas 12h (memoria) → ${phone}`;
+    if (lastTs && isWithinCallCooldown(lastTs)) {
+      return `Teléfono en cooldown 48h → ${phone}`;
     }
 
     return null;
@@ -582,9 +576,44 @@ export class OutboundService {
   }
 
   /**
-   * Tras restart de Railway el contador en memoria queda a 0.
-   * Rehidrata desde filas con Llamado=SI y Fecha actualización de hoy (Madrid)
-   * para no superar MAX_DAILY_CALLS ni re-llamar los mismos números.
+   * Fecha más reciente de intento o llamada completada en la fila.
+   * Mira Fecha actualización y Fecha Llamada.
+   */
+  private latestRowAttemptTimestamp(row: {
+    get: (key: string) => unknown;
+  }): number | null {
+    const raws = [
+      row.get(COL_FECHA_ACTUALIZACION),
+      row.get('Fecha Llamada'),
+      row.get('Fecha llamada'),
+    ];
+    return latestAttemptTimestamp(
+      raws.map((raw) => {
+        const text = String(raw ?? '').trim();
+        if (!text) return null;
+        return this.parseFlexibleDateTime(text);
+      }),
+    );
+  }
+
+  /** Registra todos los teléfonos de la fila dentro del cooldown de 48h. */
+  private rememberRowPhones(
+    row: { get: (key: string) => unknown },
+    ts: number,
+  ): void {
+    for (const col of [COL_C1_TEL, COL_C2_TEL, COL_C3_TEL]) {
+      const raw = String(row.get(col) ?? '').trim();
+      if (!raw) continue;
+      const phoneKey = this.normalizePhoneKey(this.formatE164Spain(raw));
+      if (!phoneKey) continue;
+      const prev = this.lastAttemptByPhone.get(phoneKey) || 0;
+      if (ts > prev) this.lastAttemptByPhone.set(phoneKey, ts);
+    }
+  }
+
+  /**
+   * Rehidrata el cupo de hoy y el cooldown de 48h desde el Sheet.
+   * Tras un restart, un teléfono llamado ayer o anteayer sigue bloqueado.
    */
   private hydrateDailyCountFromSheet(
     rows: Array<{ get: (key: string) => unknown }>,
@@ -595,6 +624,11 @@ export class OutboundService {
     let sheetToday = 0;
 
     for (const row of rows) {
+      const attemptTs = this.latestRowAttemptTimestamp(row);
+      if (attemptTs !== null && isWithinCallCooldown(attemptTs)) {
+        this.rememberRowPhones(row, attemptTs);
+      }
+
       const llamadoRaw = String(row.get(COL_LLAMADO) ?? '')
         .trim()
         .toUpperCase();

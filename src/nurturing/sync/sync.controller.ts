@@ -49,13 +49,18 @@ export class SyncController {
 
   /**
    * Publicación Autorizada? = SI → crear/actualizar estate_property en WordPress.
-   * Query opcional: ?row=42 (número de fila del Sheet, 1-based con cabecera en fila 1).
+   * Query opcional: ?row=618 (fila 1-based del Sheet).
+   * ?force=1 en esa fila ignora sandbox, el gate SI y bloqueos temporales.
    */
   @Post('reviewed-to-wordpress')
-  syncReviewedToWordpress(@Query('row') row?: string) {
+  syncReviewedToWordpress(
+    @Query('row') row?: string,
+    @Query('force') force?: string,
+  ) {
     const rowNumber = row ? Number.parseInt(row, 10) : undefined;
     return this.sheetsReviewedSync.syncReviewedRowsToWordpress(
       Number.isFinite(rowNumber) ? rowNumber : undefined,
+      { force: this.isForceQuery(force) },
     );
   }
 
@@ -73,11 +78,7 @@ export class SyncController {
       .split(',')
       .map((v) => Number.parseInt(v.trim(), 10))
       .filter((n) => Number.isFinite(n));
-    const forceSync = ['1', 'true', 'yes', 'si', 'sí'].includes(
-      String(force || '')
-        .trim()
-        .toLowerCase(),
-    );
+    const forceSync = this.isForceQuery(force);
     return this.sheetsReviewedSync.syncWordpressPostsByIds(
       parsed.length ? parsed : undefined,
       { force: forceSync },
@@ -203,5 +204,13 @@ export class SyncController {
   @Get('queue-jobs')
   inspectQueueJobs(@Query('phone') phone?: string) {
     return this.sequenceScheduler.inspectScheduledJobs(phone);
+  }
+
+  private isForceQuery(force?: string): boolean {
+    return ['1', 'true', 'yes', 'si', 'sí'].includes(
+      String(force || '')
+        .trim()
+        .toLowerCase(),
+    );
   }
 }
