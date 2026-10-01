@@ -36,7 +36,7 @@ describe('contexto de la rellamada', () => {
     expect(vars.pueblo_barrio).toBe('Zona Sindicato');
     expect(vars.municipio).toBe('Palma');
     expect(vars.superficie_total).toBe('200');
-    expect(vars.precio_venta).toBe('100000');
+    expect(vars.precio_venta).toBe('cien mil euros');
     expect(vars.precio_alquiler).toBe('');
     expect(vars.gastos_comunidad).toBe('');
     expect(vars.nombre_interlocutor).toBe('Antonio');

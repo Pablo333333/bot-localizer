@@ -72,6 +72,22 @@ describe('buildRetellDynamicVariables', () => {
     expect(variables.contacto_2_por).toBe('Particular');
   });
 
+  it('envía el precio en palabras para que la voz no lo lea cifra a cifra', () => {
+    const { variables, missing } = buildRetellDynamicVariables(
+      fakeRow({
+        'Precio VENTA': '100000',
+        'Precio ALQUILER/mes': '0',
+        'Precio TRASPASO': '1.500',
+        'Gastos de comunidad': '45',
+      }),
+    );
+    expect(variables.precio_venta).toBe('cien mil euros');
+    expect(variables.precio_traspaso).toBe('mil quinientos euros');
+    expect(variables.gastos_comunidad).toBe('cuarenta y cinco euros');
+    expect(variables.precio_alquiler).toBe('');
+    expect(missing).toContain('precio_alquiler');
+  });
+
   it('mapea publicacion_autorizada? con el signo de interrogación exacto', () => {
     const { variables } = buildRetellDynamicVariables(
       fakeRow({ 'Publicacion Autorizada?': 'SI' }),

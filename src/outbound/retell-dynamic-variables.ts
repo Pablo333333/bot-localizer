@@ -1,3 +1,5 @@
+import { toSpokenEuros } from './spoken-euros';
+
 /** Cabeceras de Localizados usadas como variables Retell. */
 export const COL_TIPO_INMUEBLE = 'Tipo de inmueble';
 export const COL_DISPONIBILIDAD = 'Disponibilidad del local';
@@ -5,6 +7,14 @@ export const COL_DISPONIBILIDAD_ALT = 'Disponibilidad';
 export const COL_MUNICIPIO = 'Municipio';
 
 type SheetRowLike = { get: (header: string) => unknown };
+
+/** Importes que la voz debe decir como cantidad ("cien mil euros"). */
+const SPOKEN_MONEY_KEYS = new Set<RetellOutboundVariableKey>([
+  'precio_alquiler',
+  'precio_traspaso',
+  'precio_venta',
+  'gastos_comunidad',
+]);
 
 /**
  * Claves EXACTAS de {{variable}} en el System Prompt del agente outbound Retell
@@ -220,6 +230,10 @@ export function buildRetellDynamicVariables(
       value = contactIndex ? `contacto_${contactIndex}` : '';
     } else {
       value = readSheetCell(row, RETELL_VARIABLE_SHEET_COLUMNS[key]);
+    }
+
+    if (SPOKEN_MONEY_KEYS.has(key) && value) {
+      value = toSpokenEuros(value);
     }
 
     variables[key] = value;
