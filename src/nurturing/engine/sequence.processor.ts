@@ -9,7 +9,10 @@ import {
 } from '@prisma/client';
 import { Job } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SheetsService } from '../../sheets/sheets.service';
 import { NURTURING_STEPS_QUEUE } from '../../queue/queue.constants';
+import { EnrollmentsService } from '../enrollments/enrollments.service';
+import { alreadyHandledAdReason } from './already-handled-ad';
 import { ChannelRegistry } from '../channels/channel.registry';
 import { LeadStatus as AppLeadStatus, TERMINAL_LEAD_STATUSES } from '../enums';
 import {
@@ -35,6 +38,8 @@ export class SequenceProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly channels: ChannelRegistry,
     private readonly config: ConfigService,
+    private readonly sheets: SheetsService,
+    private readonly enrollments: EnrollmentsService,
   ) {
     super();
   }
@@ -111,6 +116,11 @@ export class SequenceProcessor extends WorkerHost {
 
     if (this.isTerminal(lead.status)) {
       await this.markSkipped(stepRunId, `lead_status:${lead.status}`);
+      return { status: 'skipped' };
+    }
+
+    const handled = await this.stopIfAdAlreadyHandled(lead);
+    if (handled) {
       return { status: 'skipped' };
     }
 
@@ -327,6 +337,39 @@ export class SequenceProcessor extends WorkerHost {
       });
       return 'claimed';
     });
+  }
+
+  /**
+   * Si Toni ya habló y dejó el anuncio creado (SI o WP Post ID),
+   * cancela la secuencia antes de disparar el paso. No sale otra llamada.
+   */
+  private async stopIfAdAlreadyHandled(lead: {
+    id: string;
+    phone: string;
+  }): Promise<string | null> {
+    try {
+      const located = await this.sheets.findLocalizadosRowByPhone(lead.phone);
+      if (!located) return null;
+      const reason = alreadyHandledAdReason(
+        located.row,
+        located.sheet.headerValues,
+      );
+      if (!reason) return null;
+      const stopped = await this.enrollments.stopActiveForLead(
+        lead.id,
+        `anuncio_ya_gestionado:${reason}`,
+      );
+      this.logger.log(
+        `[FASE3][COLA] anuncio ya gestionado (${reason}) lead=${lead.id} phone=${lead.phone} secuencias_paradas=${stopped} — no se llama`,
+      );
+      return reason;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `[FASE3][COLA] no se pudo comprobar si el anuncio ya está gestionado lead=${lead.id}: ${message}`,
+      );
+      return null;
+    }
   }
 
   private isTerminal(status: LeadStatus): boolean {
