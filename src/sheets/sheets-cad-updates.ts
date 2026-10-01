@@ -371,6 +371,17 @@ export function buildCadPropertyUpdates(
   pickIfChanged(out, 'Vado (SI/NO)', yesNoExplicit(cad.vado), getExisting);
   pickIfChanged(out, 'Altura techos', val(cad.altura_techos), getExisting);
   pickIfChanged(out, 'Numero plantas', val(cad.numero_plantas || cad.num_plantas), getExisting);
+  pickIfChanged(
+    out,
+    'Numero de entradas y accesos',
+    val(
+      cad['Numero de entradas y accesos'] ||
+        cad.numero_entradas ||
+        cad.numero_de_entradas ||
+        cad.entradas,
+    ),
+    getExisting,
+  );
   pickIfChanged(out, 'Iluminacion', val(cad.iluminacion), getExisting);
   pickIfChanged(out, 'Suelos', val(cad.suelos), getExisting);
   pickIfChanged(out, 'Contrato', val(cad.contrato), getExisting);
@@ -446,13 +457,18 @@ export function buildCadPropertyUpdates(
     pickIfChanged(out, 'Nombre contacto3', val(cad.nombre_contacto_3), getExisting);
   }
 
-  // Estado del inmueble (Buen estado, Reformado…): no escribir valores de pipeline de lead.
-  const estadoInmueble = matchOption(cad.estado, ESTADO_OPTIONS);
-  const estadoLooksLikeLead = /^(pendiente|nuevo|ilocalizable|cerrado|interesado|cita)/i.test(
-    String(cad.estado || '').trim(),
+  // Estado del inmueble (Buen estado, Nuevo, Reformado…).
+  // "Nuevo" es una opción de ficha. Pendiente, ilocalizable o interesado no lo son.
+  const rawEstado = sanitizeCadValue(cad.estado);
+  const catalogEstado = ESTADO_OPTIONS.find(
+    (opt) => opt.toLowerCase() === rawEstado.toLowerCase(),
   );
-  if (estadoInmueble && !estadoLooksLikeLead) {
-    pickIfChanged(out, 'Estado', estadoInmueble, getExisting);
+  const estadoLooksLikeLead =
+    /^(pendiente|ilocalizable|cerrado|interesado|cita)/i.test(rawEstado);
+  if (catalogEstado) {
+    pickIfChanged(out, 'Estado', catalogEstado, getExisting);
+  } else if (rawEstado && !estadoLooksLikeLead) {
+    pickIfChanged(out, 'Estado', rawEstado, getExisting);
   }
 
   return out;

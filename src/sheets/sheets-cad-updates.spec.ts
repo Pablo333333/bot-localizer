@@ -151,6 +151,35 @@ describe('buildCadPropertyUpdates', () => {
     expect(updates['Precio ALQUILER/mes']).toBe('2000');
   });
 
+  it('actualiza Estado a Nuevo y guarda plantas y entradas dichas en la llamada', () => {
+    const updates = buildCadPropertyUpdates(
+      {
+        estado: 'nuevo',
+        numero_plantas: '2',
+        'Numero de entradas y accesos': '3',
+        terraza_patio: '12',
+        almacen_trastienda: '8',
+        superficie_total: '180',
+      },
+      (header) => {
+        const previous: Record<string, string> = {
+          Estado: 'Buen estado',
+          'Numero plantas': '1',
+          'Numero de entradas y accesos': '1',
+          'Superficie Total': '200',
+        };
+        return previous[header];
+      },
+    );
+
+    expect(updates.Estado).toBe('Nuevo');
+    expect(updates['Numero plantas']).toBe('2');
+    expect(updates['Numero de entradas y accesos']).toBe('3');
+    expect(updates['Terraza propia (Superficie m2)']).toBe('12');
+    expect(updates['Almacen/trastienda (m2)']).toBe('8');
+    expect(updates['Superficie Total']).toBe('180');
+  });
+
   it('registra la ficha que Retell devuelve en una llamada exitosa', () => {
     const updates = buildCadPropertyUpdates(
       {
