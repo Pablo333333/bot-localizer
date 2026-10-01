@@ -1,3 +1,4 @@
+import { isInvalidAnalyzedValue } from '../sheets/sheets-cad-updates';
 import { sanitizeValue, type RetellCad } from './property-mapper';
 
 /**
@@ -12,6 +13,7 @@ export function preferCallCad(
   if (!callCad) return merged;
 
   for (const [key, raw] of Object.entries(callCad)) {
+    if (isInvalidAnalyzedValue(raw)) continue;
     const next = sanitizeValue(raw);
     if (!next) continue;
     merged[key] = raw;

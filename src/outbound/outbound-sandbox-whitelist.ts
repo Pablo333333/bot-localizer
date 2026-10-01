@@ -107,6 +107,12 @@ type RetellCreatePhoneCall = {
       to_number: string;
       override_agent_id: string;
       retell_llm_dynamic_variables?: Record<string, string>;
+      agent_override?: {
+        retell_llm?: {
+          begin_message?: string | null;
+          start_speaker?: 'user' | 'agent';
+        };
+      };
     }) => Promise<{ call_id?: string }>;
   };
 };
@@ -121,6 +127,12 @@ export async function safeCreatePhoneCall(
     to_number: string;
     override_agent_id: string;
     retell_llm_dynamic_variables?: Record<string, string>;
+    agent_override?: {
+      retell_llm?: {
+        begin_message?: string | null;
+        start_speaker?: 'user' | 'agent';
+      };
+    };
   },
   log?: (message: string) => void,
 ): Promise<

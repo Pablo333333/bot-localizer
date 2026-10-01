@@ -60,6 +60,11 @@ const EMPTY_TOKENS = new Set([
   'none',
   'ninguno',
   'ninguna',
+  'indeterminado',
+  'indeterminada',
+  'interesado_ia',
+  'false',
+  'falso',
   'no aplica',
   'no procede',
 ]);
@@ -169,6 +174,7 @@ export function sanitizeCadValue(
         s = s.replace('.', '');
       }
     }
+    if (!/^\d+(\.\d+)?$/.test(s) || Number(s) === 0) return '';
   }
   return s.trim();
 }

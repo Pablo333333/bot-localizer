@@ -113,9 +113,12 @@ export function formatSurfaceDisplay(v: unknown): string {
   return s + ' m²';
 }
 
-/** Extrae número limpio para meta WP Residence (property_price, property_size, …). */
+/** Extrae número limpio para meta WP Residence (property_price, property_size, …). Un 0 no es precio ni superficie. */
 export function toNumericMeta(v: unknown): string {
-  return sanitizeValue(v, true);
+  const s = sanitizeValue(v, true);
+  if (!s || !/^\d+(\.\d+)?$/.test(s)) return '';
+  if (Number(s) === 0) return '';
+  return s;
 }
 
 /** Lat/lng: admite "39,572" o "39.572" sin convertir coma de miles. */

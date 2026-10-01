@@ -211,6 +211,77 @@ describe('buildCadPropertyUpdates', () => {
     expect(updates).not.toHaveProperty('Pueblo/Barrio/distrito');
   });
 
+  it('el análisis de Palma no pisa alquiler, gastos ni ficha con ceros o relleno', () => {
+    const updates = buildCadPropertyUpdates(
+      {
+        contacto_2_con: 'Indeterminado',
+        contacto_3_con: 'Indeterminado',
+        propietario_contactado: 'Si',
+        profesional_inmobiliario: false,
+        es_negociable: 'SI',
+        tipo_via: 'Calle',
+        estado: 'interesado_ia',
+        interesado_ia: false,
+        'publicacion_autorizada?': 'SI',
+        superficie_util: '200',
+        tipo_inmueble: 'Local',
+        nombre_via: 'de la Fuente',
+        numero_via: '3',
+        precio_venta: '100000',
+        precio_alquiler: 0,
+        gastos_comunidad: '0',
+        contacto_1_con: 'Particular',
+        contrato: 'Venta',
+        oportunidad_comercial: 'NINGUNA',
+        descripcion_generada:
+          'Local comercial en venta de 200 metros cuadrados ubicado en Calle de la Fuente, número 3, Palma, Baleares. Precio de venta 100,000 euros, negociable. Propietario particular, sin interés en intermediación inmobiliaria.',
+        provincia: 'Baleares',
+        municipio: 'Palma',
+        disponibilidad: 'SI',
+        superficie_total: '200',
+        certificacion: 'En tramite',
+        fianza_meses: '',
+      },
+      (header) => {
+        const previous: Record<string, string> = {
+          'Precio ALQUILER/mes': '900',
+          'Gastos de comunidad': '45',
+          'Precio VENTA': '125000',
+          Estado: 'Buen estado',
+          'Negocio anterior': 'Cafetería',
+          'Contacto2 con': 'Particular',
+          'Contacto1 con': 'Particular',
+          Fianza: '2 meses',
+          'Superficie Total': '53',
+          'Superficie util': '53',
+          'Nombre via': 'Socorrs',
+          'Numero Via': '68',
+          Municipio: 'Palma',
+          'Tipo de inmueble': 'Local',
+        };
+        return previous[header];
+      },
+    );
+
+    expect(updates['Precio VENTA']).toBe('100000');
+    expect(updates['Superficie Total']).toBe('200');
+    expect(updates['Superficie util']).toBe('200');
+    expect(updates['Nombre via']).toBe('de la Fuente');
+    expect(updates['Numero Via']).toBe('3');
+    expect(updates['Negociable']).toBe('SI');
+    expect(updates['Contrato']).toBe('Venta');
+    expect(updates['Certificación energética']).toBe('En tramite');
+    expect(updates['Descripción por el propietario']).toContain('de la Fuente');
+    expect(updates).not.toHaveProperty('Precio ALQUILER/mes');
+    expect(updates).not.toHaveProperty('Gastos de comunidad');
+    expect(updates).not.toHaveProperty('Estado');
+    expect(updates).not.toHaveProperty('Negocio anterior');
+    expect(updates).not.toHaveProperty('Fianza');
+    expect(updates).not.toHaveProperty('Contacto2 con');
+    expect(updates).not.toHaveProperty('Municipio');
+    expect(updates).not.toHaveProperty('Tipo de inmueble');
+  });
+
   it('escribe nombre de contacto sin target_contact y URL imagen', () => {
     const updates = buildCadPropertyUpdates(
       {

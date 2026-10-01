@@ -19,6 +19,11 @@ import {
   resolveRetellFollowupAgentId,
   resolveRetellFromNumber,
 } from '../toni-fase3.constants';
+import {
+  buildFollowupOpening,
+  buildFollowupSheetVariables,
+} from './followup-call-context';
+import { SheetsService } from '../../sheets/sheets.service';
 import { formatE164Spain } from '../utils/phone.util';
 import {
   ChannelSendPayload,
@@ -38,7 +43,10 @@ export class CallChannel implements NurturingChannel {
   private readonly outboundAgentId: string | undefined;
   private readonly followupAgentId: string;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly sheets: SheetsService,
+  ) {
     const apiKey = this.config.get<string>('RETELL_API_KEY');
     this.fromNumber = resolveRetellFromNumber(
       this.config.get<string>('RETELL_FROM_NUMBER'),
@@ -112,8 +120,14 @@ export class CallChannel implements NurturingChannel {
             ? 't7'
             : 't0';
 
+      const sheetVars = await this.loadSheetVariables(toNumber);
       const dynamicVars: Record<string, string> = {
-        nombre: payload.name || '',
+        ...sheetVars,
+        nombre:
+          payload.name ||
+          sheetVars.nombre_interlocutor ||
+          sheetVars.nombre_contacto_1 ||
+          '',
         lead_id: payload.leadId,
         step_run_id: payload.stepRunId,
         template_key: payload.templateKey,
@@ -126,12 +140,25 @@ export class CallChannel implements NurturingChannel {
       const extra = payload.templatePayload?.retellVariables;
       if (extra && typeof extra === 'object') {
         for (const [k, v] of Object.entries(extra as Record<string, unknown>)) {
-          if (v != null) dynamicVars[k] = String(v);
+          if (v == null) continue;
+          const text = String(v).trim();
+          if (!text) continue;
+          dynamicVars[k] = text;
         }
       }
-      // No permitir que extras borren la fase/template canónicos del step.
       dynamicVars.template_key = payload.templateKey;
       dynamicVars.nurturing_phase = nurturingPhase;
+
+      const isFollowup = isFollowupCallTemplate(payload.templateKey);
+      const beginMessage = isFollowup
+        ? buildFollowupOpening(dynamicVars)
+        : undefined;
+      const filled = ['tipo_inmueble', 'nombre_via', 'municipio', 'superficie_total']
+        .filter((key) => dynamicVars[key])
+        .join(', ');
+      this.logger.log(
+        `[FASE3][LLAMADA] contexto Sheet fase=${nurturingPhase} to=${toNumber} campos=${filled || '(sin ficha)'} saludo=${beginMessage || '(prompt)'}`,
+      );
 
       const guarded = await safeCreatePhoneCall(
         this.retell,
@@ -140,6 +167,16 @@ export class CallChannel implements NurturingChannel {
           to_number: toNumber,
           override_agent_id: agentId,
           retell_llm_dynamic_variables: dynamicVars,
+          ...(beginMessage
+            ? {
+                agent_override: {
+                  retell_llm: {
+                    begin_message: beginMessage,
+                    start_speaker: 'agent' as const,
+                  },
+                },
+              }
+            : {}),
         },
         (msg) => this.logger.warn(msg),
       );
@@ -156,6 +193,28 @@ export class CallChannel implements NurturingChannel {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Retell call failed lead=${payload.leadId}: ${message}`);
       return { success: false, error: message };
+    }
+  }
+
+  /** Ficha Localizados de este teléfono, con las mismas claves que la primera llamada. */
+  private async loadSheetVariables(
+    phoneE164: string,
+  ): Promise<Record<string, string>> {
+    try {
+      const located = await this.sheets.findLocalizadosRowByPhone(phoneE164);
+      if (!located) {
+        this.logger.warn(
+          `[FASE3][LLAMADA] sin fila Localizados para ${phoneE164} — la rellamada sale sin ficha`,
+        );
+        return {};
+      }
+      return buildFollowupSheetVariables(located.row, { phoneE164 });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `[FASE3][LLAMADA] no se pudo leer la ficha de ${phoneE164}: ${message}`,
+      );
+      return {};
     }
   }
 }
