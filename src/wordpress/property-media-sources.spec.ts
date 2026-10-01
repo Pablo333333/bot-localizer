@@ -2,6 +2,7 @@ import {
   extractDriveFolderId,
   extractDriveFileId,
   extractDriveFolderIdFromCad,
+  extractDriveFoldersFromCad,
   extractImageUrlsFromCad,
   formatPropertyImagesMeta,
 } from './property-media-sources';
@@ -40,6 +41,20 @@ describe('property-media-sources', () => {
     expect(urls).toEqual([
       'https://drive.google.com/file/d/aaa111/view',
       'https://drive.google.com/file/d/bbb222/view',
+    ]);
+  });
+
+  it('conserva el resourcekey del enlace de carpeta', () => {
+    expect(
+      extractDriveFoldersFromCad({
+        carpeta_drive:
+          'https://drive.google.com/drive/folders/0B1Ho5NsDgAENQmFHaWw2X1FSaFk?resourcekey=0-CLq0GTj-y_BXJSzSfL2vUg',
+      }),
+    ).toEqual([
+      {
+        id: '0B1Ho5NsDgAENQmFHaWw2X1FSaFk',
+        resourceKey: '0-CLq0GTj-y_BXJSzSfL2vUg',
+      },
     ]);
   });
 

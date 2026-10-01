@@ -1,3 +1,5 @@
+import { extractDriveResourceKey } from '../google/drive-file.util';
+
 /** Helpers de fuentes de imagen (sin depender de property-mapper — evita ciclos). */
 
 const IMAGE_URL_KEYS = [
@@ -183,12 +185,18 @@ export function extractFirstImageUrlFromCad(cad: CadLike): string | undefined {
   return extractImageUrlsFromCad(cad)[0];
 }
 
+export type DriveFolderRef = {
+  id: string;
+  resourceKey?: string;
+};
+
 /**
  * Todas las carpetas Drive del CAD: columnas dedicadas + URLs /folders/ en campos de imagen.
+ * Conserva resourcekey si el enlace de Sheets lo trae.
  */
-export function extractDriveFolderIdsFromCad(cad: CadLike): string[] {
+export function extractDriveFoldersFromCad(cad: CadLike): DriveFolderRef[] {
   if (!cad) return [];
-  const ids: string[] = [];
+  const folders: DriveFolderRef[] = [];
   const seen = new Set<string>();
 
   const push = (raw: string) => {
@@ -197,7 +205,8 @@ export function extractDriveFolderIdsFromCad(cad: CadLike): string[] {
     // Si es URL de archivo, no es carpeta
     if (/\/file\/d\//i.test(raw)) return;
     seen.add(id);
-    ids.push(id);
+    const resourceKey = extractDriveResourceKey(raw) || undefined;
+    folders.push(resourceKey ? { id, resourceKey } : { id });
   };
 
   for (const key of DRIVE_FOLDER_KEYS) {
@@ -228,7 +237,12 @@ export function extractDriveFolderIdsFromCad(cad: CadLike): string[] {
     }
   }
 
-  return ids;
+  return folders;
+}
+
+/** Todas las carpetas Drive del CAD (solo el id). */
+export function extractDriveFolderIdsFromCad(cad: CadLike): string[] {
+  return extractDriveFoldersFromCad(cad).map((folder) => folder.id);
 }
 
 /** Carpeta Drive asociada al inmueble (primera encontrada). */

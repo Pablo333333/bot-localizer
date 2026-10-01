@@ -1,6 +1,8 @@
 import {
   assertImageBuffer,
+  driveResourceKeyHeader,
   extractDriveFileIdFromUrl,
+  extractDriveResourceKey,
   inferImageMimeType,
   isLikelyHtmlBuffer,
   normalizeImageMimeType,
@@ -29,6 +31,19 @@ describe('drive-file.util', () => {
         'https://drive.google.com/drive/folders/1FolderIdOnlyHereXXXX',
       ),
     ).toBeNull();
+  });
+
+  it('lee resourcekey del enlace y arma la cabecera de Drive', () => {
+    const url =
+      'https://drive.google.com/drive/folders/0B1Ho5NsDgAENQmFHaWw2X1FSaFk?resourcekey=0-CLq0GTj-y_BXJSzSfL2vUg';
+    expect(extractDriveResourceKey(url)).toBe('0-CLq0GTj-y_BXJSzSfL2vUg');
+    expect(
+      driveResourceKeyHeader(
+        '0B1Ho5NsDgAENQmFHaWw2X1FSaFk',
+        '0-CLq0GTj-y_BXJSzSfL2vUg',
+      ).headers?.['X-Goog-Drive-Resource-Keys'],
+    ).toBe('0B1Ho5NsDgAENQmFHaWw2X1FSaFk/0-CLq0GTj-y_BXJSzSfL2vUg');
+    expect(driveResourceKeyHeader('abc', '')).toEqual({});
   });
 
   it('detecta JPEG/PNG y HTML (página de confirmación)', () => {

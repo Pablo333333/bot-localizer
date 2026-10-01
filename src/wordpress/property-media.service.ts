@@ -3,13 +3,17 @@ import { ConfigService } from '@nestjs/config';
 import { GoogleDriveService } from '../google/google-drive.service';
 import {
   extractDriveFolderIdsFromCad,
+  extractDriveFoldersFromCad,
   extractImageUrlsFromCad,
   extractLocalImagePathsFromCad,
   MAX_PROPERTY_IMAGES,
 } from './property-media-sources';
 import type { RetellCad } from './property-mapper';
 import { WordpressService } from './wordpress.service';
-import { normalizeImageMimeType } from '../google/drive-file.util';
+import {
+  extractDriveResourceKey,
+  normalizeImageMimeType,
+} from '../google/drive-file.util';
 
 export type PropertyMediaResult = {
   featuredMediaId?: number;
@@ -20,6 +24,7 @@ type DriveFileRef = {
   id: string;
   name?: string | null;
   mimeType?: string | null;
+  resourceKey?: string | null;
 };
 
 /**
@@ -82,7 +87,10 @@ export class PropertyMediaService {
     const galleryMediaIds: number[] = [];
     for (const file of driveFiles.slice(0, MAX_PROPERTY_IMAGES)) {
       try {
-        const downloaded = await this.googleDrive.downloadImageFile(file.id);
+        const downloaded = await this.googleDrive.downloadImageFile(
+          file.id,
+          file.resourceKey,
+        );
         const mimeType = downloaded.mimeType || normalizeImageMimeType(file.mimeType);
         const mediaId = await this.wordpress.uploadMedia(
           downloaded.buffer,
@@ -149,6 +157,10 @@ export class PropertyMediaService {
   ): Promise<DriveFileRef[]> {
     const seen = new Set<string>();
     const out: DriveFileRef[] = [];
+    const rootFolderId = this.config.get<string>('DRIVE_ROOT_FOLDER_ID')?.trim();
+    const rootResourceKey = this.config
+      .get<string>('DRIVE_ROOT_RESOURCE_KEY')
+      ?.trim();
 
     const pushUnique = (files: DriveFileRef[]) => {
       for (const f of files) {
@@ -170,20 +182,33 @@ export class PropertyMediaService {
         this.logger.warn(`[PropertyMedia] URL sin fileId (¿carpeta?): ${url}`);
         continue;
       }
+      const fileResourceKey = extractDriveResourceKey(url);
       try {
-        const meta = await this.googleDrive.resolveImageFileId(fileId);
+        const meta = await this.googleDrive.resolveImageFileId(
+          fileId,
+          fileResourceKey,
+        );
         if (meta.mimeType?.startsWith('image/')) {
           pushUnique([
-            { id: meta.id, name: meta.name, mimeType: meta.mimeType },
+            {
+              id: meta.id,
+              name: meta.name,
+              mimeType: meta.mimeType,
+              resourceKey: fileResourceKey,
+            },
           ]);
         } else if (meta.mimeType === 'application/vnd.google-apps.folder') {
-          const folderImages =
-            await this.googleDrive.getImagesFromFolder(meta.id);
+          const folderImages = await this.googleDrive.getImagesFromFolder(
+            meta.id,
+            undefined,
+            fileResourceKey,
+          );
           pushUnique(
             folderImages.map((f) => ({
               id: f.id!,
               name: f.name,
               mimeType: f.mimeType,
+              resourceKey: f.resourceKey || fileResourceKey,
             })),
           );
         } else if (
@@ -207,7 +232,12 @@ export class PropertyMediaService {
           `[PropertyMedia] Metadata Drive falló ${fileId}: ${err.message} — se intenta descarga directa`,
         );
         pushUnique([
-          { id: fileId, name: `drive_${fileId}.jpg`, mimeType: 'image/jpeg' },
+          {
+            id: fileId,
+            name: `drive_${fileId}.jpg`,
+            mimeType: 'image/jpeg',
+            resourceKey: fileResourceKey,
+          },
         ]);
       }
     }
@@ -224,7 +254,10 @@ export class PropertyMediaService {
     }
     for (const relativePath of localPaths) {
       if (out.length >= MAX_PROPERTY_IMAGES) break;
-      const file = await this.googleDrive.findImageByRelativePath(relativePath);
+      const file = await this.googleDrive.findImageByRelativePath(relativePath, {
+        parentFolderId: rootFolderId,
+        resourceKey: rootResourceKey,
+      });
       if (!file) {
         this.logger.warn(
           `[PropertyMedia] No está en Drive: ${relativePath}`,
@@ -232,7 +265,12 @@ export class PropertyMediaService {
         continue;
       }
       pushUnique([
-        { id: file.id, name: file.name, mimeType: file.mimeType },
+        {
+          id: file.id,
+          name: file.name,
+          mimeType: file.mimeType,
+          resourceKey: file.resourceKey || rootResourceKey,
+        },
       ]);
     }
 
@@ -241,22 +279,27 @@ export class PropertyMediaService {
     }
 
     // 2) Carpetas explícitas (columna + URLs /folders/ en campos imagen)
-    for (const folderId of extractDriveFolderIdsFromCad(cad)) {
+    for (const folder of extractDriveFoldersFromCad(cad)) {
       try {
-        const images = await this.googleDrive.getImagesFromFolder(folderId);
+        const images = await this.googleDrive.getImagesFromFolder(
+          folder.id,
+          undefined,
+          folder.resourceKey,
+        );
         this.logger.log(
-          `[PropertyMedia] Carpeta ${folderId}: ${images.length} imagen(es)`,
+          `[PropertyMedia] Carpeta ${folder.id}: ${images.length} imagen(es)`,
         );
         pushUnique(
           images.map((f) => ({
             id: f.id!,
             name: f.name,
             mimeType: f.mimeType,
+            resourceKey: f.resourceKey || folder.resourceKey,
           })),
         );
       } catch (err: any) {
         this.logger.warn(
-          `[PropertyMedia] No se pudo listar carpeta ${folderId}: ${err.message}`,
+          `[PropertyMedia] No se pudo listar carpeta ${folder.id}: ${err.message}`,
         );
       }
     }
@@ -266,7 +309,6 @@ export class PropertyMediaService {
     }
 
     // 3) Fallback: DRIVE_ROOT_FOLDER_ID por call_id y/o postId
-    const rootFolderId = this.config.get<string>('DRIVE_ROOT_FOLDER_ID');
     const searchTerms = [callId, postId ? String(postId) : '']
       .map((s) => String(s || '').trim())
       .filter(Boolean);
@@ -286,10 +328,14 @@ export class PropertyMediaService {
         const subfolderId = await this.googleDrive.findSubfolderByName(
           rootFolderId,
           term,
+          rootResourceKey,
         );
         if (subfolderId) {
-          const images =
-            await this.googleDrive.getImagesFromFolder(subfolderId);
+          const images = await this.googleDrive.getImagesFromFolder(
+            subfolderId,
+            undefined,
+            rootResourceKey,
+          );
           this.logger.log(
             `[PropertyMedia] Subcarpeta term=${term} → ${images.length} imagen(es)`,
           );
@@ -298,6 +344,7 @@ export class PropertyMediaService {
               id: f.id!,
               name: f.name,
               mimeType: f.mimeType,
+              resourceKey: f.resourceKey || rootResourceKey,
             })),
           );
         }
@@ -306,6 +353,7 @@ export class PropertyMediaService {
           const named = await this.googleDrive.getImagesFromFolder(
             rootFolderId,
             term,
+            rootResourceKey,
           );
           this.logger.log(
             `[PropertyMedia] Archivos en root name~${term}: ${named.length}`,
@@ -315,6 +363,7 @@ export class PropertyMediaService {
               id: f.id!,
               name: f.name,
               mimeType: f.mimeType,
+              resourceKey: f.resourceKey || rootResourceKey,
             })),
           );
         }

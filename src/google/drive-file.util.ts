@@ -11,6 +11,33 @@ const FILE_ID_PATTERNS = [
   /lh3\.googleusercontent\.com\/d\/([a-zA-Z0-9_-]+)/i,
 ];
 
+/** `?resourcekey=` de un enlace de carpeta o archivo compartido por link. */
+export function extractDriveResourceKey(
+  raw: string | null | undefined,
+): string | null {
+  if (!raw) return null;
+  const match = String(raw).match(/[?&]resourcekey=([^&#\s]+)/i);
+  if (!match?.[1]) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
+/** Cabecera que Drive exige para abrir un archivo solo con el enlace. */
+export function driveResourceKeyHeader(
+  fileId?: string | null,
+  resourceKey?: string | null,
+): { headers?: Record<string, string> } {
+  const id = String(fileId || '').trim();
+  const key = String(resourceKey || '').trim();
+  if (!id || !key) return {};
+  return {
+    headers: { 'X-Goog-Drive-Resource-Keys': `${id}/${key}` },
+  };
+}
+
 export function extractDriveFileIdFromUrl(url: string): string | null {
   if (!url) return null;
   const trimmed = url.trim();

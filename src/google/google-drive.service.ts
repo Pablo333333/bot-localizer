@@ -6,6 +6,7 @@ import * as path from 'path';
 import {
   assertImageBuffer,
   downloadPublicDriveFile,
+  driveResourceKeyHeader,
   extractDriveFileIdFromUrl,
   isLikelyHtmlBuffer,
 } from './drive-file.util';
@@ -66,6 +67,7 @@ export class GoogleDriveService implements OnModuleInit {
   async getImagesFromFolder(
     folderId: string,
     searchTerm?: string,
+    resourceKey?: string | null,
   ): Promise<drive_v3.Schema$File[]> {
     try {
       const safeTerm = searchTerm
@@ -76,13 +78,16 @@ export class GoogleDriveService implements OnModuleInit {
         query += ` and name contains '${safeTerm}'`;
       }
 
-      const response = await this.driveClient.files.list({
-        q: query,
-        fields: 'files(id, name, mimeType)',
-        orderBy: 'name',
-        pageSize: 100,
-        ...DRIVE_LIST_OPTS,
-      });
+      const response = await this.driveClient.files.list(
+        {
+          q: query,
+          fields: 'files(id, name, mimeType, resourceKey)',
+          orderBy: 'name',
+          pageSize: 100,
+          ...DRIVE_LIST_OPTS,
+        },
+        driveResourceKeyHeader(folderId, resourceKey),
+      );
 
       const files = response.data.files || [];
       return files.sort((a, b) =>
@@ -100,12 +105,93 @@ export class GoogleDriveService implements OnModuleInit {
   }
 
   /**
-   * Busca una subcarpeta cuyo nombre contenga el término (p.ej. Call ID / ID_WP).
-   */
-  /**
    * `Localizados_Images/image_80.jpg` → archivo dentro de la carpeta con ese nombre.
+   * Si hay carpeta raíz (la del enlace o DRIVE_ROOT), busca ahí primero.
    */
-  async findImageByRelativePath(relativePath: string): Promise<{
+  async findImageByRelativePath(
+    relativePath: string,
+    access?: { parentFolderId?: string; resourceKey?: string | null },
+  ): Promise<{
+    id: string;
+    name?: string | null;
+    mimeType?: string | null;
+    resourceKey?: string | null;
+  } | null> {
+    const scoped = await this.findImageInsideFolder(relativePath, access);
+    if (scoped) return scoped;
+    return this.findImageByNameAnywhere(relativePath);
+  }
+
+  private async findImageInsideFolder(
+    relativePath: string,
+    access?: { parentFolderId?: string; resourceKey?: string | null },
+  ): Promise<{
+    id: string;
+    name?: string | null;
+    mimeType?: string | null;
+    resourceKey?: string | null;
+  } | null> {
+    const parentId = String(access?.parentFolderId || '').trim();
+    if (!parentId) return null;
+    const parts = String(relativePath || '')
+      .trim()
+      .replace(/\\/g, '/')
+      .split('/')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length === 0) return null;
+    const fileName = parts[parts.length - 1].replace(/'/g, "\\'");
+    const folderName =
+      parts.length >= 2 ? parts[parts.length - 2].replace(/'/g, "\\'") : '';
+    if (!fileName) return null;
+    const parentKey = access?.resourceKey;
+
+    try {
+      let searchFolderId = parentId;
+      let searchKey = parentKey;
+      if (folderName) {
+        const folders = await this.driveClient.files.list(
+          {
+            q: `'${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and name = '${folderName}' and trashed = false`,
+            fields: 'files(id, name, resourceKey)',
+            pageSize: 5,
+            ...DRIVE_LIST_OPTS,
+          },
+          driveResourceKeyHeader(parentId, parentKey),
+        );
+        const folder = folders.data.files?.[0];
+        if (folder?.id) {
+          searchFolderId = folder.id;
+          searchKey = folder.resourceKey || parentKey;
+        }
+      }
+
+      const files = await this.driveClient.files.list(
+        {
+          q: `'${searchFolderId}' in parents and name = '${fileName}' and trashed = false`,
+          fields: 'files(id, name, mimeType, resourceKey)',
+          pageSize: 5,
+          ...DRIVE_LIST_OPTS,
+        },
+        driveResourceKeyHeader(searchFolderId, searchKey),
+      );
+      const file = files.data.files?.[0];
+      if (!file?.id) return null;
+      return {
+        id: file.id,
+        name: file.name,
+        mimeType: file.mimeType,
+        resourceKey: file.resourceKey || searchKey,
+      };
+    } catch (error: any) {
+      this.logger.warn(
+        `No se pudo buscar ${relativePath} en ${parentId}: ${error.message}`,
+      );
+      return null;
+    }
+  }
+
+  private async findImageByNameAnywhere(relativePath: string): Promise<{
     id: string;
     name?: string | null;
     mimeType?: string | null;
@@ -157,6 +243,7 @@ export class GoogleDriveService implements OnModuleInit {
   async findSubfolderByName(
     parentFolderId: string,
     nameContains: string,
+    resourceKey?: string | null,
   ): Promise<string | null> {
     const safeTerm = String(nameContains || '')
       .trim()
@@ -164,12 +251,15 @@ export class GoogleDriveService implements OnModuleInit {
     if (!safeTerm) return null;
 
     try {
-      const response = await this.driveClient.files.list({
-        q: `'${parentFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and name contains '${safeTerm}' and trashed = false`,
-        fields: 'files(id, name)',
-        pageSize: 10,
-        ...DRIVE_LIST_OPTS,
-      });
+      const response = await this.driveClient.files.list(
+        {
+          q: `'${parentFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and name contains '${safeTerm}' and trashed = false`,
+          fields: 'files(id, name)',
+          pageSize: 10,
+          ...DRIVE_LIST_OPTS,
+        },
+        driveResourceKeyHeader(parentFolderId, resourceKey),
+      );
       const folder = response.data.files?.[0];
       return folder?.id || null;
     } catch (error: any) {
@@ -182,17 +272,21 @@ export class GoogleDriveService implements OnModuleInit {
 
   async getFileMetadata(
     fileId: string,
+    resourceKey?: string | null,
   ): Promise<{
     id: string;
     name?: string | null;
     mimeType?: string | null;
     shortcutTargetId?: string | null;
   }> {
-    const meta = await this.driveClient.files.get({
-      fileId,
-      fields: 'id, name, mimeType, shortcutDetails',
-      ...DRIVE_FILE_OPTS,
-    });
+    const meta = await this.driveClient.files.get(
+      {
+        fileId,
+        fields: 'id, name, mimeType, shortcutDetails, resourceKey',
+        ...DRIVE_FILE_OPTS,
+      },
+      driveResourceKeyHeader(fileId, resourceKey),
+    );
     return {
       id: meta.data.id || fileId,
       name: meta.data.name,
@@ -204,12 +298,15 @@ export class GoogleDriveService implements OnModuleInit {
   /**
    * Resuelve shortcuts de Drive al archivo imagen real.
    */
-  async resolveImageFileId(fileId: string): Promise<{
+  async resolveImageFileId(
+    fileId: string,
+    resourceKey?: string | null,
+  ): Promise<{
     id: string;
     name?: string | null;
     mimeType?: string | null;
   }> {
-    const meta = await this.getFileMetadata(fileId);
+    const meta = await this.getFileMetadata(fileId, resourceKey);
     if (
       meta.mimeType === 'application/vnd.google-apps.shortcut' &&
       meta.shortcutTargetId
@@ -217,7 +314,7 @@ export class GoogleDriveService implements OnModuleInit {
       this.logger.log(
         `Drive shortcut ${fileId} → target ${meta.shortcutTargetId}`,
       );
-      return this.getFileMetadata(meta.shortcutTargetId);
+      return this.getFileMetadata(meta.shortcutTargetId, resourceKey);
     }
     return meta;
   }
@@ -233,11 +330,12 @@ export class GoogleDriveService implements OnModuleInit {
    */
   async downloadImageFile(
     fileId: string,
+    resourceKey?: string | null,
   ): Promise<{ buffer: Buffer; mimeType: string; fileName?: string }> {
     let resolvedId = fileId;
     let fileName: string | undefined;
     try {
-      const resolved = await this.resolveImageFileId(fileId);
+      const resolved = await this.resolveImageFileId(fileId, resourceKey);
       resolvedId = resolved.id;
       fileName = resolved.name || undefined;
     } catch {
@@ -255,7 +353,10 @@ export class GoogleDriveService implements OnModuleInit {
           acknowledgeAbuse: true,
           ...DRIVE_FILE_OPTS,
         },
-        { responseType: 'arraybuffer' },
+        {
+          responseType: 'arraybuffer',
+          ...driveResourceKeyHeader(resolvedId, resourceKey),
+        },
       );
       buffer = Buffer.isBuffer(response.data)
         ? response.data
