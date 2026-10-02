@@ -25,6 +25,8 @@ import {
   findPublicacionAutorizadaHeader,
   isPublicacionAutorizadaSi,
 } from '../../outbound/publicacion-autorizada';
+import { findSheetHeader } from '../../sheets/sheet-operation-headers';
+import { shouldAutoCreateWpListing } from '../../wordpress/listing-creation-guard';
 import {
   OUTBOUND_SANDBOX_WHITELIST_E164,
   SKIPPED_SANDBOX_WHITELIST,
@@ -58,7 +60,8 @@ type RowSyncResult =
 
 /**
  * Localizados → WordPress cuando "Publicación Autorizada?" = SI (por nombre de cabecera).
- * Sube imágenes Drive a la biblioteca WP y crea el post pending con destacada + galería.
+ * No crea un pending nuevo si hay Call ID y la conversación con el propietario no quedó registrada.
+ * Sube imágenes Drive a la biblioteca WP reutilizando adjuntos ya existentes, y crea el post pending con destacada + galería.
  * Crea el post si no hay ID_WP; si existe, actualiza salvo protección de publicados.
  * Con OUTBOUND_SANDBOX_WHITELIST_ENABLED, solo la fila de Toni (+34644408099).
  */
@@ -307,6 +310,21 @@ export class SheetsReviewedSyncService {
     return false;
   }
 
+  private readHeaderCell(
+    row: { get: (header: string) => unknown },
+    headers: string[],
+    aliases: readonly string[],
+    fuzzy?: (normalized: string) => boolean,
+  ): string {
+    const found = findSheetHeader(headers, aliases, fuzzy);
+    if (found) return String(row.get(found) ?? '').trim();
+    for (const alias of aliases) {
+      const value = String(row.get(alias) ?? '').trim();
+      if (value) return value;
+    }
+    return '';
+  }
+
   private async processReviewedRow(
     sheet: Parameters<SheetsService['updateTrackingCells']>[0],
     row: IsolatedSheetRow,
@@ -316,6 +334,27 @@ export class SheetsReviewedSyncService {
     const callData = sheetRowToCallData(row, headers);
     const cad = callData.call_analysis.custom_analysis_data;
     const existingPostId = readWpPostIdFromSheetRow(row);
+
+    if (
+      !existingPostId &&
+      !shouldAutoCreateWpListing({
+        callId: this.readHeaderCell(row, headers, ['Call ID', 'Call Id', 'call_id']),
+        propietarioContactado: this.readHeaderCell(
+          row,
+          headers,
+          ['Propietario contactado?', 'Propietario contactado'],
+          (normalized) =>
+            normalized.includes('propietario') &&
+            normalized.includes('contactad'),
+        ),
+        force: options.force === true,
+      })
+    ) {
+      this.logger.warn(
+        `Fila ${row.rowNumber}: conversación con el propietario no completada (hay Call ID y Propietario contactado? no es válido). No se crea el anuncio pending.`,
+      );
+      return { status: 'skipped' };
+    }
 
     const forzarSync = options.force === true || readForzarSyncWp(row);
     const bloquearSync = readBloquearSyncWp(row);

@@ -12,6 +12,14 @@ import {
   SHEET_COL_TRASPASO_MODALIDAD,
   SHEET_COL_URL_IMAGEN,
 } from '../sheets/sheet-row-isolation';
+import {
+  findOperacionHeader,
+  findTraspasoModalidadHeader,
+  OPERACION_HEADER_ALIASES,
+  parseOperationList,
+  parseTraspasoModalidad,
+  TRASPASO_MODALIDAD_HEADER_ALIASES,
+} from '../sheets/sheet-operation-headers';
 
 type SheetRowLike = {
   get: (header: string) => unknown;
@@ -111,15 +119,11 @@ const SHEET_TO_CAD: ReadonlyArray<{
   { cadKey: 'num_plantas', columns: ['Numero plantas'] },
   {
     cadKey: 'contrato',
-    columns: ['Operación', 'Operacion', 'Contrato'],
+    columns: OPERACION_HEADER_ALIASES,
   },
   {
     cadKey: 'modalidad_traspaso',
-    columns: [
-      'Modalidad traspaso',
-      'Modalidad de Traspaso',
-      'Modalidad de traspaso',
-    ],
+    columns: TRASPASO_MODALIDAD_HEADER_ALIASES,
   },
   {
     cadKey: 'precio_filtro_busqueda',
@@ -438,7 +442,7 @@ export function sheetRowToCad(
     else delete cad.direccion;
   }
 
-  applyOperationAndContactColumns(row, cad);
+  applyOperationAndContactColumns(row, cad, headers);
   const localImages = collectLocalImagePaths(row, headers);
   if (localImages) cad.imagenes_locales = localImages;
 
@@ -476,60 +480,61 @@ function collectLocalImagePaths(
   return ordered.join(', ');
 }
 
-const OPERATION_ORDER = ['Venta', 'Traspaso', 'Alquiler'] as const;
-
-function parseOperationList(raw: unknown): string[] {
-  const stripped = sanitizeValue(raw)
-    .replace(/venta\s+con\s+inmueble/gi, ' ')
-    .replace(/venta\s+negocio/gi, ' ');
-  const found = new Set<string>();
-  if (/traspaso/i.test(stripped)) found.add('Traspaso');
-  if (/alquiler|renta/i.test(stripped)) found.add('Alquiler');
-  if (/\bventa\b|\bcompra\b/i.test(stripped)) found.add('Venta');
-  return OPERATION_ORDER.filter((item) => found.has(item));
-}
-
-function parseTraspasoModalidad(raw: unknown): string {
-  const s = sanitizeValue(raw);
-  if (/venta\s+con\s+inmueble/i.test(s)) return 'Venta con inmueble';
-  if (/venta\s+negocio/i.test(s)) return 'Venta negocio';
-  return '';
-}
-
-function isDisponibleToken(raw: unknown): boolean {
-  return ['DISPONIBLE', 'SI', 'SÍ', 'TRUE', 'YES'].includes(
-    sanitizeValue(raw).toUpperCase(),
-  );
-}
-
 function readLetter(row: SheetRowLike, letter: string): string {
   if (typeof row.getByColumnLetter !== 'function') return '';
   return sanitizeValue(row.getByColumnLetter(letter));
 }
 
 /**
- * Columnas por letra (aunque cambie el encabezado):
- * F operación, G modalidad de traspaso, DH precio del buscador, DK etiqueta,
- * S+U / Y+Z / AC+AD anunciante, V y AA enlaces externos.
+ * Operación y modalidad de traspaso se leen por cabecera ("Operación",
+ * "Modalidad de Traspaso"). La letra F/G solo se usa si esa cabecera no está.
+ * DH precio del buscador, DK etiqueta, S+U / Y+Z / AC+AD anunciante, V y AA enlaces.
  */
 function applyOperationAndContactColumns(
   row: SheetRowLike,
   cad: RetellCad,
+  headers?: string[],
 ): void {
-  const fromLetter = parseOperationList(readLetter(row, SHEET_COL_OPERACION));
-  const fromHeader = parseOperationList(cad.contrato);
-  const ops = fromLetter.length > 0 ? fromLetter : fromHeader;
+  const operacionHeader = findOperacionHeader(headers);
+  const namedOperation = parseOperationList(
+    readSheetCell(
+      row,
+      operacionHeader ? [operacionHeader] : OPERACION_HEADER_ALIASES,
+      false,
+      headers,
+    ),
+  );
+  const letterOperation = operacionHeader
+    ? []
+    : parseOperationList(readLetter(row, SHEET_COL_OPERACION));
+  const ops =
+    namedOperation.length > 0
+      ? namedOperation
+      : letterOperation.length > 0
+        ? letterOperation
+        : parseOperationList(cad.contrato);
   if (ops.length > 0) {
     cad.contrato = ops.join(', ');
   }
   if (parseOperationList(cad.disponibilidad).length > 0) {
     delete cad.disponibilidad;
-  } else if (isDisponibleToken(readLetter(row, SHEET_COL_OPERACION))) {
-    cad.disponibilidad = readLetter(row, SHEET_COL_OPERACION);
   }
 
+  const modalidadHeader = findTraspasoModalidadHeader(headers);
   const modalidad =
-    parseTraspasoModalidad(readLetter(row, SHEET_COL_TRASPASO_MODALIDAD)) ||
+    parseTraspasoModalidad(
+      readSheetCell(
+        row,
+        modalidadHeader
+          ? [modalidadHeader]
+          : TRASPASO_MODALIDAD_HEADER_ALIASES,
+        false,
+        headers,
+      ),
+    ) ||
+    (modalidadHeader
+      ? ''
+      : parseTraspasoModalidad(readLetter(row, SHEET_COL_TRASPASO_MODALIDAD))) ||
     parseTraspasoModalidad(cad.modalidad_traspaso);
   if (modalidad) cad.modalidad_traspaso = modalidad;
   else delete cad.modalidad_traspaso;

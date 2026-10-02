@@ -298,7 +298,7 @@ describe('buildCadPropertyUpdates', () => {
     expect(updates['Nombre via']).toBe('de la Fuente');
     expect(updates['Numero Via']).toBe('3');
     expect(updates['Negociable']).toBe('SI');
-    expect(updates['Contrato']).toBe('Venta');
+    expect(updates['Operación']).toBe('Venta');
     expect(updates['Certificación energética']).toBe('En tramite');
     expect(updates['Descripción por el propietario']).toContain('de la Fuente');
     expect(updates).not.toHaveProperty('Precio ALQUILER/mes');

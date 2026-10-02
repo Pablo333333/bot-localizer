@@ -1,3 +1,9 @@
+import {
+  findOperacionHeader,
+  findTraspasoModalidadHeader,
+  OPERACION_HEADER_ALIASES,
+  TRASPASO_MODALIDAD_HEADER_ALIASES,
+} from '../sheets/sheet-operation-headers';
 import { toSpokenEuros } from './spoken-euros';
 
 /** Cabeceras de Localizados usadas como variables Retell. */
@@ -6,7 +12,10 @@ export const COL_DISPONIBILIDAD = 'Disponibilidad del local';
 export const COL_DISPONIBILIDAD_ALT = 'Disponibilidad';
 export const COL_MUNICIPIO = 'Municipio';
 
-type SheetRowLike = { get: (header: string) => unknown };
+type SheetRowLike = {
+  get: (header: string) => unknown;
+  toObject?: () => Record<string, unknown>;
+};
 
 /** Importes que la voz debe decir como cantidad ("cien mil euros"). */
 const SPOKEN_MONEY_KEYS = new Set<RetellOutboundVariableKey>([
@@ -86,8 +95,12 @@ export const RETELL_VARIABLE_SHEET_COLUMNS: Record<
   readonly string[]
 > = {
   tipo_inmueble: [COL_TIPO_INMUEBLE],
-  disponibilidad: [COL_DISPONIBILIDAD, COL_DISPONIBILIDAD_ALT],
-  traspaso: ['Contrato'],
+  disponibilidad: [
+    ...OPERACION_HEADER_ALIASES,
+    COL_DISPONIBILIDAD,
+    COL_DISPONIBILIDAD_ALT,
+  ],
+  traspaso: TRASPASO_MODALIDAD_HEADER_ALIASES,
   pueblo_barrio: ['Pueblo/Barrio/distrito'],
   municipio: [COL_MUNICIPIO],
   provincia: ['Provincia'],
@@ -138,7 +151,7 @@ export const RETELL_VARIABLE_SHEET_COLUMNS: Record<
     'Publicación Autorizada?',
   ],
   ilocalizable: ['Ilocalizable'],
-  contrato: ['Contrato'],
+  contrato: OPERACION_HEADER_ALIASES,
   target_contact: [],
   telefono_contacto_1: ['Telefono1'],
   nombre_contacto_1: ['Nombre contacto1'],
@@ -168,6 +181,25 @@ function readSheetCell(row: SheetRowLike, columns: readonly string[]): string {
     if (value !== '') return value;
   }
   return '';
+}
+
+function rowHeaders(row: SheetRowLike): string[] | undefined {
+  if (typeof row.toObject !== 'function') return undefined;
+  return Object.keys(row.toObject() || {});
+}
+
+/** Cabecera real de la hoja y, si no aparece, la primera alias con valor. */
+function readDynamicColumn(
+  row: SheetRowLike,
+  aliases: readonly string[],
+  findHeader: (headers?: readonly string[]) => string | null,
+): string {
+  const resolved = findHeader(rowHeaders(row));
+  if (resolved) {
+    const value = readSheetCell(row, [resolved]);
+    if (value) return value;
+  }
+  return readSheetCell(row, aliases);
 }
 
 function normalizePhoneKey(phone: string): string {
@@ -228,6 +260,24 @@ export function buildRetellDynamicVariables(
       value = resolveInterlocutorName(row, contactIndex);
     } else if (key === 'target_contact') {
       value = contactIndex ? `contacto_${contactIndex}` : '';
+    } else if (key === 'disponibilidad' || key === 'contrato') {
+      value = readDynamicColumn(
+        row,
+        RETELL_VARIABLE_SHEET_COLUMNS[key],
+        findOperacionHeader,
+      );
+      if (!value && key === 'disponibilidad') {
+        value = readSheetCell(row, [
+          COL_DISPONIBILIDAD,
+          COL_DISPONIBILIDAD_ALT,
+        ]);
+      }
+    } else if (key === 'traspaso') {
+      value = readDynamicColumn(
+        row,
+        RETELL_VARIABLE_SHEET_COLUMNS[key],
+        findTraspasoModalidadHeader,
+      );
     } else {
       value = readSheetCell(row, RETELL_VARIABLE_SHEET_COLUMNS[key]);
     }

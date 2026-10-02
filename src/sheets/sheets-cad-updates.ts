@@ -3,6 +3,13 @@
  * Nunca se pisa un valor ya guardado con vacío, cero o texto genérico de relleno.
  */
 
+import {
+  findOperacionHeader,
+  findTraspasoModalidadHeader,
+  formatOperationCell,
+  parseTraspasoModalidad,
+} from './sheet-operation-headers';
+
 export type CadLike = Record<string, unknown> | undefined;
 
 const EMPTY_TOKENS = new Set([
@@ -258,6 +265,7 @@ function pickIfChanged(
 export function buildCadPropertyUpdates(
   cad: CadLike,
   getExisting: (header: string) => unknown,
+  headers?: readonly string[],
 ): Record<string, string> {
   const out: Record<string, string> = {};
   if (!cad) return out;
@@ -266,10 +274,19 @@ export function buildCadPropertyUpdates(
     sanitizeCadValue(v, cleanSymbols);
 
   pickIfChanged(out, 'Tipo de inmueble', val(cad.tipo_inmueble), getExisting);
+  const operacionHeader = findOperacionHeader(headers) || 'Operación';
   pickIfChanged(
     out,
-    'Disponibilidad del local',
-    val(cad.disponibilidad),
+    operacionHeader,
+    formatOperationCell(cad.contrato || cad.operacion),
+    getExisting,
+  );
+  const modalidadHeader =
+    findTraspasoModalidadHeader(headers) || 'Modalidad de Traspaso';
+  pickIfChanged(
+    out,
+    modalidadHeader,
+    parseTraspasoModalidad(cad.modalidad_traspaso || cad.traspaso),
     getExisting,
   );
   pickIfChanged(
@@ -384,7 +401,6 @@ export function buildCadPropertyUpdates(
   );
   pickIfChanged(out, 'Iluminacion', val(cad.iluminacion), getExisting);
   pickIfChanged(out, 'Suelos', val(cad.suelos), getExisting);
-  pickIfChanged(out, 'Contrato', val(cad.contrato), getExisting);
   pickIfChanged(out, 'Ilocalizable', val(cad.Ilocalizable), getExisting);
   pickIfChanged(
     out,

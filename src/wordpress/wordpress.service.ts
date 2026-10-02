@@ -13,6 +13,15 @@ import {
   toWordpressRequestBody,
 } from './property-mapper';
 import { normalizeImageMimeType } from '../google/drive-file.util';
+import {
+  candidateFileName,
+  MAX_MEDIA_HASH_LOOKUPS,
+  mediaNameKey,
+  pickReusableMediaId,
+  sanitizeWpMediaFileName,
+  sha256Buffer,
+  type WpMediaCandidate,
+} from './property-media-dedup';
 
 @Injectable()
 export class WordpressService {
@@ -305,6 +314,18 @@ export class WordpressService {
     try {
       const contentType = normalizeImageMimeType(mimeType);
       const safeName = this.sanitizeMediaFileName(fileName, contentType);
+      const existingId = await this.findReusableMediaId(
+        buffer,
+        safeName,
+        options.postId,
+      );
+      if (existingId != null) {
+        this.logger.log(
+          `Imagen ya en la biblioteca WP. Se reutiliza media_id=${existingId} (${safeName})`,
+        );
+        return existingId;
+      }
+
       this.logger.log(
         `Subiendo imagen a WordPress: ${safeName}${options.postId ? ` (post=${options.postId})` : ''} bytes=${buffer.length} mime=${contentType}`,
       );
@@ -336,24 +357,141 @@ export class WordpressService {
 
   /** WP rechaza Content-Disposition con acentos/espacios raros — ASCII seguro. */
   private sanitizeMediaFileName(fileName: string, mimeType: string): string {
-    const base = String(fileName || 'image')
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-zA-Z0-9._-]+/g, '_')
-      .replace(/_+/g, '_')
-      .replace(/^\.+/, '')
-      .slice(0, 120);
-    const hasExt = /\.(jpe?g|png|gif|webp|bmp)$/i.test(base);
-    if (hasExt) return base || 'image.jpg';
-    const ext =
-      mimeType?.includes('png')
-        ? 'png'
-        : mimeType?.includes('webp')
-          ? 'webp'
-          : mimeType?.includes('gif')
-            ? 'gif'
-            : 'jpg';
-    return `${base || 'image'}.${ext}`;
+    return sanitizeWpMediaFileName(fileName, mimeType);
+  }
+
+  /**
+   * Busca en la biblioteca (y en los adjuntos del post) un archivo con el mismo
+   * nombre o el mismo hash. Si existe, devuelve su id para no duplicar la subida.
+   */
+  async findReusableMediaId(
+    buffer: Buffer,
+    fileName: string,
+    postId?: number,
+  ): Promise<number | null> {
+    const safeName = this.sanitizeMediaFileName(
+      fileName,
+      'image/jpeg',
+    );
+    const contentHash = sha256Buffer(buffer);
+    let candidates: WpMediaCandidate[] = [];
+    try {
+      candidates = await this.collectMediaCandidates(safeName, postId);
+    } catch (error: unknown) {
+      this.warnWpApiFailure(`buscar imagen ${safeName}`, error);
+      return null;
+    }
+    if (candidates.length === 0) return null;
+
+    const hashes = new Map<number, string>();
+    const wantName = mediaNameKey(safeName);
+    let lookups = 0;
+    for (const candidate of candidates) {
+      if (lookups >= MAX_MEDIA_HASH_LOOKUPS) break;
+      const sameName = mediaNameKey(candidateFileName(candidate)) === wantName;
+      const sameSize =
+        candidate.filesize != null && candidate.filesize === buffer.length;
+      const attached = postId != null && candidate.parent === postId;
+      if (!sameName && !sameSize && !attached) continue;
+      if (!candidate.sourceUrl) continue;
+      lookups += 1;
+      const remoteHash = await this.hashRemoteMedia(candidate.sourceUrl);
+      if (remoteHash) hashes.set(candidate.id, remoteHash);
+    }
+
+    return pickReusableMediaId(candidates, {
+      fileName: safeName,
+      byteLength: buffer.length,
+      contentHash,
+      hashes,
+      postId,
+    });
+  }
+
+  private async collectMediaCandidates(
+    fileName: string,
+    postId?: number,
+  ): Promise<WpMediaCandidate[]> {
+    const byId = new Map<number, WpMediaCandidate>();
+    const remember = (items: unknown) => {
+      if (!Array.isArray(items)) return;
+      for (const raw of items) {
+        const mapped = this.mapMediaCandidate(raw);
+        if (mapped) byId.set(mapped.id, mapped);
+      }
+    };
+
+    if (postId) {
+      remember(await this.listMedia({ parent: postId, per_page: 100 }));
+    }
+
+    const stem = mediaNameKey(fileName).replace(/\.[a-z0-9]+$/i, '');
+    if (stem) {
+      remember(
+        await this.listMedia({
+          search: stem.slice(0, 40),
+          media_type: 'image',
+          per_page: 50,
+        }),
+      );
+    }
+
+    return [...byId.values()];
+  }
+
+  private async listMedia(
+    params: Record<string, string | number>,
+  ): Promise<unknown[]> {
+    const response = await lastValueFrom(
+      this.httpService.get(`${this.apiUrl}/wp/v2/media`, {
+        params,
+        headers: this.getAuthHeaders(),
+      }),
+    );
+    return Array.isArray(response.data) ? response.data : [];
+  }
+
+  private mapMediaCandidate(raw: unknown): WpMediaCandidate | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const item = raw as {
+      id?: number;
+      source_url?: string;
+      post?: number;
+      media_details?: { file?: string; filesize?: number };
+    };
+    const id = Number(item.id);
+    if (!Number.isFinite(id)) return null;
+    const filesize = Number(item.media_details?.filesize);
+    return {
+      id,
+      sourceUrl: item.source_url ? String(item.source_url) : undefined,
+      file: item.media_details?.file
+        ? String(item.media_details.file)
+        : undefined,
+      filesize: Number.isFinite(filesize) ? filesize : undefined,
+      parent: item.post != null ? Number(item.post) : undefined,
+    };
+  }
+
+  private async hashRemoteMedia(sourceUrl: string): Promise<string | null> {
+    try {
+      const response = await lastValueFrom(
+        this.httpService.get(sourceUrl, {
+          responseType: 'arraybuffer',
+          headers: this.getAuthHeaders(),
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          timeout: 20000,
+        }),
+      );
+      return sha256Buffer(Buffer.from(response.data));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `[WordPress] No se pudo hashear ${sourceUrl}: ${message}`,
+      );
+      return null;
+    }
   }
 
   /** Asocia un adjunto existente como hijo del estate_property (galería WPResidence). */

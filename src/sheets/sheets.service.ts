@@ -28,6 +28,13 @@ import {
   type IsolatedSheetRow,
   type SheetGridRow,
 } from './sheet-row-isolation';
+import {
+  findOperacionHeader,
+  findTraspasoModalidadHeader,
+  formatOperationCell,
+  parseTraspasoModalidad,
+} from './sheet-operation-headers';
+import { isOwnerConversationComplete } from '../nurturing/followup/call-outcome.classifier';
 
 @Injectable()
 export class SheetsService implements OnModuleInit {
@@ -233,7 +240,11 @@ export class SheetsService implements OnModuleInit {
 
     const { sheet, row } = located;
     const sheetCad = sheetRowToCad(row, sheet.headerValues || []);
-    const updates = buildCadPropertyUpdates(cad, (header) => row.get(header));
+    const updates = buildCadPropertyUpdates(
+      cad,
+      (header) => row.get(header),
+      sheet.headerValues || [],
+    );
 
     if (Object.keys(updates).length > 0) {
       await this.updateSpecificCells(sheet, row.rowNumber, updates, row);
@@ -269,12 +280,16 @@ export class SheetsService implements OnModuleInit {
       'Teléfono contacto1':        data.from,
       'Nombre contacto1':          data.entities.nombre_usuario || '',
       'Tipo de inmueble':          data.entities.tipo_negocio || '',
-      'Disponibilidad':            data.entities.operacion || '',
       'Municipio':                 data.entities.ubicacion || '',
       'Precio ALQUILER/mes':       data.entities.presupuesto_max?.toString() || '',
       'Estado':                    data.state,
       'Información adicional':     data.summary || '',
     };
+    this.assignOperationColumns(
+      mapping,
+      sheet.headerValues || [],
+      data.entities.operacion,
+    );
 
     const rowValue: Record<string, string> = {};
     for (const [column, value] of Object.entries(mapping)) {
@@ -348,7 +363,6 @@ export class SheetsService implements OnModuleInit {
       'Propietario contactado?':    data.call_analysis?.call_successful ? new Date().toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'NO',
       'Publicado Popalicer?':      forcePublicadoPopalicer(publicadoWP),
       'Tipo de inmueble':          val(cad?.tipo_inmueble),
-      'Disponibilidad':            val(cad?.disponibilidad),
       'Información adicional':     val(data.call_analysis?.call_summary || cad?.informacion_adicional),
       'Superficie Total':          val(cad?.superficie_total, '', true),
       'Superficie util':           val(cad?.superficie_util, '', true),
@@ -388,6 +402,12 @@ export class SheetsService implements OnModuleInit {
       'Notas de Error':            !data.call_analysis?.call_successful ? val(data.call_analysis?.call_summary) : '',
       'Publicacion Autorizada?':   forceYesNo(cad?.publicacion_autorizada),
     };
+    this.assignOperationColumns(
+      mapping,
+      sheet.headerValues || [],
+      cad?.contrato || cad?.operacion,
+      cad?.modalidad_traspaso,
+    );
 
     // Solo incluir columnas que existen realmente en la hoja
     const rowValue: Record<string, string> = {};
@@ -571,7 +591,9 @@ export class SheetsService implements OnModuleInit {
       'Fecha actualizacion': formattedDateTime,
       'Fecha Llamada': formattedDateTime,
       'Fecha llamada': formattedDateTime,
-      'Propietario contactado?': data.call_analysis?.call_successful
+      'Propietario contactado?': isOwnerConversationComplete(
+        data as Record<string, any>,
+      )
         ? contactDate
         : undefined,
       'Publicado Popalicer?': publicado,
@@ -588,6 +610,7 @@ export class SheetsService implements OnModuleInit {
     const propertyUpdates = buildCadPropertyUpdates(
       data.call_analysis?.custom_analysis_data,
       (header) => row.get(header),
+      sheet.headerValues || [],
     );
 
     this.logger.log(
@@ -739,7 +762,6 @@ export class SheetsService implements OnModuleInit {
     const mapping: Record<string, string> = {
       'Llamado por':               'Localisto (TEST)',
       'Tipo de inmueble':          val(cad?.tipo_inmueble),
-      'Disponibilidad del local':  val(cad?.disponibilidad),
       'Información adicional':     val(data.call_analysis?.call_summary || cad?.informacion_adicional),
       'Superficie Total':          val(cad?.superficie_total, '', true),
       'Superficie util':           val(cad?.superficie_util, '', true),
@@ -775,7 +797,6 @@ export class SheetsService implements OnModuleInit {
       'Propietario contactado?':    data.call_analysis?.call_successful ? new Date().toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'NO',
       'Publicado Popalicer?':      forcePublicadoPopalicer(publicadoWP),
       'Publicacion Autorizada?':   forceYesNo(cad?.publicacion_autorizada),
-      'Contrato':                  val(cad?.contrato),
       'Ilocalizable':              val(cad?.Ilocalizable),
       'Email propietario-gestor':  val(cad?.email_propietario_gestor || cad?.email),
       'Email Avisos':              val(cad?.email_avisos),
@@ -799,6 +820,13 @@ export class SheetsService implements OnModuleInit {
       mapping['Contacto3 por'] = val(cad?.contacto_3_por);
     }
 
+    this.assignOperationColumns(
+      mapping,
+      sheet.headerValues || [],
+      cad?.contrato || cad?.operacion,
+      cad?.modalidad_traspaso,
+    );
+
     const rowValue: Record<string, string> = {};
     for (const [column, value] of Object.entries(mapping)) {
       if (knownHeaders.has(column)) {
@@ -808,6 +836,24 @@ export class SheetsService implements OnModuleInit {
 
     await sheet.addRow(rowValue as any);
     this.logger.log(`Fila de TEST agregada correctamente en Localizados para call_id: ${data.call_id}`);
+  }
+
+  /** Escribe Operación y modalidad de traspaso en la cabecera real de la hoja. */
+  private assignOperationColumns(
+    mapping: Record<string, string>,
+    headerValues: readonly string[],
+    contrato: unknown,
+    modalidad?: unknown,
+  ): void {
+    const operacionHeader = findOperacionHeader(headerValues);
+    const operacion = formatOperationCell(contrato);
+    if (operacionHeader && operacion) mapping[operacionHeader] = operacion;
+
+    const modalidadHeader = findTraspasoModalidadHeader(headerValues);
+    const modalidadValue = parseTraspasoModalidad(modalidad);
+    if (modalidadHeader && modalidadValue) {
+      mapping[modalidadHeader] = modalidadValue;
+    }
   }
 
   /**
@@ -848,6 +894,8 @@ interface RetellPayload {
       target_contact?: string;
       publicacion_autorizada?: string;
       contrato?: string;
+      operacion?: string;
+      modalidad_traspaso?: string;
       Ilocalizable?: string;
       email_avisos?: string;
       nombre_contacto_1?: string;

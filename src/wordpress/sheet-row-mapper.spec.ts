@@ -148,6 +148,25 @@ describe('sheet-row-mapper', () => {
     expect(cad.direccion).toContain('Carlota Alessandri');
   });
 
+  it('lee Operación y modalidad por cabecera aunque F y G digan otra cosa', () => {
+    const headers = ['Notas', 'Operación', 'Modalidad Traspaso', 'Contrato'];
+    const cad = sheetRowToCad(
+      {
+        get: (header: string) => {
+          if (header === 'Operación') return 'Alquiler';
+          if (header === 'Modalidad Traspaso') return 'Venta con inmueble';
+          if (header === 'Contrato') return 'Venta';
+          return '';
+        },
+        getByColumnLetter: () => 'Traspaso',
+      },
+      headers,
+    );
+    expect(cad.contrato).toBe('Alquiler');
+    expect(cad.modalidad_traspaso).toBe('Venta con inmueble');
+    expect(cad.disponibilidad).toBeUndefined();
+  });
+
   it('lee operación, traspaso, precio filtro, etiqueta, anunciantes y enlaces', () => {
     const cells: Record<string, string> = {
       F: 'Traspaso',

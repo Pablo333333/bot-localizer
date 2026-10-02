@@ -4,6 +4,7 @@ import { WordpressService } from '../wordpress/wordpress.service';
 import { ConfigService } from '@nestjs/config';
 import { preferCallCad } from '../wordpress/call-cad-priority';
 import { isCadPublishable } from '../wordpress/property-mapper';
+import { isOwnerConversationComplete } from '../nurturing/followup/call-outcome.classifier';
 import { CommercialDescriptionService } from '../wordpress/commercial-description.service';
 import { PropertyMediaService } from '../wordpress/property-media.service';
 import {
@@ -199,14 +200,10 @@ export class SheetsController {
       );
     }
 
-    let isSuccessful = callData.call_analysis?.call_successful === true;
-    if (
-      callData.call_analysis?.call_successful === undefined ||
-      callData.call_analysis?.call_successful === null
-    ) {
-      isSuccessful = callSummary.length > 50;
+    const conversationComplete = isOwnerConversationComplete(callData);
+    if (!conversationComplete) {
       this.logger.log(
-        `call_successful no detectado. Validando por resumen (>50 chars): ${isSuccessful} (${callSummary.length} chars)`,
+        `Call ${callId}: conversación con el propietario no completada (call_successful=${String(callData.call_analysis?.call_successful)} reason=${String(callData.disconnection_reason || callData.disconnect_reason || '')}). No se crea el anuncio en WordPress.`,
       );
     }
 
@@ -244,7 +241,7 @@ export class SheetsController {
 
       const isAvailable = isCadPublishable(mergedCad);
       this.logger.log(
-        `Procesando webhook para Agent ID: ${agentId}. Éxito: ${isSuccessful}, Disponible: ${isAvailable} (Valor: ${mergedCad.disponibilidad || cad?.disponibilidad})`,
+        `Procesando webhook para Agent ID: ${agentId}. Conversación completa: ${conversationComplete}, Disponible: ${isAvailable} (Valor: ${mergedCad.disponibilidad || cad?.disponibilidad})`,
       );
 
       const commercialContent = await this.commercialDescription.resolve(
@@ -271,13 +268,13 @@ export class SheetsController {
       const publicacionAutorizadaSi =
         normalizeSiToken(publicacionAutorizadaRaw) === 'SI';
 
-      if (isSuccessful && isAvailable && !publicacionAutorizadaSi) {
+      if (conversationComplete && isAvailable && !publicacionAutorizadaSi) {
         this.logger.log(
           `[Webhook] Call ${callId}: Publicación Autorizada? no es SI ("${String(publicacionAutorizadaRaw ?? '').trim() || 'vacío'}") — no se crea/publica en WordPress.`,
         );
       }
 
-      if (isSuccessful && isAvailable && publicacionAutorizadaSi) {
+      if (conversationComplete && isAvailable && publicacionAutorizadaSi) {
         try {
           this.logger.log(
             'Iniciando flujo WordPress (Publicación Autorizada?=SI, Sheet ya actualizado)...',
@@ -404,7 +401,7 @@ export class SheetsController {
         }
       } else {
         this.logger.log(
-          `No se cumple el criterio para WordPress (Éxito: ${isSuccessful}, Disponible: ${isAvailable}). Sheet ya tiene el dato de la llamada.`,
+          `No se cumple el criterio para WordPress (Conversación completa: ${conversationComplete}, Disponible: ${isAvailable}). Sheet ya tiene el dato de la llamada.`,
         );
       }
 

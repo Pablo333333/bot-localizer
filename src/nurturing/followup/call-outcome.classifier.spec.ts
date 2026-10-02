@@ -1,4 +1,4 @@
-import { CallOutcomeClassifier } from './call-outcome.classifier';
+import { CallOutcomeClassifier, isOwnerConversationComplete } from './call-outcome.classifier';
 import { CallOutcome } from '../enums';
 
 describe('CallOutcomeClassifier', () => {
@@ -108,5 +108,33 @@ describe('CallOutcomeClassifier', () => {
         call_analysis: { call_summary: 'Dice que no le interesa' },
       }),
     ).toBe(CallOutcome.EXPLICIT_REJECTION);
+  });
+
+  it('no da por completada una conversación por un resumen largo o un cuelgue', () => {
+    const longSummary = 'x'.repeat(80);
+    expect(
+      isOwnerConversationComplete({
+        call_analysis: { call_summary: longSummary },
+      }),
+    ).toBe(false);
+    expect(
+      isOwnerConversationComplete({
+        disconnection_reason: 'user_hangup',
+        duration_ms: 40_000,
+        call_analysis: { call_successful: true, call_summary: longSummary },
+      }),
+    ).toBe(false);
+    expect(
+      isOwnerConversationComplete({
+        disconnection_reason: 'agent_hangup',
+        duration_ms: 20_000,
+        call_analysis: { call_successful: true },
+      }),
+    ).toBe(true);
+    expect(
+      isOwnerConversationComplete({
+        call_analysis: { call_successful: true, call_summary: 'Datos cerrados' },
+      }),
+    ).toBe(true);
   });
 });

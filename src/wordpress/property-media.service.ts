@@ -14,6 +14,7 @@ import {
   extractDriveResourceKey,
   normalizeImageMimeType,
 } from '../google/drive-file.util';
+import { sha256Buffer } from './property-media-dedup';
 
 export type PropertyMediaResult = {
   featuredMediaId?: number;
@@ -85,6 +86,7 @@ export class PropertyMediaService {
     );
 
     const galleryMediaIds: number[] = [];
+    const reusedInBatch = new Map<string, number>();
     for (const file of driveFiles.slice(0, MAX_PROPERTY_IMAGES)) {
       try {
         const downloaded = await this.googleDrive.downloadImageFile(
@@ -92,16 +94,25 @@ export class PropertyMediaService {
           file.resourceKey,
         );
         const mimeType = downloaded.mimeType || normalizeImageMimeType(file.mimeType);
-        const mediaId = await this.wordpress.uploadMedia(
-          downloaded.buffer,
-          downloaded.fileName || file.name || `drive_${file.id}.jpg`,
-          mimeType,
-          { postId: options.postId },
-        );
+        const fileName = downloaded.fileName || file.name || `drive_${file.id}.jpg`;
+        const contentHash = sha256Buffer(downloaded.buffer);
+        const already = reusedInBatch.get(contentHash);
+        const mediaId =
+          already ??
+          (await this.wordpress.uploadMedia(downloaded.buffer, fileName, mimeType, {
+            postId: options.postId,
+          }));
         if (mediaId == null) continue;
+        reusedInBatch.set(contentHash, mediaId);
+        if (galleryMediaIds.includes(mediaId)) {
+          this.logger.log(
+            `[PropertyMedia] Reutilizado media_id=${mediaId} drive=${file.id} name=${fileName} (sin nueva subida)`,
+          );
+          continue;
+        }
         galleryMediaIds.push(mediaId);
         this.logger.log(
-          `[PropertyMedia] OK media_id=${mediaId} drive=${file.id} name=${file.name} mime=${mimeType} bytes=${downloaded.buffer.length}`,
+          `[PropertyMedia] OK media_id=${mediaId} drive=${file.id} name=${file.name} mime=${mimeType} bytes=${downloaded.buffer.length}${already ? ' reutilizado' : ''}`,
         );
       } catch (err: any) {
         this.logger.warn(

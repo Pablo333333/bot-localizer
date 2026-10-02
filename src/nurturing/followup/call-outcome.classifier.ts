@@ -314,3 +314,16 @@ export class CallOutcomeClassifier {
     );
   }
 }
+
+/**
+ * La ficha solo puede crearse en WordPress si la llamada terminó bien.
+ * Un resumen largo, un cuelgue del propietario o call_successful ausente no cuentan.
+ */
+export function isOwnerConversationComplete(
+  callData: Record<string, any>,
+): boolean {
+  return (
+    new CallOutcomeClassifier().classify(callData) ===
+    CallOutcome.ANSWERED_SUCCESS
+  );
+}

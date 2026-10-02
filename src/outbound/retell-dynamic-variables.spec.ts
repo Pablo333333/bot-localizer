@@ -94,4 +94,19 @@ describe('buildRetellDynamicVariables', () => {
     );
     expect(variables['publicacion_autorizada?']).toBe('SI');
   });
+
+  it('lee Operación y la modalidad de traspaso por cabecera', () => {
+    const values: Record<string, string> = {
+      OPERACION: 'Traspaso',
+      'Modalidad Traspaso': 'Venta negocio',
+      Contrato: 'Alquiler',
+    };
+    const { variables } = buildRetellDynamicVariables({
+      get: (header: string) => values[header],
+      toObject: () => values,
+    });
+    expect(variables.disponibilidad).toBe('Traspaso');
+    expect(variables.contrato).toBe('Traspaso');
+    expect(variables.traspaso).toBe('Venta negocio');
+  });
 });
