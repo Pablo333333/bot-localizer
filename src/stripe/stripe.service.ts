@@ -12,6 +12,7 @@ import {
   CreateCheckoutSessionDto,
 } from './dto/create-checkout-session.dto';
 import { StartMembershipPaymentDto } from './dto/start-membership-payment.dto';
+import { subscriptionIdFromInvoice } from './stripe-subscription-ref';
 
 const DEFAULT_WP_BASE = 'https://www.localicer.com';
 
@@ -430,24 +431,11 @@ export class StripeService {
     invoice: Stripe.Invoice,
   ): Promise<void> {
     const billingReason = invoice.billing_reason;
-    const subscriptionRef =
-      invoice.parent?.subscription_details?.subscription;
-    const subscriptionId =
-      typeof subscriptionRef === 'string'
-        ? subscriptionRef
-        : subscriptionRef?.id;
+    const subscriptionId = subscriptionIdFromInvoice(invoice);
 
     this.logger.log(
       `[invoice.payment_succeeded] invoice=${invoice.id} | reason=${billingReason ?? 'n/a'} | subscription=${subscriptionId ?? 'n/a'}`,
     );
-
-    // El alta inicial ya se gestiona en checkout.session.completed
-    if (billingReason === 'subscription_create') {
-      this.logger.debug(
-        `Omitiendo invoice ${invoice.id}: alta cubierta por checkout.session.completed`,
-      );
-      return;
-    }
 
     let userId: string | undefined;
     let priceId: string | undefined;
@@ -461,15 +449,23 @@ export class StripeService {
         subscription.items.data[0]?.price?.id;
     }
 
-    const email = invoice.customer_email || undefined;
+    let email = invoice.customer_email || undefined;
     const customerId =
       typeof invoice.customer === 'string'
         ? invoice.customer
         : invoice.customer?.id;
 
+    if ((!userId || !email) && customerId) {
+      const customer = await this.stripe.customers.retrieve(customerId);
+      if (!customer.deleted) {
+        userId = userId || customer.metadata?.userId;
+        email = email || customer.email || undefined;
+      }
+    }
+
     if (!userId && !email) {
       this.logger.warn(
-        `Invoice ${invoice.id} sin userId ni email; no se sincroniza renovación con WP`,
+        `Invoice ${invoice.id} sin userId ni email; no se sincroniza con WP`,
       );
       return;
     }
@@ -485,7 +481,7 @@ export class StripeService {
       event: 'invoice.payment_succeeded',
       meta: {
         plan_status: 'active',
-        renewal: true,
+        renewal: billingReason !== 'subscription_create',
       },
     });
   }

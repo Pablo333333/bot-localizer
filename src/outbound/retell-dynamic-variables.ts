@@ -95,11 +95,7 @@ export const RETELL_VARIABLE_SHEET_COLUMNS: Record<
   readonly string[]
 > = {
   tipo_inmueble: [COL_TIPO_INMUEBLE],
-  disponibilidad: [
-    ...OPERACION_HEADER_ALIASES,
-    COL_DISPONIBILIDAD,
-    COL_DISPONIBILIDAD_ALT,
-  ],
+  disponibilidad: [...OPERACION_HEADER_ALIASES, COL_DISPONIBILIDAD],
   traspaso: TRASPASO_MODALIDAD_HEADER_ALIASES,
   pueblo_barrio: ['Pueblo/Barrio/distrito'],
   municipio: [COL_MUNICIPIO],
@@ -267,10 +263,9 @@ export function buildRetellDynamicVariables(
         findOperacionHeader,
       );
       if (!value && key === 'disponibilidad') {
-        value = readSheetCell(row, [
-          COL_DISPONIBILIDAD,
-          COL_DISPONIBILIDAD_ALT,
-        ]);
+        // "Disponibilidad del local" describe el anuncio. La columna H (SI/NO)
+        // no se mezcla aquí: es la confirmación de la llamada, no la operación.
+        value = readSheetCell(row, [COL_DISPONIBILIDAD]);
       }
     } else if (key === 'traspaso') {
       value = readDynamicColumn(

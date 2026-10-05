@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { Prisma } from '@prisma/client';
 import {
   EnrollmentStatus,
@@ -92,6 +93,7 @@ export class EnrollmentsService {
     }
 
     const enrolledAt = new Date();
+    let reused = false;
     const enrollment = await this.prisma.$transaction(async (tx) => {
       await lockPhase3Key(tx, `fase3-enroll:${leadId}`);
 
@@ -112,9 +114,8 @@ export class EnrollmentsService {
         },
       });
       if (existingActive) {
-        throw new BadRequestException(
-          `Lead already has an active enrollment on sequence ${sequence.id}`,
-        );
+        reused = true;
+        return existingActive;
       }
 
       return tx.sequenceEnrollment.create({
@@ -132,12 +133,18 @@ export class EnrollmentsService {
       enrollment.id,
       leadId,
       sequence.steps,
-      enrolledAt,
+      reused ? enrollment.enrolledAt : enrolledAt,
     );
 
-    this.logger.log(
-      `[FASE3][BULLMQ] enrolled lead=${leadId} sequence=${sequence.id} enrollment=${enrollment.id} pasosEncolados=${stepsScheduled}`,
-    );
+    if (reused) {
+      this.logger.warn(
+        `[FASE3][BULLMQ] enrollment activo reutilizado lead=${leadId} enrollment=${enrollment.id} pasosEncolados=${stepsScheduled} — no se pierde la secuencia de la llamada ya hecha`,
+      );
+    } else {
+      this.logger.log(
+        `[FASE3][BULLMQ] enrolled lead=${leadId} sequence=${sequence.id} enrollment=${enrollment.id} pasosEncolados=${stepsScheduled}`,
+      );
+    }
 
     return {
       enrollmentId: enrollment.id,
@@ -268,6 +275,56 @@ export class EnrollmentsService {
     }
 
     return stopped;
+  }
+
+  /**
+   * Llamadas ya hechas cuyo enroll no llegó a encolarse (saldo, Redis caído).
+   * Al volver el servicio, crea la secuencia sin duplicar un enrollment activo.
+   */
+  @Cron(CronExpression.EVERY_10_MINUTES)
+  async repairPendingEnrollments(): Promise<number> {
+    if (!isNurturingPhase3Enabled(this.config.get('NURTURING_PHASE3_ENABLED'))) {
+      return 0;
+    }
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const leads = await this.prisma.lead.findMany({
+      where: {
+        status: { in: [LeadStatus.pendiente, LeadStatus.nuevo] },
+        updatedAt: { gte: since },
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 50,
+    });
+    let repaired = 0;
+    for (const lead of leads) {
+      const meta = (lead.metadata as Record<string, unknown> | null) || {};
+      if (meta.last_enroll_attempted !== true || meta.last_enrolled === true) {
+        continue;
+      }
+      try {
+        await this.enrollLead(lead.id);
+        await this.prisma.lead.update({
+          where: { id: lead.id },
+          data: {
+            metadata: {
+              ...meta,
+              last_enrolled: true,
+              last_enroll_attempted: true,
+            } as Prisma.InputJsonValue,
+          },
+        });
+        repaired += 1;
+        this.logger.log(
+          `[FASE3][BULLMQ] secuencia recuperada para llamada ya hecha lead=${lead.id}`,
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `[FASE3][BULLMQ] no se pudo recuperar el enroll lead=${lead.id}: ${message}`,
+        );
+      }
+    }
+    return repaired;
   }
 
   /** Encola la llamada 3 cuando cierra la llamada 2, si aún no está en BullMQ. */

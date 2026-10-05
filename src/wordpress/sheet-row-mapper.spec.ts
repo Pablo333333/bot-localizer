@@ -167,6 +167,32 @@ describe('sheet-row-mapper', () => {
     expect(cad.disponibilidad).toBeUndefined();
   });
 
+  it('lee la columna H como SI/NO y no la mezcla con operación ni traspaso', () => {
+    const headers = [
+      'Operación',
+      'Modalidad de Traspaso',
+      'Disponibilidad',
+      'Disponibilidad del local',
+    ];
+    const cad = sheetRowToCad(
+      {
+        get: (header: string) => {
+          if (header === 'Operación') return 'Venta';
+          if (header === 'Modalidad de Traspaso') return 'Venta negocio';
+          if (header === 'Disponibilidad') return 'SI';
+          if (header === 'Disponibilidad del local') return 'Traspaso';
+          return '';
+        },
+        getByColumnLetter: (letter: string) =>
+          letter === 'H' ? 'NO' : letter === 'F' ? 'Alquiler' : '',
+      },
+      headers,
+    );
+    expect(cad.contrato).toBe('Venta');
+    expect(cad.modalidad_traspaso).toBe('Venta negocio');
+    expect(cad.disponibilidad).toBe('SI');
+  });
+
   it('lee operación, traspaso, precio filtro, etiqueta, anunciantes y enlaces', () => {
     const cells: Record<string, string> = {
       F: 'Traspaso',

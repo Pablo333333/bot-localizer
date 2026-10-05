@@ -17,6 +17,17 @@ export const TRASPASO_MODALIDAD_HEADER_ALIASES = [
   'Traspaso',
 ] as const;
 
+/**
+ * Columna H de Localizados: solo SI/NO de la disponibilidad confirmada en la llamada.
+ * No es Operación ni la modalidad de traspaso.
+ */
+export const DISPONIBILIDAD_HEADER_ALIASES = [
+  'Disponibilidad (SI/NO)',
+  'Disponibilidad confirmada',
+  'Disponibilidad llamada',
+  'Disponibilidad',
+] as const;
+
 const OPERATION_ORDER = ['Venta', 'Traspaso', 'Alquiler'] as const;
 
 export function normalizeSheetHeader(raw: string): string {
@@ -75,12 +86,64 @@ export function findTraspasoModalidadHeader(
     TRASPASO_MODALIDAD_HEADER_ALIASES,
     (normalized) => {
       if (normalized.includes('precio')) return false;
+      if (normalized.includes('disponibilidad')) return false;
       if (normalized.includes('modalidad') && normalized.includes('traspaso')) {
         return true;
       }
       return normalized === 'traspaso';
     },
   );
+}
+
+/**
+ * Cabecera de la columna H. "Disponibilidad del local" es otro campo
+ * y no cuenta: aquí solo entra el SI/NO confirmado en la llamada.
+ */
+export function findDisponibilidadHeader(
+  headerValues?: readonly string[],
+): string | null {
+  return findSheetHeader(
+    headerValues,
+    DISPONIBILIDAD_HEADER_ALIASES,
+    (normalized) => {
+      if (
+        normalized.includes('local') ||
+        normalized.includes('operacion') ||
+        normalized.includes('traspaso') ||
+        normalized.includes('precio')
+      ) {
+        return false;
+      }
+      return (
+        normalized === 'disponibilidad' ||
+        normalized.startsWith('disponibilidad ')
+      );
+    },
+  );
+}
+
+/** SI o NO. Venta, alquiler y traspaso no son disponibilidad. */
+export function parseDisponibilidadConfirmada(raw: unknown): 'SI' | 'NO' | '' {
+  const s = String(raw ?? '')
+    .trim()
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (!s) return '';
+  if (parseOperationList(s).length > 0) return '';
+  if (
+    ['SI', 'YES', 'TRUE', '1', 'DISPONIBLE', 'DISPONIBLE AHORA'].includes(s)
+  ) {
+    return 'SI';
+  }
+  if (
+    ['NO', 'FALSE', '0', 'NO DISPONIBLE', 'OCUPADO', 'NO DISPONIBLE AHORA'].includes(
+      s,
+    )
+  ) {
+    return 'NO';
+  }
+  return '';
 }
 
 /** Alquiler / Venta / Traspaso, en ese orden canónico de escritura. */

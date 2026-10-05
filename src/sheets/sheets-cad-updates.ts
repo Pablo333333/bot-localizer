@@ -4,9 +4,11 @@
  */
 
 import {
+  findDisponibilidadHeader,
   findOperacionHeader,
   findTraspasoModalidadHeader,
   formatOperationCell,
+  parseDisponibilidadConfirmada,
   parseTraspasoModalidad,
 } from './sheet-operation-headers';
 
@@ -289,6 +291,19 @@ export function buildCadPropertyUpdates(
     parseTraspasoModalidad(cad.modalidad_traspaso || cad.traspaso),
     getExisting,
   );
+  const disponibilidadHeader =
+    findDisponibilidadHeader(headers) || 'Disponibilidad';
+  if (
+    disponibilidadHeader !== operacionHeader &&
+    disponibilidadHeader !== modalidadHeader
+  ) {
+    pickIfChanged(
+      out,
+      disponibilidadHeader,
+      parseDisponibilidadConfirmada(cad.disponibilidad),
+      getExisting,
+    );
+  }
   pickIfChanged(
     out,
     'Información adicional',

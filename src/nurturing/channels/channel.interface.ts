@@ -14,6 +14,8 @@ export interface ChannelSendResult {
   success: boolean;
   providerRef?: string;
   error?: string;
+  /** El proveedor no pudo cobrar (sin saldo). El paso sigue en cola. */
+  hold?: 'provider_balance';
 }
 
 export interface NurturingChannel {

@@ -379,6 +379,23 @@ export class NoAnswerFollowupService {
             err instanceof Error ? err.message : err
           }`,
         );
+        try {
+          const recovered = await this.enrollments.enrollLead(lead.id, undefined, {
+            replaceActive: isNurturingFastTest(
+              this.config.get('NURTURING_FAST_TEST'),
+            ),
+          });
+          enrolled = true;
+          this.logger.warn(
+            `[FASE3][BULLMQ] enroll recuperado lead=${lead.id} enrollment=${recovered.enrollmentId} pasos=${recovered.stepsScheduled}`,
+          );
+        } catch (retryErr) {
+          this.logger.error(
+            `[FASE3][BULLMQ] el reintento de enroll también falló lead=${lead.id}: ${
+              retryErr instanceof Error ? retryErr.message : retryErr
+            }`,
+          );
+        }
       }
     } else if (effectivePhase === 't0' && markPendiente) {
       this.logger.log(

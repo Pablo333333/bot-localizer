@@ -15,6 +15,7 @@ import {
   NurturingChannel,
 } from './channel.interface';
 import { createTwilioMessageWithTemplateFallback } from './twilio-template-fallback';
+import { isProviderBalanceError } from '../engine/provider-balance';
 
 /**
  * SMS (Twilio). Preferencia: Content Template aprobado para SMS
@@ -148,6 +149,9 @@ export class SmsChannel implements NurturingChannel {
         `[SmsService] ERROR to=${to} lead=${payload.leadId}: ${message}` +
           (twilioCode != null ? ` | code=${twilioCode}` : ''),
       );
+      if (isProviderBalanceError(message, twilioCode)) {
+        return { success: false, error: message, hold: 'provider_balance' };
+      }
       return { success: false, error: message };
     }
   }

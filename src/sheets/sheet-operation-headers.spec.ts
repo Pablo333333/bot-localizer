@@ -1,7 +1,9 @@
 import {
+  findDisponibilidadHeader,
   findOperacionHeader,
   findTraspasoModalidadHeader,
   formatOperationCell,
+  parseDisponibilidadConfirmada,
   parseTraspasoModalidad,
 } from './sheet-operation-headers';
 
@@ -37,5 +39,25 @@ describe('cabeceras Operación y modalidad de traspaso', () => {
     );
     expect(parseTraspasoModalidad('Venta negocio')).toBe('Venta negocio');
     expect(parseTraspasoModalidad('Traspaso')).toBe('');
+  });
+
+  it('la columna H es solo SI/NO y no se confunde con operación ni traspaso', () => {
+    const withDisponibilidad = [
+      'Operación',
+      'Modalidad de Traspaso',
+      'Disponibilidad',
+      'Disponibilidad del local',
+      'Precio TRASPASO',
+    ];
+    expect(findDisponibilidadHeader(withDisponibilidad)).toBe('Disponibilidad');
+    expect(findOperacionHeader(withDisponibilidad)).toBe('Operación');
+    expect(findTraspasoModalidadHeader(withDisponibilidad)).toBe(
+      'Modalidad de Traspaso',
+    );
+    expect(parseDisponibilidadConfirmada('sí')).toBe('SI');
+    expect(parseDisponibilidadConfirmada('NO')).toBe('NO');
+    expect(parseDisponibilidadConfirmada('Traspaso')).toBe('');
+    expect(parseDisponibilidadConfirmada('Venta')).toBe('');
+    expect(parseDisponibilidadConfirmada('Alquiler')).toBe('');
   });
 });

@@ -14,6 +14,7 @@ import {
   NurturingChannel,
 } from './channel.interface';
 import { createTwilioMessageWithTemplateFallback } from './twilio-template-fallback';
+import { isProviderBalanceError } from '../engine/provider-balance';
 
 /**
  * WhatsApp vía Twilio.
@@ -130,6 +131,9 @@ export class WhatsappChannel implements NurturingChannel {
         this.logger.error(
           `[WhatsAppService] Detalle Twilio: ${JSON.stringify(error.response?.data || error.details)}`,
         );
+      }
+      if (isProviderBalanceError(message, twilioCode)) {
+        return { success: false, error: message, hold: 'provider_balance' };
       }
       return { success: false, error: message };
     }

@@ -29,9 +29,11 @@ import {
   type SheetGridRow,
 } from './sheet-row-isolation';
 import {
+  findDisponibilidadHeader,
   findOperacionHeader,
   findTraspasoModalidadHeader,
   formatOperationCell,
+  parseDisponibilidadConfirmada,
   parseTraspasoModalidad,
 } from './sheet-operation-headers';
 import { isOwnerConversationComplete } from '../nurturing/followup/call-outcome.classifier';
@@ -407,6 +409,11 @@ export class SheetsService implements OnModuleInit {
       sheet.headerValues || [],
       cad?.contrato || cad?.operacion,
       cad?.modalidad_traspaso,
+    );
+    this.assignDisponibilidadColumn(
+      mapping,
+      sheet.headerValues || [],
+      cad?.disponibilidad,
     );
 
     // Solo incluir columnas que existen realmente en la hoja
@@ -826,6 +833,11 @@ export class SheetsService implements OnModuleInit {
       cad?.contrato || cad?.operacion,
       cad?.modalidad_traspaso,
     );
+    this.assignDisponibilidadColumn(
+      mapping,
+      sheet.headerValues || [],
+      cad?.disponibilidad,
+    );
 
     const rowValue: Record<string, string> = {};
     for (const [column, value] of Object.entries(mapping)) {
@@ -854,6 +866,21 @@ export class SheetsService implements OnModuleInit {
     if (modalidadHeader && modalidadValue) {
       mapping[modalidadHeader] = modalidadValue;
     }
+  }
+
+  /** Columna H: SI/NO de la llamada. No pisa Operación ni modalidad de traspaso. */
+  private assignDisponibilidadColumn(
+    mapping: Record<string, string>,
+    headerValues: readonly string[],
+    disponibilidad: unknown,
+  ): void {
+    const header = findDisponibilidadHeader(headerValues);
+    const value = parseDisponibilidadConfirmada(disponibilidad);
+    if (!header || !value) return;
+    const operacionHeader = findOperacionHeader(headerValues);
+    const modalidadHeader = findTraspasoModalidadHeader(headerValues);
+    if (header === operacionHeader || header === modalidadHeader) return;
+    mapping[header] = value;
   }
 
   /**

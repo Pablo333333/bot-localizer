@@ -30,6 +30,7 @@ import {
   ChannelSendResult,
   NurturingChannel,
 } from './channel.interface';
+import { isProviderBalanceError } from '../engine/provider-balance';
 
 /**
  * Re-llamadas T+7 / T+10: RETELL_AGENT_ID_FOLLOWUP + from +34 871 075 112.
@@ -191,7 +192,12 @@ export class CallChannel implements NurturingChannel {
       return { success: true, providerRef: guarded.call.call_id };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const code = (error as { status?: number; code?: number })?.status
+        ?? (error as { code?: number })?.code;
       this.logger.error(`Retell call failed lead=${payload.leadId}: ${message}`);
+      if (isProviderBalanceError(message, code)) {
+        return { success: false, error: message, hold: 'provider_balance' };
+      }
       return { success: false, error: message };
     }
   }

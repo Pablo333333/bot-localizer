@@ -5,6 +5,7 @@ import {
 } from './property-media-sources';
 import {
   SHEET_COL_DIRECCION,
+  SHEET_COL_DISPONIBILIDAD,
   SHEET_COL_ETIQUETA_PRECIO,
   SHEET_COL_OPERACION,
   SHEET_COL_PAIS,
@@ -13,9 +14,11 @@ import {
   SHEET_COL_URL_IMAGEN,
 } from '../sheets/sheet-row-isolation';
 import {
+  findDisponibilidadHeader,
   findOperacionHeader,
   findTraspasoModalidadHeader,
   OPERACION_HEADER_ALIASES,
+  parseDisponibilidadConfirmada,
   parseOperationList,
   parseTraspasoModalidad,
   TRASPASO_MODALIDAD_HEADER_ALIASES,
@@ -37,7 +40,7 @@ const SHEET_TO_CAD: ReadonlyArray<{
   { cadKey: 'tipo_inmueble', columns: ['Tipo de inmueble'] },
   {
     cadKey: 'disponibilidad',
-    columns: ['Disponibilidad del local', 'Disponibilidad'],
+    columns: ['Disponibilidad del local'],
   },
   { cadKey: 'informacion_adicional', columns: ['Información adicional'] },
   {
@@ -443,6 +446,7 @@ export function sheetRowToCad(
   }
 
   applyOperationAndContactColumns(row, cad, headers);
+  applyDisponibilidadColumn(row, cad, headers);
   const localImages = collectLocalImagePaths(row, headers);
   if (localImages) cad.imagenes_locales = localImages;
 
@@ -516,10 +520,6 @@ function applyOperationAndContactColumns(
   if (ops.length > 0) {
     cad.contrato = ops.join(', ');
   }
-  if (parseOperationList(cad.disponibilidad).length > 0) {
-    delete cad.disponibilidad;
-  }
-
   const modalidadHeader = findTraspasoModalidadHeader(headers);
   const modalidad =
     parseTraspasoModalidad(
@@ -607,6 +607,30 @@ function applyOperationAndContactColumns(
     lines.push(`Enlace: ${link}`);
   }
   if (lines.length) cad.notas_anunciante = lines.join(' | ');
+}
+
+/**
+ * Columna H (cabecera "Disponibilidad"): solo SI/NO confirmado en la llamada.
+ * No lee ni escribe Operación ni modalidad de traspaso.
+ * Si la cabecera no está, usa la letra H de esta fila.
+ */
+function applyDisponibilidadColumn(
+  row: SheetRowLike,
+  cad: RetellCad,
+  headers?: string[],
+): void {
+  const header = findDisponibilidadHeader(headers);
+  const raw = header
+    ? readSheetCell(row, [header], false, headers)
+    : readLetter(row, SHEET_COL_DISPONIBILIDAD);
+  const confirmed = parseDisponibilidadConfirmada(raw);
+  if (confirmed) {
+    cad.disponibilidad = confirmed;
+    return;
+  }
+  if (parseOperationList(cad.disponibilidad).length > 0) {
+    delete cad.disponibilidad;
+  }
 }
 
 /** Objeto callData compatible con buildEstatePropertyPayload / createPropertyPost. */

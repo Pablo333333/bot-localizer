@@ -1,6 +1,7 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { EnrollmentStatus, SequenceStep, StepRunStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -28,8 +29,14 @@ import {
   resolveNurturingStepDelayMinutes,
 } from '../nurturing-fast-delay';
 import {
+  TEMPLATE_CALL_FOLLOWUP_D10,
   TEMPLATE_CALL_FOLLOWUP_D7,
 } from '../toni-fase3.constants';
+import {
+  AWAITING_PROVIDER_BALANCE,
+  isProviderBalanceError,
+  PROVIDER_BALANCE_RETRY_MS,
+} from './provider-balance';
 
 const OPEN_STEP_STATUSES: StepRunStatus[] = [
   StepRunStatus.pending,
@@ -385,6 +392,247 @@ export class SequenceScheduler {
       }
     }
     return cancelled;
+  }
+
+  /**
+   * Cuando un envío vuelve a salir, las secuencias que estaban paradas
+   * por falta de saldo se promueven y las que se marcaron failed se reabren.
+   */
+  async reactivateAfterProviderBalance(): Promise<{
+    promoted: number;
+    requeued: number;
+    missing: number;
+  }> {
+    const promoted = await this.promoteBalanceHolds();
+    const requeued = await this.requeueFailedBalanceRuns();
+    const missing = await this.enqueueMissingFollowupSteps();
+    if (promoted || requeued || missing) {
+      this.logger.log(
+        `[FASE3][BULLMQ] saldo recuperado — promovidas=${promoted} reencoladas=${requeued} pasosPerdidos=${missing}`,
+      );
+    }
+    return { promoted, requeued, missing };
+  }
+
+  /**
+   * Cada 10 minutos repone pasos que se perdieron (failed por saldo, o
+   * enroll sin job). No adelanta los que ya están aplazados a propósito.
+   */
+  @Cron(CronExpression.EVERY_10_MINUTES)
+  async repairHeldNurturingSequences(): Promise<void> {
+    if (!isNurturingPhase3Enabled(this.config.get('NURTURING_PHASE3_ENABLED'))) {
+      return;
+    }
+    try {
+      const requeued = await this.requeueFailedBalanceRuns();
+      const orphans = await this.requeueOrphanBalanceHolds();
+      const missing = await this.enqueueMissingFollowupSteps();
+      if (requeued || orphans || missing) {
+        this.logger.log(
+          `[FASE3][BULLMQ] reparación de secuencias reencoladas=${requeued} huerfanas=${orphans} pasosPerdidos=${missing}`,
+        );
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `[FASE3][BULLMQ] reparación de secuencias falló: ${message}`,
+      );
+    }
+  }
+
+  async requeueStepRun(stepRunId: string, delayMs: number): Promise<void> {
+    const run = await this.prisma.sequenceStepRun.findUnique({
+      where: { id: stepRunId },
+      include: { enrollment: true, step: true },
+    });
+    if (!run) return;
+
+    if (
+      run.enrollment.status === EnrollmentStatus.completed ||
+      run.enrollment.status === EnrollmentStatus.paused
+    ) {
+      await this.prisma.sequenceEnrollment.update({
+        where: { id: run.enrollmentId },
+        data: {
+          status: EnrollmentStatus.active,
+          completedAt: null,
+        },
+      });
+    } else if (run.enrollment.status === EnrollmentStatus.cancelled) {
+      return;
+    }
+
+    const scheduledFor = new Date(Date.now() + Math.max(0, delayMs));
+    await this.prisma.sequenceStepRun.update({
+      where: { id: stepRunId },
+      data: {
+        status: StepRunStatus.scheduled,
+        finishedAt: null,
+        startedAt: null,
+        lastError: AWAITING_PROVIDER_BALANCE,
+        scheduledFor,
+      },
+    });
+
+    const jobId = stepRunJobId(stepRunId);
+    const existing = run.jobId ? await this.queue.getJob(run.jobId) : null;
+    if (existing) {
+      const state = await existing.getState();
+      if (state === 'delayed' && delayMs === 0) {
+        await existing.promote();
+        return;
+      }
+      if (state === 'waiting' || state === 'delayed' || state === 'active') {
+        return;
+      }
+      if (state === 'failed' || state === 'completed') {
+        await existing.remove();
+      }
+    }
+
+    const job = await this.queue.add(
+      NURTURING_STEP_JOB,
+      {
+        stepRunId,
+        enrollmentId: run.enrollmentId,
+        leadId: run.enrollment.leadId,
+      },
+      {
+        jobId,
+        delay: Math.max(0, delayMs),
+        attempts: Math.max(1, run.step.maxRetries),
+        backoff: { type: 'exponential', delay: 60_000 },
+        removeOnComplete: 100,
+        removeOnFail: 200,
+      },
+    );
+    await this.prisma.sequenceStepRun.update({
+      where: { id: stepRunId },
+      data: { jobId: job.id ?? jobId },
+    });
+    this.logger.log(
+      `[FASE3][BULLMQ] reencolado ${nurturingStepLabel(run.step.templateKey)} ` +
+        `stepRun=${stepRunId} delayMs=${delayMs} lead=${run.enrollment.leadId}`,
+    );
+  }
+
+  private async promoteBalanceHolds(): Promise<number> {
+    const held = await this.prisma.sequenceStepRun.findMany({
+      where: {
+        status: StepRunStatus.scheduled,
+        lastError: AWAITING_PROVIDER_BALANCE,
+      },
+      take: 100,
+    });
+    let promoted = 0;
+    for (const run of held) {
+      if (!run.jobId) {
+        await this.requeueStepRun(run.id, 0);
+        promoted += 1;
+        continue;
+      }
+      const job = await this.queue.getJob(run.jobId);
+      if (!job) {
+        await this.requeueStepRun(run.id, 0);
+        promoted += 1;
+        continue;
+      }
+      const state = await job.getState();
+      if (state === 'delayed') {
+        await job.promote();
+        promoted += 1;
+      } else if (state === 'completed' || state === 'failed') {
+        await this.requeueStepRun(run.id, 0);
+        promoted += 1;
+      }
+    }
+    return promoted;
+  }
+
+  /** Holds cuyo job de BullMQ ya no está delayed (se perdió al cerrar el worker). */
+  private async requeueOrphanBalanceHolds(): Promise<number> {
+    const held = await this.prisma.sequenceStepRun.findMany({
+      where: {
+        status: StepRunStatus.scheduled,
+        lastError: AWAITING_PROVIDER_BALANCE,
+      },
+      take: 100,
+    });
+    let requeued = 0;
+    for (const run of held) {
+      const job = run.jobId ? await this.queue.getJob(run.jobId) : null;
+      if (!job) {
+        await this.requeueStepRun(run.id, PROVIDER_BALANCE_RETRY_MS);
+        requeued += 1;
+        continue;
+      }
+      const state = await job.getState();
+      if (state === 'completed' || state === 'failed') {
+        await this.requeueStepRun(run.id, PROVIDER_BALANCE_RETRY_MS);
+        requeued += 1;
+      }
+    }
+    return requeued;
+  }
+
+  private async requeueFailedBalanceRuns(): Promise<number> {
+    const failed = await this.prisma.sequenceStepRun.findMany({
+      where: { status: StepRunStatus.failed },
+      include: { enrollment: true },
+      orderBy: { finishedAt: 'desc' },
+      take: 100,
+    });
+    let requeued = 0;
+    for (const run of failed) {
+      const balance =
+        run.lastError === AWAITING_PROVIDER_BALANCE ||
+        isProviderBalanceError(run.lastError);
+      if (!balance) continue;
+      if (run.enrollment.status === EnrollmentStatus.cancelled) continue;
+      await this.requeueStepRun(run.id, 0);
+      requeued += 1;
+    }
+    return requeued;
+  }
+
+  /** Pasos de una secuencia activa que nunca llegaron a tener job. */
+  private async enqueueMissingFollowupSteps(): Promise<number> {
+    const fast = isNurturingFastTest(this.config.get('NURTURING_FAST_TEST'));
+    const enrollments = await this.prisma.sequenceEnrollment.findMany({
+      where: { status: EnrollmentStatus.active },
+      include: {
+        sequence: { include: { steps: { orderBy: { order: 'asc' } } } },
+        stepRuns: { include: { step: true } },
+      },
+      take: 100,
+    });
+    let queued = 0;
+    for (const enrollment of enrollments) {
+      const t7Sent = enrollment.stepRuns.some(
+        (run) =>
+          run.step.templateKey === TEMPLATE_CALL_FOLLOWUP_D7 &&
+          run.status === StepRunStatus.sent,
+      );
+      for (const step of enrollment.sequence.steps) {
+        const runs = enrollment.stepRuns.filter((run) => run.stepId === step.id);
+        if (runs.length > 0) continue;
+        if (
+          fast &&
+          step.templateKey === TEMPLATE_CALL_FOLLOWUP_D10 &&
+          !t7Sent
+        ) {
+          continue;
+        }
+        await this.enqueueStep({
+          enrollmentId: enrollment.id,
+          leadId: enrollment.leadId,
+          step,
+          baseTime: enrollment.enrolledAt,
+        });
+        queued += 1;
+      }
+    }
+    return queued;
   }
 
   /**

@@ -7,7 +7,7 @@ import {
   Prisma,
   StepRunStatus,
 } from '@prisma/client';
-import { Job } from 'bullmq';
+import { DelayedError, Job } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SheetsService } from '../../sheets/sheets.service';
 import { NURTURING_STEPS_QUEUE } from '../../queue/queue.constants';
@@ -29,6 +29,12 @@ import {
   isDuplicateCallStep,
   sequenceHasUnfinishedStep,
 } from './sequence-step-guard';
+import { SequenceScheduler } from './sequence.scheduler';
+import {
+  AWAITING_PROVIDER_BALANCE,
+  isProviderBalanceError,
+  PROVIDER_BALANCE_RETRY_MS,
+} from './provider-balance';
 
 @Processor(NURTURING_STEPS_QUEUE, { concurrency: 1 })
 export class SequenceProcessor extends WorkerHost {
@@ -40,6 +46,7 @@ export class SequenceProcessor extends WorkerHost {
     private readonly config: ConfigService,
     private readonly sheets: SheetsService,
     private readonly enrollments: EnrollmentsService,
+    private readonly scheduler: SequenceScheduler,
   ) {
     super();
   }
@@ -152,6 +159,14 @@ export class SequenceProcessor extends WorkerHost {
 
     if (!result.success) {
       const errorMessage = result.error || 'Channel send failed';
+      if (
+        result.hold === 'provider_balance' ||
+        isProviderBalanceError(errorMessage)
+      ) {
+        await this.parkUntilProviderBalance(stepRunId, job, errorMessage);
+        return { status: 'awaiting_balance' };
+      }
+
       await this.prisma.executionErrorLog.create({
         data: {
           stepRunId,
@@ -213,10 +228,67 @@ export class SequenceProcessor extends WorkerHost {
     ]);
 
     await this.maybeCompleteEnrollment(enrollmentId);
+    try {
+      await this.scheduler.reactivateAfterProviderBalance();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `[FASE3][COLA] no se pudieron reactivar secuencias en espera de saldo: ${message}`,
+      );
+    }
     this.logger.log(
       `[FASE3][COLA] paso enviado stepRun=${stepRunId} channel=${stepRun.step.channel} template=${stepRun.step.templateKey} lead=${lead.id} providerRef=${result.providerRef || '?'}`,
     );
     return { status: 'sent' };
+  }
+
+  /**
+   * Sin saldo en Retell o Twilio el paso no pasa a failed: sigue programado
+   * y el mismo job se aplaza. Cuando un envío vuelve a funcionar, el resto
+   * de secuencias en espera se promueve.
+   */
+  private async parkUntilProviderBalance(
+    stepRunId: string,
+    job: Job<NurturingStepJobData>,
+    errorMessage: string,
+  ): Promise<void> {
+    await this.prisma.sequenceStepRun.update({
+      where: { id: stepRunId },
+      data: {
+        status: StepRunStatus.scheduled,
+        finishedAt: null,
+        lastError: AWAITING_PROVIDER_BALANCE,
+      },
+    });
+    await this.prisma.executionErrorLog.create({
+      data: {
+        stepRunId,
+        code: 'provider_balance',
+        message: errorMessage,
+        payload: {
+          hold: AWAITING_PROVIDER_BALANCE,
+        } as Prisma.InputJsonValue,
+      },
+    });
+    this.logger.warn(
+      `[FASE3][COLA] sin saldo del proveedor stepRun=${stepRunId} — ` +
+        `la secuencia T+7/T+10 sigue encolada. ${errorMessage}`,
+    );
+
+    const token = job.token;
+    if (token) {
+      try {
+        await job.moveToDelayed(Date.now() + PROVIDER_BALANCE_RETRY_MS, token);
+        throw new DelayedError(AWAITING_PROVIDER_BALANCE);
+      } catch (err) {
+        if (err instanceof DelayedError) throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `[FASE3][COLA] moveToDelayed falló stepRun=${stepRunId}: ${message}`,
+        );
+      }
+    }
+    await this.scheduler.requeueStepRun(stepRunId, PROVIDER_BALANCE_RETRY_MS);
   }
 
   /**

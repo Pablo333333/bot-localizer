@@ -206,6 +206,19 @@ export class SyncController {
     return this.sequenceScheduler.inspectScheduledJobs(phone);
   }
 
+  /**
+   * Reabre T+7/T+10 que se quedaron en failed por falta de saldo
+   * y encola las secuencias de llamadas ya hechas que no llegaron a programarse.
+   */
+  @Post('reactivate-sequences')
+  async reactivateSequences() {
+    const [queue, enrollments] = await Promise.all([
+      this.sequenceScheduler.reactivateAfterProviderBalance(),
+      this.enrollments.repairPendingEnrollments(),
+    ]);
+    return { ok: true, queue, enrollmentsRecovered: enrollments };
+  }
+
   private isForceQuery(force?: string): boolean {
     return ['1', 'true', 'yes', 'si', 'sí'].includes(
       String(force || '')

@@ -16,6 +16,8 @@ export const SHEET_COL_URL_IMAGEN = 'P';
 export const SHEET_COL_OPERACION = 'F';
 /** Modalidad de traspaso (Venta negocio / Venta con inmueble). Columna G. */
 export const SHEET_COL_TRASPASO_MODALIDAD = 'G';
+/** Disponibilidad confirmada en la llamada (SI/NO). Columna H. */
+export const SHEET_COL_DISPONIBILIDAD = 'H';
 /** Precio que va al buscador de WordPress. Columna DH. */
 export const SHEET_COL_PRECIO_FILTRO = 'DH';
 /** Texto de "antes de la etiqueta de precio". Columna DK. */

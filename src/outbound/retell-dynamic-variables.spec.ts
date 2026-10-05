@@ -109,4 +109,18 @@ describe('buildRetellDynamicVariables', () => {
     expect(variables.contrato).toBe('Traspaso');
     expect(variables.traspaso).toBe('Venta negocio');
   });
+
+  it('no mezcla el SI/NO de la columna Disponibilidad con la operación', () => {
+    const values: Record<string, string> = {
+      Operación: 'Alquiler',
+      Disponibilidad: 'SI',
+      'Disponibilidad del local': 'Disponible',
+    };
+    const { variables } = buildRetellDynamicVariables({
+      get: (header: string) => values[header],
+      toObject: () => values,
+    });
+    expect(variables.disponibilidad).toBe('Alquiler');
+    expect(variables.contrato).toBe('Alquiler');
+  });
 });
