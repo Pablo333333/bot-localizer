@@ -10,11 +10,8 @@ import {
 import { WordpressService } from '../../wordpress/wordpress.service';
 import { CommercialDescriptionService } from '../../wordpress/commercial-description.service';
 import { PropertyMediaService } from '../../wordpress/property-media.service';
-import {
-  COL_DESCRIPCION_PROPIETARIO,
-  COL_DESCRIPCION_PROPIETARIO_ALT,
-  TONI_TEST_WP_POST_IDS,
-} from '../../wordpress/wpresidence.constants';
+import { TONI_TEST_WP_POST_IDS } from '../../wordpress/wpresidence.constants';
+import { TRASMUTADOS_SHEET_TITLES } from '../../sheets/sheet-row-identity';
 import {
   isWpSyncProtectPublishedEnabled,
   readBloquearSyncWp,
@@ -138,6 +135,9 @@ export class SheetsReviewedSyncService {
     try {
       const { sheet, rows } = await this.sheetsService.getAllRows(SHEET_NAME);
       const headers = sheet.headerValues || [];
+      const trasmutados = await this.sheetsService.readSheetIfPresent(
+        TRASMUTADOS_SHEET_TITLES,
+      );
       const pubHeader = findPublicacionAutorizadaHeader(headers);
 
       if (!pubHeader) {
@@ -177,6 +177,8 @@ export class SheetsReviewedSyncService {
           const result = await this.processReviewedRow(sheet, row, headers, {
             force: forceThisRow,
             ignoreSheetBlock: forceThisRow,
+            sourceRows: rows,
+            trasmutados,
           });
           this.tallyRowResult(stats, sheetRowNumber, result);
         } catch (err) {
@@ -220,6 +222,9 @@ export class SheetsReviewedSyncService {
     const uniqueIds = [...new Set(postIds.filter((n) => Number.isFinite(n)))];
     const { sheet, rows } = await this.sheetsService.getAllRows(SHEET_NAME);
     const headers = sheet.headerValues || [];
+    const trasmutados = await this.sheetsService.readSheetIfPresent(
+      TRASMUTADOS_SHEET_TITLES,
+    );
     stats.scanned = rows.length;
     this.logSandboxScope();
 
@@ -243,6 +248,8 @@ export class SheetsReviewedSyncService {
       try {
         const result = await this.processReviewedRow(sheet, row, headers, {
           force: options.force === true,
+          sourceRows: rows,
+          trasmutados,
         });
         this.tallyRowResult(stats, row.rowNumber, result);
       } catch (err) {
@@ -329,7 +336,15 @@ export class SheetsReviewedSyncService {
     sheet: Parameters<SheetsService['updateTrackingCells']>[0],
     row: IsolatedSheetRow,
     headers: string[],
-    options: { force?: boolean; ignoreSheetBlock?: boolean } = {},
+    options: {
+      force?: boolean;
+      ignoreSheetBlock?: boolean;
+      sourceRows?: IsolatedSheetRow[];
+      trasmutados?: {
+        sheet: Parameters<SheetsService['updateTrackingCells']>[0];
+        rows: IsolatedSheetRow[];
+      } | null;
+    } = {},
   ): Promise<RowSyncResult> {
     const callData = sheetRowToCallData(row, headers);
     const cad = callData.call_analysis.custom_analysis_data;
@@ -388,17 +403,15 @@ export class SheetsReviewedSyncService {
     );
     cad.descripcion_propietario = commercialContent;
     this.logger.log(
-      `Fila ${row.rowNumber} media Sheet URL Imagen (col P)=${String(cad.url_imagen || '').slice(0, 120) || '(vacío)'} carpeta_drive=${String(cad.carpeta_drive || '').slice(0, 120) || '(vacío)'}`,
+      `Fila ${row.rowNumber} media Sheet URL Imagen (col Q)=${String(cad.url_imagen || '').slice(0, 120) || '(vacío)'} carpeta_drive=${String(cad.carpeta_drive || '').slice(0, 120) || '(vacío)'}`,
     );
-    await this.sheetsService.updateSpecificCells(
-      sheet,
-      row.rowNumber,
-      {
-        [COL_DESCRIPCION_PROPIETARIO]: commercialContent,
-        [COL_DESCRIPCION_PROPIETARIO_ALT]: commercialContent,
-      },
-      row,
-    );
+    await this.sheetsService.writePropertyDescription({
+      sourceSheet: sheet,
+      sourceRow: row,
+      content: commercialContent,
+      sourceRows: options.sourceRows,
+      trasmutados: options.trasmutados,
+    });
 
     let media: { featuredMediaId?: number; galleryMediaIds: number[] } = {
       galleryMediaIds: [],

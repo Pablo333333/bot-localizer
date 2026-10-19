@@ -8,9 +8,14 @@ import {
   findOperacionHeader,
   findTraspasoModalidadHeader,
   formatOperationCell,
+  operationIncludesTraspaso,
   parseDisponibilidadConfirmada,
-  parseTraspasoModalidad,
+  resolveTraspasoModalidad,
 } from './sheet-operation-headers';
+import { sanitizeSheetImageValue } from './sheet-image-cell';
+
+/** Valor centinela: updateSpecificCells vacía la celda en lugar de conservarla. */
+export const SHEET_FORCE_CLEAR = '\u0000CLEAR_CELL';
 
 export type CadLike = Record<string, unknown> | undefined;
 
@@ -277,20 +282,22 @@ export function buildCadPropertyUpdates(
 
   pickIfChanged(out, 'Tipo de inmueble', val(cad.tipo_inmueble), getExisting);
   const operacionHeader = findOperacionHeader(headers) || 'Operación';
-  pickIfChanged(
-    out,
-    operacionHeader,
-    formatOperationCell(cad.contrato || cad.operacion),
-    getExisting,
-  );
+  const incomingOperation = formatOperationCell(cad.contrato || cad.operacion);
+  pickIfChanged(out, operacionHeader, incomingOperation, getExisting);
   const modalidadHeader =
     findTraspasoModalidadHeader(headers) || 'Modalidad de Traspaso';
-  pickIfChanged(
-    out,
-    modalidadHeader,
-    parseTraspasoModalidad(cad.modalidad_traspaso || cad.traspaso),
-    getExisting,
+  const effectiveOperation =
+    incomingOperation || formatOperationCell(getExisting(operacionHeader));
+  const modalidad = resolveTraspasoModalidad(
+    effectiveOperation,
+    cad.modalidad_traspaso || cad.traspaso,
   );
+  if (effectiveOperation && !operationIncludesTraspaso(effectiveOperation)) {
+    const existingModalidad = String(getExisting(modalidadHeader) ?? '').trim();
+    if (existingModalidad) out[modalidadHeader] = SHEET_FORCE_CLEAR;
+  } else if (modalidad) {
+    pickIfChanged(out, modalidadHeader, modalidad, getExisting);
+  }
   const disponibilidadHeader =
     findDisponibilidadHeader(headers) || 'Disponibilidad';
   if (
@@ -431,11 +438,11 @@ export function buildCadPropertyUpdates(
     getExisting,
   );
 
-  // URL / carpeta Drive corregidas en llamada → Sheet (fuente para sync WP).
+  // Columna Q: solo URL o ruta de Drive. Una fecha de modificación no entra.
   pickIfChanged(
     out,
     'URL imagen',
-    val(
+    sanitizeSheetImageValue(
       cad.url_imagen ||
         cad.imagen_url ||
         cad.imagen_drive ||

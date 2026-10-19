@@ -18,16 +18,18 @@ import {
   findOperacionHeader,
   findTraspasoModalidadHeader,
   OPERACION_HEADER_ALIASES,
+  operationIncludesTraspaso,
   parseDisponibilidadConfirmada,
   parseOperationList,
-  parseTraspasoModalidad,
+  resolveTraspasoModalidad,
   TRASPASO_MODALIDAD_HEADER_ALIASES,
 } from '../sheets/sheet-operation-headers';
+import { sanitizeSheetImageValue } from '../sheets/sheet-image-cell';
 
 type SheetRowLike = {
   get: (header: string) => unknown;
   toObject?: () => Record<string, unknown>;
-  /** Lectura por letra A1 de ESTA fila (P = URL Imagen, CI = país, CX = dirección). */
+  /** Lectura por letra A1 de ESTA fila (Q = URL Imagen, CI = país, CX = dirección). */
   getByColumnLetter?: (letter: string) => unknown;
 };
 
@@ -350,11 +352,13 @@ function collectDriveFromRow(
   };
 }
 
-/** Columna P de esta fila. Es la imagen principal, aunque haya otros enlaces Drive. */
-function readColumnPImageUrl(row: SheetRowLike): string {
+/** Columna Q de esta fila. Es la imagen principal, aunque haya otros enlaces Drive. */
+function readColumnQImageUrl(row: SheetRowLike): string {
   if (typeof row.getByColumnLetter !== 'function') return '';
-  return sanitizeValue(
-    unwrapSheetCellValue(row.getByColumnLetter(SHEET_COL_URL_IMAGEN)),
+  return sanitizeSheetImageValue(
+    sanitizeValue(
+      unwrapSheetCellValue(row.getByColumnLetter(SHEET_COL_URL_IMAGEN)),
+    ),
   );
 }
 
@@ -365,7 +369,7 @@ function splitImageParts(raw: string): string[] {
     .filter(Boolean);
 }
 
-/** La URL de la columna P queda la primera: esa es la destacada en WordPress. */
+/** La URL de la columna Q queda la primera: esa es la destacada en WordPress. */
 function withPrincipalImageFirst(principal: string, scanned?: string): string {
   const parts: string[] = [];
   const seen = new Set<string>();
@@ -427,10 +431,11 @@ export function sheetRowToCad(
     }
   }
 
-  const fromHeader =
-    typeof cad.url_imagen === 'string' ? cad.url_imagen : '';
+  const fromHeader = sanitizeSheetImageValue(
+    typeof cad.url_imagen === 'string' ? cad.url_imagen : '',
+  );
   const drive = collectDriveFromRow(row, headers);
-  const principal = readColumnPImageUrl(row) || fromHeader;
+  const principal = readColumnQImageUrl(row) || fromHeader;
   const urlImagen = withPrincipalImageFirst(principal, drive.url_imagen);
   if (urlImagen) cad.url_imagen = urlImagen;
   if (drive.carpeta_drive) cad.carpeta_drive = drive.carpeta_drive;
@@ -521,23 +526,22 @@ function applyOperationAndContactColumns(
     cad.contrato = ops.join(', ');
   }
   const modalidadHeader = findTraspasoModalidadHeader(headers);
-  const modalidad =
-    parseTraspasoModalidad(
-      readSheetCell(
-        row,
-        modalidadHeader
-          ? [modalidadHeader]
-          : TRASPASO_MODALIDAD_HEADER_ALIASES,
-        false,
-        headers,
-      ),
+  const modalidadRaw =
+    readSheetCell(
+      row,
+      modalidadHeader ? [modalidadHeader] : TRASPASO_MODALIDAD_HEADER_ALIASES,
+      false,
+      headers,
     ) ||
-    (modalidadHeader
-      ? ''
-      : parseTraspasoModalidad(readLetter(row, SHEET_COL_TRASPASO_MODALIDAD))) ||
-    parseTraspasoModalidad(cad.modalidad_traspaso);
-  if (modalidad) cad.modalidad_traspaso = modalidad;
-  else delete cad.modalidad_traspaso;
+    (modalidadHeader ? '' : readLetter(row, SHEET_COL_TRASPASO_MODALIDAD)) ||
+    String(cad.modalidad_traspaso ?? '');
+  const operationRaw = ops.join(', ');
+  const modalidad = resolveTraspasoModalidad(operationRaw, modalidadRaw);
+  if (operationIncludesTraspaso(operationRaw) && modalidad) {
+    cad.modalidad_traspaso = modalidad;
+  } else {
+    delete cad.modalidad_traspaso;
+  }
 
   const filtro = sanitizeValue(
     readLetter(row, SHEET_COL_PRECIO_FILTRO) || cad.precio_filtro_busqueda,

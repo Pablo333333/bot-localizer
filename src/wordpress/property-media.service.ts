@@ -133,7 +133,7 @@ export class PropertyMediaService {
     );
 
     return {
-      // La primera es la de la columna P (URL Imagen): imagen destacada.
+      // La primera es la de la columna Q (URL Imagen): imagen destacada.
       featuredMediaId: galleryMediaIds[0],
       galleryMediaIds,
     };

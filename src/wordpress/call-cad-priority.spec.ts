@@ -61,4 +61,18 @@ describe('preferCallCad', () => {
     expect(merged.estado).toBeUndefined();
     expect(merged.oportunidad_comercial).toBeUndefined();
   });
+
+  it('quita la modalidad de traspaso si la operación no contiene Traspaso', () => {
+    const alquiler = preferCallCad(
+      { contrato: 'Alquiler', modalidad_traspaso: 'Venta negocio' },
+      { modalidad_traspaso: 'Venta con inmueble' },
+    );
+    expect(alquiler.modalidad_traspaso).toBeUndefined();
+
+    const traspaso = preferCallCad(
+      { contrato: 'Venta, Traspaso' },
+      { modalidad_traspaso: 'venta negocio' },
+    );
+    expect(traspaso.modalidad_traspaso).toBe('Venta negocio');
+  });
 });

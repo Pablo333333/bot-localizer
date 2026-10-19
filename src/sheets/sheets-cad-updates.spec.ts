@@ -1,6 +1,7 @@
 import {
   buildCadPropertyUpdates,
   isGenericFillerText,
+  SHEET_FORCE_CLEAR,
   shouldWriteCell,
   valuesAreEquivalent,
 } from './sheets-cad-updates';
@@ -322,5 +323,48 @@ describe('buildCadPropertyUpdates', () => {
     );
     expect(updates['Nombre contacto1']).toBe('María López');
     expect(updates['URL imagen']).toContain('drive.google.com');
+  });
+
+  it('limpia la modalidad si la operación es solo alquiler o venta', () => {
+    const cleared = buildCadPropertyUpdates(
+      { contrato: 'Alquiler', modalidad_traspaso: 'Venta negocio' },
+      (header) => {
+        if (header === 'Modalidad de Traspaso') return 'Venta con inmueble';
+        if (header === 'Operación') return 'Venta';
+        return '';
+      },
+    );
+    expect(cleared['Operación']).toBe('Alquiler');
+    expect(cleared['Modalidad de Traspaso']).toBe(SHEET_FORCE_CLEAR);
+
+    const kept = buildCadPropertyUpdates(
+      {
+        contrato: 'Venta, Traspaso',
+        modalidad_traspaso: 'Venta con inmueble',
+      },
+      () => '',
+    );
+    expect(kept['Operación']).toBe('Venta, Traspaso');
+    expect(kept['Modalidad de Traspaso']).toBe('Venta con inmueble');
+  });
+
+  it('no escribe fechas ni timestamps en URL imagen', () => {
+    const updates = buildCadPropertyUpdates(
+      {
+        url_imagen: '19/10/2026 18:14:03',
+        imagen_url: '2026-10-19T18:14:03.000Z',
+      },
+      (header) =>
+        header === 'URL imagen'
+          ? 'https://drive.google.com/file/d/abc123/view'
+          : '',
+    );
+    expect(updates['URL imagen']).toBeUndefined();
+
+    const pathUpdate = buildCadPropertyUpdates(
+      { url_imagen: 'Localizados_Images/image_80.jpg' },
+      () => '',
+    );
+    expect(pathUpdate['URL imagen']).toBe('Localizados_Images/image_80.jpg');
   });
 });

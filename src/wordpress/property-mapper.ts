@@ -382,13 +382,18 @@ export function buildWpResidenceCustomFields(
   );
   if (disposicion) out['disposicion'] = disposicion;
 
-  const modalidad = sanitizeValue(cad?.modalidad_traspaso);
-  if (modalidad) {
-    out['traspaso'] = modalidad;
+  const operations = listedOperations(cad);
+  const modalidad = operations.includes('traspaso')
+    ? sanitizeValue(cad?.modalidad_traspaso)
+    : '';
+  if (modalidad && /venta\s+negocio|venta\s+con\s+inmueble/i.test(modalidad)) {
+    out['traspaso'] = /inmueble/i.test(modalidad)
+      ? 'Venta con inmueble'
+      : 'Venta negocio';
   } else if (
-    listedOperations(cad).includes('traspaso') &&
-    !listedOperations(cad).includes('venta') &&
-    !listedOperations(cad).includes('alquiler')
+    operations.includes('traspaso') &&
+    !operations.includes('venta') &&
+    !operations.includes('alquiler')
   ) {
     out['traspaso'] = 'Traspaso';
   }

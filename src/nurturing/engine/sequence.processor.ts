@@ -13,6 +13,7 @@ import { SheetsService } from '../../sheets/sheets.service';
 import { NURTURING_STEPS_QUEUE } from '../../queue/queue.constants';
 import { EnrollmentsService } from '../enrollments/enrollments.service';
 import { alreadyHandledAdReason } from './already-handled-ad';
+import { sheetRowSaysPropertyUnavailable } from '../followup/property-unavailable';
 import { ChannelRegistry } from '../channels/channel.registry';
 import { LeadStatus as AppLeadStatus, TERMINAL_LEAD_STATUSES } from '../enums';
 import {
@@ -422,6 +423,21 @@ export class SequenceProcessor extends WorkerHost {
     try {
       const located = await this.sheets.findLocalizadosRowByPhone(lead.phone);
       if (!located) return null;
+      if (
+        sheetRowSaysPropertyUnavailable(
+          located.row,
+          located.sheet.headerValues,
+        )
+      ) {
+        const stopped = await this.enrollments.stopActiveForLead(
+          lead.id,
+          'inmueble_no_disponible',
+        );
+        this.logger.log(
+          `[FASE3][COLA] columna H=NO lead=${lead.id} phone=${lead.phone} secuencias_paradas=${stopped} — sin llamada, WhatsApp ni SMS`,
+        );
+        return 'inmueble_no_disponible';
+      }
       const reason = alreadyHandledAdReason(
         located.row,
         located.sheet.headerValues,

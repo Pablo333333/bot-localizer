@@ -1,4 +1,8 @@
 import { isInvalidAnalyzedValue } from '../sheets/sheets-cad-updates';
+import {
+  operationIncludesTraspaso,
+  resolveTraspasoModalidad,
+} from '../sheets/sheet-operation-headers';
 import { sanitizeValue, type RetellCad } from './property-mapper';
 
 /**
@@ -17,6 +21,18 @@ export function preferCallCad(
     const next = sanitizeValue(raw);
     if (!next) continue;
     merged[key] = raw;
+  }
+
+  const operation = merged.contrato || merged.operacion;
+  if (!operationIncludesTraspaso(operation)) {
+    delete merged.modalidad_traspaso;
+  } else {
+    const modalidad = resolveTraspasoModalidad(
+      operation,
+      merged.modalidad_traspaso,
+    );
+    if (modalidad) merged.modalidad_traspaso = modalidad;
+    else delete merged.modalidad_traspaso;
   }
 
   return merged;

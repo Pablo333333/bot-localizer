@@ -170,3 +170,20 @@ export function parseTraspasoModalidad(raw: unknown): string {
   if (/venta\s+negocio/i.test(s)) return 'Venta negocio';
   return '';
 }
+
+export function operationIncludesTraspaso(raw: unknown): boolean {
+  return parseOperationList(raw).includes('Traspaso');
+}
+
+/**
+ * Columna G solo si la columna F contiene Traspaso
+ * ("Traspaso", "Alquiler, Traspaso", "Venta, Traspaso").
+ * Alquiler o Venta solos devuelven vacío: la celda hay que dejarla limpia.
+ */
+export function resolveTraspasoModalidad(
+  operation: unknown,
+  modalidad: unknown,
+): string {
+  if (!operationIncludesTraspaso(operation)) return '';
+  return parseTraspasoModalidad(modalidad);
+}

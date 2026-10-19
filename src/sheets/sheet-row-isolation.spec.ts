@@ -19,9 +19,10 @@ describe('sheet-row-isolation', () => {
     expect(columnLetterToIndex0(SHEET_COL_DIRECCION)).toBe(101);
   });
 
-  it('P es la columna URL Imagen', () => {
-    expect(columnLetterToIndex0('P')).toBe(15);
-    expect(columnLetterToIndex0(SHEET_COL_URL_IMAGEN)).toBe(15);
+  it('Q es la columna URL Imagen y DL la descripción', () => {
+    expect(columnLetterToIndex0('Q')).toBe(16);
+    expect(columnLetterToIndex0(SHEET_COL_URL_IMAGEN)).toBe(16);
+    expect(columnLetterToIndex0('DL')).toBe(115);
   });
 
   it('la lectura llega hasta las fotos de DZ y DK sigue siendo la etiqueta', () => {

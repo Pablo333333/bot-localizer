@@ -10,8 +10,10 @@ import { columnIndexToA1 } from './sheets-tracking';
 export const SHEET_COL_PAIS = 'CI';
 /** Dirección del anuncio. Columna CX de la fila en curso (1-based 102). */
 export const SHEET_COL_DIRECCION = 'CX';
-/** Imagen principal del anuncio. Columna P, cabecera "URL Imagen". */
-export const SHEET_COL_URL_IMAGEN = 'P';
+/** Imagen principal del anuncio. Columna Q, cabecera "URL Imagen". */
+export const SHEET_COL_URL_IMAGEN = 'Q';
+/** Descripción comercial. Columna DL de Trasmutados Otros. */
+export const SHEET_COL_DESCRIPCION = 'DL';
 /** Operación (Alquiler / Venta / Traspaso). Columna F. */
 export const SHEET_COL_OPERACION = 'F';
 /** Modalidad de traspaso (Venta negocio / Venta con inmueble). Columna G. */

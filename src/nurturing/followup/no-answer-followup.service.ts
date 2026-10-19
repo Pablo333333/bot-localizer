@@ -38,6 +38,7 @@ import {
   isOutboundSandboxWhitelistEnabled,
 } from '../../outbound/outbound-sandbox-whitelist';
 import { CallOutcomeClassifier } from './call-outcome.classifier';
+import { callSaysPropertyUnavailable } from './property-unavailable';
 import {
   planToniSequence,
 } from './no-answer-followup.policy';
@@ -177,6 +178,47 @@ export class NoAnswerFollowupService {
     }
 
     const lead = await this.findOrCreateLeadFromCall(phoneRaw, callData, outcome);
+
+    if (callSaysPropertyUnavailable(callData)) {
+      const stopped = await this.enrollments.stopActiveForLead(
+        lead.id,
+        'inmueble_no_disponible',
+      );
+      await this.leads.updateStatus(lead.id, {
+        status: LeadStatus.CERRADO,
+        reason: 'inmueble_no_disponible',
+      });
+      if (callData.call_id) {
+        await this.claimCallHandling(lead.id, String(callData.call_id));
+      }
+      await this.prisma.lead.update({
+        where: { id: lead.id },
+        data: {
+          metadata: {
+            ...((lead.metadata as object) || {}),
+            last_call_id: callData.call_id,
+            last_outcome: 'inmueble_no_disponible',
+            last_phase: 'unavailable',
+            nurturing_suppressed: 'inmueble_no_disponible',
+            ...(callData.call_id
+              ? { nurturing_handled_call_id: String(callData.call_id) }
+              : {}),
+          },
+        },
+      });
+      this.logger.log(
+        `[FASE3][NO DISPONIBLE] lead=${lead.id} columna H=NO — secuencias paradas=${stopped}. Sin WhatsApp, sin SMS y sin T+7/T+10. call=${callData.call_id || '?'}`,
+      );
+      return {
+        outcome,
+        phase: 'unknown',
+        whatsappSent: false,
+        smsSent: false,
+        enrolled: false,
+        markedIlocalizable: false,
+        leadId: lead.id,
+      };
+    }
 
     // Idempotencia: call_ended + call_analyzed del mismo call_id no deben
     // reenviar WhatsApp ni re-enrollar. El lock evita que los dos entren a la vez.

@@ -102,14 +102,16 @@ describe('sheet-row-mapper', () => {
     expect(String(cad.url_imagen)).not.toContain('maps');
   });
 
-  it('la imagen principal es la columna P (URL Imagen), aunque haya otro enlace Drive', () => {
-    const headers = Array.from({ length: 16 }, () => '');
+  it('la imagen principal es la columna Q (URL Imagen), aunque haya otro enlace Drive', () => {
+    const headers = Array.from({ length: 17 }, () => '');
     headers[0] = 'Fotos';
-    headers[15] = 'URL Imagen';
-    const values = Array.from({ length: 16 }, () => '');
+    headers[15] = 'Fecha modificación';
+    headers[16] = 'URL Imagen';
+    const values = Array.from({ length: 17 }, () => '');
     values[0] = 'https://drive.google.com/file/d/otraFoto/view';
-    values[15] =
-      '=HYPERLINK("https://drive.google.com/file/d/principalP/view";"ver")';
+    values[15] = '19/10/2026 18:14:03';
+    values[16] =
+      '=HYPERLINK("https://drive.google.com/file/d/principalQ/view";"ver")';
     const row = createIsolatedSheetRow({
       rowNumber: 12,
       headers,
@@ -118,8 +120,9 @@ describe('sheet-row-mapper', () => {
 
     const cad = sheetRowToCad(row, headers);
     const first = String(cad.url_imagen).split(',')[0];
-    expect(first).toContain('principalP');
+    expect(first).toContain('principalQ');
     expect(String(cad.url_imagen)).toContain('otraFoto');
+    expect(String(cad.url_imagen)).not.toContain('19/10/2026');
   });
 
   it('escanea cualquier celda con URL de Drive (p.ej. columna Fotos)', () => {
@@ -163,7 +166,7 @@ describe('sheet-row-mapper', () => {
       headers,
     );
     expect(cad.contrato).toBe('Alquiler');
-    expect(cad.modalidad_traspaso).toBe('Venta con inmueble');
+    expect(cad.modalidad_traspaso).toBeUndefined();
     expect(cad.disponibilidad).toBeUndefined();
   });
 
@@ -189,7 +192,7 @@ describe('sheet-row-mapper', () => {
       headers,
     );
     expect(cad.contrato).toBe('Venta');
-    expect(cad.modalidad_traspaso).toBe('Venta negocio');
+    expect(cad.modalidad_traspaso).toBeUndefined();
     expect(cad.disponibilidad).toBe('SI');
   });
 

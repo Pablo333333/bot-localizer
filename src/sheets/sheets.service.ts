@@ -9,6 +9,7 @@ import {
 } from './sheets-tracking';
 import {
   buildCadPropertyUpdates,
+  SHEET_FORCE_CLEAR,
   shouldWriteCell,
 } from './sheets-cad-updates';
 import {
@@ -23,6 +24,7 @@ import type { RetellCad } from '../wordpress/property-mapper';
 import {
   isolatedRowsFromGridPage,
   parseA1RangeRows,
+  SHEET_COL_DESCRIPCION,
   sheetReadColumnCount,
   sheetReadLastColumnLetter,
   type IsolatedSheetRow,
@@ -33,9 +35,23 @@ import {
   findOperacionHeader,
   findTraspasoModalidadHeader,
   formatOperationCell,
+  normalizeSheetHeader,
   parseDisponibilidadConfirmada,
-  parseTraspasoModalidad,
+  resolveTraspasoModalidad,
 } from './sheet-operation-headers';
+import {
+  isAcceptedImageCellValue,
+  isUrlImagenHeader,
+} from './sheet-image-cell';
+import {
+  columnLetterHeader,
+  descriptionHeadersIn,
+  findRowByIdentity,
+  identityHasKey,
+  readSheetRowIdentity,
+  resolveRowForCellUpdate,
+  TRASMUTADOS_SHEET_TITLES,
+} from './sheet-row-identity';
 import { isOwnerConversationComplete } from '../nurturing/followup/call-outcome.classifier';
 
 @Injectable()
@@ -230,6 +246,7 @@ export class SheetsService implements OnModuleInit {
   ): Promise<{
     found: boolean;
     sheet?: GoogleSpreadsheetWorksheet;
+    row?: IsolatedSheetRow;
     rowNumber?: number;
     wpPostId?: number;
     sheetCad: RetellCad;
@@ -259,6 +276,7 @@ export class SheetsService implements OnModuleInit {
     return {
       found: true,
       sheet,
+      row,
       rowNumber: row.rowNumber,
       wpPostId: readWpPostIdFromSheetRow(row),
       sheetCad,
@@ -468,6 +486,18 @@ export class SheetsService implements OnModuleInit {
       const header = matches[0];
       if (!headerSet.has(header)) continue;
 
+      const forceClear = value === SHEET_FORCE_CLEAR;
+      if (
+        !forceClear &&
+        isUrlImagenHeader(header) &&
+        !isAcceptedImageCellValue(value)
+      ) {
+        this.logger.warn(
+          `[updateSpecificCells] Fila ${rowNumber}: "${header}" no se pisa con un valor que no es URL/path de Drive ("${value.slice(0, 80)}").`,
+        );
+        continue;
+      }
+
       const a1 = a1ForHeader(header, headers, rowNumber);
       if (!a1) continue;
       cells.push({ a1, header, value });
@@ -484,6 +514,12 @@ export class SheetsService implements OnModuleInit {
     const written: { a1: string; header: string; value: string }[] = [];
     const dirty = cells.flatMap(({ a1, header, value }) => {
       const cell = sheet.getCellByA1(a1);
+      if (value === SHEET_FORCE_CLEAR) {
+        if (String(cell.value ?? '').trim() === '') return [];
+        cell.value = '';
+        written.push({ a1, header, value: '' });
+        return [cell];
+      }
       const liveText = String(cell.value ?? '').trim();
       const previous =
         liveText !== '' ? cell.value : (existingRow?.get(header) ?? cell.value);
@@ -510,6 +546,164 @@ export class SheetsService implements OnModuleInit {
 
     this.logger.log(
       `[updateSpecificCells] Fila ${rowNumber} → ${written.map((c) => `${c.header}(${c.a1})="${c.value}"`).join(', ')}`,
+    );
+  }
+
+  /**
+   * Descripción comercial. En Localizados se reubica la fila por ID o URL.
+   * En Trasmutados Otros se escribe la columna DL de la ficha con ese mismo
+   * ID o URL: el número de fila de Localizados no se reutiliza.
+   */
+  async writePropertyDescription(args: {
+    sourceSheet: GoogleSpreadsheetWorksheet;
+    sourceRow: IsolatedSheetRow;
+    content: string;
+    sourceRows?: IsolatedSheetRow[];
+    trasmutados?: {
+      sheet: GoogleSpreadsheetWorksheet;
+      rows: IsolatedSheetRow[];
+    } | null;
+  }): Promise<void> {
+    const content = String(args.content || '').trim();
+    if (!content) return;
+
+    const sourceHeaders = args.sourceSheet.headerValues || [];
+    const identity = readSheetRowIdentity(args.sourceRow, sourceHeaders);
+    const sourceRows =
+      args.sourceRows ?? (await this.getAllRows(args.sourceSheet)).rows;
+    const sourceTarget = resolveRowForCellUpdate(
+      sourceRows,
+      args.sourceRow.rowNumber,
+      identity,
+      sourceHeaders,
+    );
+
+    if (!sourceTarget) {
+      this.logger.warn(
+        `[Descripción] No se escribe en "${args.sourceSheet.title}": ninguna fila coincide con el ID o la URL (pista fila ${args.sourceRow.rowNumber}).`,
+      );
+    } else {
+      if (sourceTarget.rowNumber !== args.sourceRow.rowNumber) {
+        this.logger.warn(
+          `[Descripción] La ficha pasó de la fila ${args.sourceRow.rowNumber} a la ${sourceTarget.rowNumber}. Se usa el ID o la URL, no el número antiguo.`,
+        );
+      }
+      const fields: Record<string, string> = {};
+      for (const header of descriptionHeadersIn(sourceHeaders)) {
+        fields[header] = content;
+      }
+      if (Object.keys(fields).length === 0) {
+        await this.writeCellByLetter(
+          args.sourceSheet,
+          sourceTarget.rowNumber,
+          SHEET_COL_DESCRIPCION,
+          content,
+        );
+      } else {
+        await this.updateSpecificCells(
+          args.sourceSheet,
+          sourceTarget.rowNumber,
+          fields,
+          sourceTarget,
+        );
+      }
+    }
+
+    const trasmutados =
+      args.trasmutados !== undefined
+        ? args.trasmutados
+        : await this.readSheetIfPresent(TRASMUTADOS_SHEET_TITLES);
+    if (!trasmutados) {
+      this.logger.warn(
+        '[Descripción] Pestaña Trasmutados Otros no encontrada — no se escribe la columna DL.',
+      );
+      return;
+    }
+    if (!identityHasKey(identity)) {
+      this.logger.warn(
+        `[Descripción] Trasmutados Otros: la fila ${args.sourceRow.rowNumber} no tiene ID único ni URL de la propiedad. No se usa el número de fila.`,
+      );
+      return;
+    }
+
+    const trasHeaders = trasmutados.sheet.headerValues || [];
+    const target = findRowByIdentity(trasmutados.rows, identity, trasHeaders);
+    if (!target) {
+      this.logger.warn(
+        '[Descripción] Trasmutados Otros: ninguna fila con el mismo ID o URL. No se pisa otra ficha.',
+      );
+      return;
+    }
+
+    const named = descriptionHeadersIn(trasHeaders);
+    const dlHeader = columnLetterHeader(trasHeaders, SHEET_COL_DESCRIPCION);
+    const fields: Record<string, string> = {};
+    for (const header of named) fields[header] = content;
+    if (Object.keys(fields).length > 0) {
+      await this.updateSpecificCells(
+        trasmutados.sheet,
+        target.rowNumber,
+        fields,
+        target,
+      );
+    }
+    const dlAlreadyNamed = !!dlHeader && named.includes(dlHeader);
+    if (!dlAlreadyNamed) {
+      await this.writeCellByLetter(
+        trasmutados.sheet,
+        target.rowNumber,
+        SHEET_COL_DESCRIPCION,
+        content,
+      );
+    }
+    this.logger.log(
+      `[Descripción] Trasmutados Otros fila ${target.rowNumber} columna ${SHEET_COL_DESCRIPCION} localizada por ID/URL (no la fila ${args.sourceRow.rowNumber} de ${args.sourceSheet.title}).`,
+    );
+  }
+
+  async readSheetIfPresent(
+    titles: readonly string[],
+  ): Promise<{
+    sheet: GoogleSpreadsheetWorksheet;
+    rows: IsolatedSheetRow[];
+  } | null> {
+    await this.doc.loadInfo();
+    const sheet = this.findWorksheet(titles);
+    if (!sheet) return null;
+    return this.getAllRows(sheet);
+  }
+
+  private findWorksheet(
+    titles: readonly string[],
+  ): GoogleSpreadsheetWorksheet | null {
+    for (const title of titles) {
+      const exact = this.doc.sheetsByTitle[title];
+      if (exact) return exact;
+    }
+    const wanted = new Set(
+      titles.map((title) => normalizeSheetHeader(title).replace(/\s+/g, '')),
+    );
+    return (
+      this.doc.sheetsByIndex.find((sheet) =>
+        wanted.has(normalizeSheetHeader(sheet.title).replace(/\s+/g, '')),
+      ) ?? null
+    );
+  }
+
+  private async writeCellByLetter(
+    sheet: GoogleSpreadsheetWorksheet,
+    rowNumber: number,
+    letter: string,
+    value: string,
+  ): Promise<void> {
+    const a1 = `${letter}${rowNumber}`;
+    await sheet.loadCells(a1);
+    const cell = sheet.getCellByA1(a1);
+    if (!shouldWriteCell(cell.value, value)) return;
+    cell.value = value;
+    await sheet.saveCells([cell]);
+    this.logger.log(
+      `[updateSpecificCells] Fila ${rowNumber} → ${letter}(${a1}) escrita`,
     );
   }
 
@@ -862,7 +1056,7 @@ export class SheetsService implements OnModuleInit {
     if (operacionHeader && operacion) mapping[operacionHeader] = operacion;
 
     const modalidadHeader = findTraspasoModalidadHeader(headerValues);
-    const modalidadValue = parseTraspasoModalidad(modalidad);
+    const modalidadValue = resolveTraspasoModalidad(operacion || contrato, modalidad);
     if (modalidadHeader && modalidadValue) {
       mapping[modalidadHeader] = modalidadValue;
     }

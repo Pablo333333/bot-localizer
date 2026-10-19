@@ -7,10 +7,6 @@ import { isCadPublishable } from '../wordpress/property-mapper';
 import { isOwnerConversationComplete } from '../nurturing/followup/call-outcome.classifier';
 import { CommercialDescriptionService } from '../wordpress/commercial-description.service';
 import { PropertyMediaService } from '../wordpress/property-media.service';
-import {
-  COL_DESCRIPCION_PROPIETARIO,
-  COL_DESCRIPCION_PROPIETARIO_ALT,
-} from '../wordpress/wpresidence.constants';
 import { PropertyPublishEmailService } from '../notifications/property-publish-email.service';
 import { NoAnswerFollowupService } from '../nurturing/followup/no-answer-followup.service';
 import { resolveRetellLeadPhone } from '../nurturing/followup/retell-call-phone';
@@ -250,15 +246,12 @@ export class SheetsController {
       );
       mergedCad.descripcion_propietario = commercialContent;
 
-      if (sheetWrite.sheet && sheetWrite.rowNumber) {
-        await this.sheetsService.updateSpecificCells(
-          sheetWrite.sheet,
-          sheetWrite.rowNumber,
-          {
-            [COL_DESCRIPCION_PROPIETARIO]: commercialContent,
-            [COL_DESCRIPCION_PROPIETARIO_ALT]: commercialContent,
-          },
-        );
+      if (sheetWrite.sheet && sheetWrite.row) {
+        await this.sheetsService.writePropertyDescription({
+          sourceSheet: sheetWrite.sheet,
+          sourceRow: sheetWrite.row,
+          content: commercialContent,
+        });
       }
 
       const publicacionAutorizadaRaw =

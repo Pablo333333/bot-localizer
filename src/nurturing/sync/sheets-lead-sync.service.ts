@@ -206,30 +206,31 @@ export class SheetsLeadSyncService {
       return;
     }
 
-    let row: IsolatedSheetRow | undefined;
-
-    if (sheetsRowNumber != null) {
-      row = rows.find((r) => r.rowNumber === sheetsRowNumber);
-    }
-
-    if (!row) {
-      const targetKey = phoneDedupeKey(phone);
-      row = rows.find((r) => {
-        const candidates = [
-          r.get(COL_TEL_CONTACTO1),
-          r.get(COL_TELEFONO1),
-          r.get(COL_TELEFONO2),
-          r.get(COL_TELEFONO3),
-        ];
-        return candidates.some((c) => {
-          if (!c) return false;
-          try {
-            return phoneDedupeKey(String(c)) === targetKey;
-          } catch {
-            return false;
-          }
-        });
+    const targetKey = phoneDedupeKey(phone);
+    const phoneMatches = (candidate: IsolatedSheetRow): boolean => {
+      const phones = [
+        candidate.get(COL_TEL_CONTACTO1),
+        candidate.get(COL_TELEFONO1),
+        candidate.get(COL_TELEFONO2),
+        candidate.get(COL_TELEFONO3),
+      ];
+      return phones.some((value) => {
+        if (!value) return false;
+        try {
+          return phoneDedupeKey(String(value)) === targetKey;
+        } catch {
+          return false;
+        }
       });
+    };
+
+    let row: IsolatedSheetRow | undefined;
+    if (sheetsRowNumber != null) {
+      const hinted = rows.find((r) => r.rowNumber === sheetsRowNumber);
+      if (hinted && phoneMatches(hinted)) row = hinted;
+    }
+    if (!row) {
+      row = rows.find((r) => phoneMatches(r));
     }
 
     if (!row) {

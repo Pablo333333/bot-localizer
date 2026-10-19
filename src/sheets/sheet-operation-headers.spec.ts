@@ -3,8 +3,10 @@ import {
   findOperacionHeader,
   findTraspasoModalidadHeader,
   formatOperationCell,
+  operationIncludesTraspaso,
   parseDisponibilidadConfirmada,
   parseTraspasoModalidad,
+  resolveTraspasoModalidad,
 } from './sheet-operation-headers';
 
 describe('cabeceras Operación y modalidad de traspaso', () => {
@@ -39,6 +41,19 @@ describe('cabeceras Operación y modalidad de traspaso', () => {
     );
     expect(parseTraspasoModalidad('Venta negocio')).toBe('Venta negocio');
     expect(parseTraspasoModalidad('Traspaso')).toBe('');
+    expect(operationIncludesTraspaso('Alquiler, Traspaso')).toBe(true);
+    expect(operationIncludesTraspaso('Venta, Traspaso')).toBe(true);
+    expect(operationIncludesTraspaso('Traspaso')).toBe(true);
+    expect(operationIncludesTraspaso('Alquiler')).toBe(false);
+    expect(operationIncludesTraspaso('Venta')).toBe(false);
+    expect(resolveTraspasoModalidad('Alquiler', 'Venta negocio')).toBe('');
+    expect(resolveTraspasoModalidad('Venta', 'Venta con inmueble')).toBe('');
+    expect(resolveTraspasoModalidad('Venta, Traspaso', 'venta negocio')).toBe(
+      'Venta negocio',
+    );
+    expect(
+      resolveTraspasoModalidad('Alquiler, Traspaso', 'Venta con inmueble'),
+    ).toBe('Venta con inmueble');
   });
 
   it('la columna H es solo SI/NO y no se confunde con operación ni traspaso', () => {
