@@ -9,15 +9,23 @@ export const TONI_BOOKING_LINK =
   'https://api.leadconnectorhq.com/widget/bookings/cita-para-llamada';
 
 /**
+ * Enlace corto de WhatsApp embebido en la plantilla aprobada
+ * `seguimiento_fase_3_2`. No es variable: Twilio no admite cambiarlo
+ * en contentVariables.
+ */
+export const TONI_WHATSAPP_SHORT_LINK = 'wa.me/34644408099';
+
+/**
  * Texto libre SMS/WhatsApp cuando falla la plantilla oficial Twilio.
- * El copy de fallback sigue usando nombre + inmueble + enlace de cita.
- * La plantilla oficial solo recibe {{1}} = título del inmueble; el enlace
- * de agendamiento va embebido en el Content Template de Twilio.
+ * El copy de fallback sigue usando nombre + inmueble + enlace de cita
+ * y el mismo wa.me que la plantilla aprobada.
+ * La plantilla oficial solo recibe {{1}} = título del inmueble.
  */
 export const TONI_NO_ANSWER_MESSAGE = [
   'Hola {{1}}! Intentamos contactarte por el inmueble comercial {{2}} desde Localicer.com.',
   'Si quieres que programemos una hora para una nueva llamada puedes elegirla a través de este enlace:',
   `👉 ${TONI_BOOKING_LINK}`,
+  `También puedes hablarnos aquí: ${TONI_WHATSAPP_SHORT_LINK}`,
   'O responde directamente a este mensaje.',
   '¡Un saludo!',
 ].join('\n');
@@ -91,11 +99,44 @@ export const TEMPLATE_SMS_T7 = 'nurturing.sms.followup_d7';
 /**
  * Content SID Twilio SMS de seguimiento ({{1}} = título del inmueble;
  * el enlace de agendamiento va en el cuerpo de la plantilla).
- * Aprobado para SMS; aún NO para WhatsApp Business Initiated.
+ * Aprobado para SMS. No usarlo en WhatsApp.
  * Override: TWILIO_SMS_CONTENT_SID / TWILIO_CONTENT_SID_SEGUIMIENTO.
  */
 export const TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3 =
   'HX623b40271b0f7fab6282f6548e0ba487';
+
+/**
+ * Content SID de la plantilla WhatsApp `seguimiento_fase_3_2` (aprobada).
+ * Única variable: {{1}} = título del inmueble.
+ * El enlace de cita y wa.me/34644408099 van fijos en el cuerpo.
+ * Override: TWILIO_WHATSAPP_CONTENT_SID.
+ */
+export const TWILIO_WHATSAPP_CONTENT_SID_SEGUIMIENTO_FASE3 =
+  'HXb5f288b5cb78c4cb9d001ad5be46412e';
+
+export const TWILIO_WHATSAPP_TEMPLATE_NAME = 'seguimiento_fase_3_2';
+
+/**
+ * SID de WhatsApp de seguimiento. Un env vacío desactiva la plantilla.
+ * Si el payload trae el SID de SMS, se ignora y se usa el de WhatsApp.
+ */
+export function resolveWhatsappSeguimientoContentSid(options?: {
+  envSid?: string | null;
+  payloadSid?: string | null;
+}): string | undefined {
+  if (options?.envSid !== undefined && options.envSid !== null) {
+    const env = String(options.envSid).trim();
+    return env || undefined;
+  }
+  const payload = String(options?.payloadSid ?? '').trim();
+  if (
+    payload &&
+    payload !== TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3
+  ) {
+    return payload;
+  }
+  return TWILIO_WHATSAPP_CONTENT_SID_SEGUIMIENTO_FASE3;
+}
 
 export const DEFAULT_TONI_SEQUENCE_NAME =
   'Seguimiento Toni (T+0 WA/SMS → T+7 Call → T+10 Call)';

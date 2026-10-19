@@ -16,6 +16,7 @@ import {
   TEMPLATE_WA_T0,
   TONI_BOOKING_LINK,
   TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3,
+  resolveWhatsappSeguimientoContentSid,
   renderToniNoAnswerFallback,
   resolveCallPhase,
   resolveRetellFollowupAgentId,
@@ -38,7 +39,10 @@ import {
   isOutboundSandboxWhitelistEnabled,
 } from '../../outbound/outbound-sandbox-whitelist';
 import { CallOutcomeClassifier } from './call-outcome.classifier';
-import { callSaysPropertyUnavailable } from './property-unavailable';
+import {
+  callSaysPropertyUnavailable,
+  shouldSendFase3FollowupMessage,
+} from './property-unavailable';
 import {
   planToniSequence,
 } from './no-answer-followup.policy';
@@ -382,6 +386,7 @@ export class NoAnswerFollowupService {
       const sent = await this.sendToniBookingMessages(lead, callData.call_id, {
         whatsapp: plan.sendWhatsApp,
         sms: plan.sendSms,
+        rejected: this.classifier.shouldMarkClosed(outcome),
         /** Si WA falla o está deshabilitado, no perder el hilo: enviar SMS. */
         smsFallbackIfWhatsappFails: plan.sendWhatsApp && !plan.sendSms,
         waKey: TEMPLATE_WA_T0,
@@ -674,6 +679,8 @@ export class NoAnswerFollowupService {
       sms: boolean;
       /** Si true y WA no llega, dispara SMS con Content SID (evita fallo silencioso). */
       smsFallbackIfWhatsappFails?: boolean;
+      /** Rechazo explícito: no se llama a Twilio. */
+      rejected?: boolean;
       waKey?: string;
       smsKey?: string;
       summaryPrefix: string;
@@ -683,13 +690,27 @@ export class NoAnswerFollowupService {
   ): Promise<{ whatsappSent: boolean; smsSent: boolean }> {
     const bookingLink =
       this.config.get<string>('BOOKING_LINK_CALL') || TONI_BOOKING_LINK;
-    // Content SID: plantilla Twilio ({{1}} = título inmueble; enlace embebido).
+    const waContentSid = resolveWhatsappSeguimientoContentSid({
+      envSid: this.config.get<string>('TWILIO_WHATSAPP_CONTENT_SID'),
+    });
+    if (
+      !shouldSendFase3FollowupMessage({
+        disponibilidad: opts.callVars?.disponibilidad,
+        rejected: opts.rejected === true,
+      })
+    ) {
+      this.logger.log(
+        `[FASE3][MENSAJE] no se invoca contentSid=${waContentSid || '-'} lead=${lead.id}: inmueble no disponible o seguimiento rechazado`,
+      );
+      return { whatsappSent: false, smsSent: false };
+    }
+    // {{1}} = título del inmueble. wa.me/34644408099 va fijo en la plantilla WA.
     const contentVariables = buildSeguimientoSmsContentVariables(
       lead,
       opts.callVars,
     );
     this.logger.log(
-      `[Followup] Content vars lead=${lead.id} {{1}} título=${JSON.stringify(contentVariables['1'])}`,
+      `[Followup] Content vars lead=${lead.id} {{1}} título=${JSON.stringify(contentVariables['1'])} waSid=${waContentSid || '-'}`,
     );
     if (!contentVariables['1']) {
       this.logger.warn(
@@ -697,21 +718,26 @@ export class NoAnswerFollowupService {
       );
     }
 
-    const payload: Record<string, unknown> = {
+    const sharedPayload: Record<string, unknown> = {
       body: renderToniNoAnswerFallback(contentVariables, lead.name),
       booking_link: bookingLink,
       contentVariables,
       /** La llamada 1 de la secuencia siempre intenta WhatsApp, aunque el flag esté en false. */
       bypassWhatsappGate: true,
     };
-    const explicitSid =
+    const explicitSmsSid =
       this.config.get<string>('TWILIO_SMS_CONTENT_SID') ??
       this.config.get<string>('TWILIO_CONTENT_SID_SEGUIMIENTO');
-    if (explicitSid !== undefined && String(explicitSid).trim() !== '') {
-      payload.contentSid = String(explicitSid).trim();
-    } else if (explicitSid === undefined) {
-      payload.contentSid = TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3;
+    const smsPayload: Record<string, unknown> = { ...sharedPayload };
+    if (explicitSmsSid !== undefined && String(explicitSmsSid).trim() !== '') {
+      smsPayload.contentSid = String(explicitSmsSid).trim();
+    } else if (explicitSmsSid === undefined) {
+      smsPayload.contentSid = TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3;
     }
+    const waPayload: Record<string, unknown> = {
+      ...sharedPayload,
+      ...(waContentSid ? { contentSid: waContentSid } : {}),
+    };
     const stepRunId = `retell:${callId || 'unknown'}`;
     let whatsappSent = false;
     let smsSent = false;
@@ -727,7 +753,7 @@ export class NoAnswerFollowupService {
           name: lead.name,
           email: lead.email,
           templateKey: opts.waKey || TEMPLATE_WA_T0,
-          templatePayload: payload,
+          templatePayload: waPayload,
           stepRunId,
         });
         whatsappSent = result.success;
@@ -769,7 +795,7 @@ export class NoAnswerFollowupService {
         name: lead.name,
         email: lead.email,
         templateKey: opts.smsKey || TEMPLATE_SMS_T0,
-        templatePayload: payload,
+        templatePayload: smsPayload,
         stepRunId,
       });
       smsSent = result.success;

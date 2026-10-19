@@ -7,13 +7,16 @@ import {
   TEMPLATE_CALL_FOLLOWUP_D10,
   TEMPLATE_CALL_FOLLOWUP_D7,
   TONI_NO_ANSWER_MESSAGE,
+  TONI_WHATSAPP_SHORT_LINK,
   TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3,
+  TWILIO_WHATSAPP_CONTENT_SID_SEGUIMIENTO_FASE3,
   isFollowupCallTemplate,
   parseTwilioContentVariables,
   renderToniNoAnswerFallback,
   resolveCallPhase,
   resolveRetellFollowupAgentId,
   resolveRetellFromNumber,
+  resolveWhatsappSeguimientoContentSid,
   twilioSeguimientoContentVariablesJson,
 } from './toni-fase3.constants';
 
@@ -45,16 +48,21 @@ describe('Toni Fase 3 constants', () => {
     expect(TONI_NO_ANSWER_MESSAGE).toContain(
       'https://api.leadconnectorhq.com/widget/bookings/cita-para-llamada',
     );
+    expect(TONI_NO_ANSWER_MESSAGE).toContain(TONI_WHATSAPP_SHORT_LINK);
     expect(TONI_NO_ANSWER_MESSAGE).toContain('O responde directamente a este mensaje.');
   });
 
   it('Twilio contentVariables solo envía {{1}} = título', () => {
     expect(
-      twilioSeguimientoContentVariablesJson({ '1': 'Local Gran Vía' }),
-    ).toBe(JSON.stringify({ '1': 'Local Gran Vía' }));
+      twilioSeguimientoContentVariablesJson({
+        '1': 'Local comercial de 53 m2',
+        '2': TONI_WHATSAPP_SHORT_LINK,
+      }),
+    ).toBe(JSON.stringify({ '1': 'Local comercial de 53 m2' }));
     expect(twilioSeguimientoContentVariablesJson({})).toBe(
       JSON.stringify({ '1': 'tu inmueble comercial' }),
     );
+    expect(TONI_WHATSAPP_SHORT_LINK).toBe('wa.me/34644408099');
   });
 
   it('renderToniNoAnswerFallback usa nombre en saludo y título Twilio {{1}} como inmueble', () => {
@@ -81,6 +89,23 @@ describe('Toni Fase 3 constants', () => {
     expect(TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3).toBe(
       'HX623b40271b0f7fab6282f6548e0ba487',
     );
+  });
+
+  it('WhatsApp seguimiento_fase_3_2 usa su Content SID y no el de SMS', () => {
+    expect(TWILIO_WHATSAPP_CONTENT_SID_SEGUIMIENTO_FASE3).toBe(
+      'HXb5f288b5cb78c4cb9d001ad5be46412e',
+    );
+    expect(resolveWhatsappSeguimientoContentSid()).toBe(
+      'HXb5f288b5cb78c4cb9d001ad5be46412e',
+    );
+    expect(
+      resolveWhatsappSeguimientoContentSid({
+        payloadSid: TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3,
+      }),
+    ).toBe('HXb5f288b5cb78c4cb9d001ad5be46412e');
+    expect(
+      resolveWhatsappSeguimientoContentSid({ envSid: '' }),
+    ).toBeUndefined();
   });
 
   it('templates T+7/T+10 son follow-up', () => {

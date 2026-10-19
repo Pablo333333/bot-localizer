@@ -42,6 +42,19 @@ type SheetRowLike = {
   getByColumnLetter?: (letter: string) => unknown;
 };
 
+/**
+ * No disparar WhatsApp/SMS de seguimiento si la columna H es NO
+ * o el propietario rechazó el contacto.
+ */
+export function shouldSendFase3FollowupMessage(input: {
+  disponibilidad?: unknown;
+  rejected?: boolean;
+}): boolean {
+  if (input.rejected) return false;
+  if (parseDisponibilidadConfirmada(input.disponibilidad) === 'NO') return false;
+  return true;
+}
+
 /** Columna H de la fila, por cabecera o por letra. */
 export function sheetRowSaysPropertyUnavailable(
   row: SheetRowLike,

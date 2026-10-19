@@ -2,6 +2,7 @@ import { createIsolatedSheetRow } from '../../sheets/sheet-row-isolation';
 import {
   callSaysPropertyUnavailable,
   sheetRowSaysPropertyUnavailable,
+  shouldSendFase3FollowupMessage,
 } from './property-unavailable';
 
 describe('inmueble no disponible', () => {
@@ -43,5 +44,20 @@ describe('inmueble no disponible', () => {
       values: ['Traspaso', 'Venta negocio', 'SI'],
     });
     expect(sheetRowSaysPropertyUnavailable(available, headers)).toBe(false);
+  });
+
+  it('no dispara el Content SID si H es NO o hubo rechazo', () => {
+    expect(
+      shouldSendFase3FollowupMessage({ disponibilidad: 'NO' }),
+    ).toBe(false);
+    expect(
+      shouldSendFase3FollowupMessage({
+        disponibilidad: 'SI',
+        rejected: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldSendFase3FollowupMessage({ disponibilidad: 'SI' }),
+    ).toBe(true);
   });
 });

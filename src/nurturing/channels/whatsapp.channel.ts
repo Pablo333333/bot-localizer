@@ -5,6 +5,9 @@ import { Channel } from '../enums';
 import {
   parseTwilioContentVariables,
   renderToniNoAnswerFallback,
+  resolveWhatsappSeguimientoContentSid,
+  TONI_WHATSAPP_SHORT_LINK,
+  TWILIO_WHATSAPP_TEMPLATE_NAME,
   twilioSeguimientoContentVariablesJson,
 } from '../toni-fase3.constants';
 import { formatE164Spain, toWhatsAppAddress } from '../utils/phone.util';
@@ -19,11 +22,9 @@ import { isProviderBalanceError } from '../engine/provider-balance';
 /**
  * WhatsApp vía Twilio.
  *
- * Business Initiated requiere Content Template aprobado en canal WA.
- * Si la plantilla falla, reenvía el copy libre de agendamiento.
- * Mientras `seguimiento_lead_fase3` no esté aprobado para WA, dejar
- * NURTURING_WHATSAPP_ENABLED≠true (default) para no intentar envíos que fallan
- * y dejar que el follow-up use SMS.
+ * Business Initiated usa la plantilla aprobada `seguimiento_fase_3_2`
+ * ({{1}} = título del inmueble; wa.me/34644408099 va fijo en el cuerpo).
+ * Si la plantilla falla, reenvía el copy libre con el mismo enlace corto.
  */
 @Injectable()
 export class WhatsappChannel implements NurturingChannel {
@@ -94,10 +95,18 @@ export class WhatsappChannel implements NurturingChannel {
     }
 
     try {
-      const contentSid = (
-        payload.templatePayload?.contentSid as string | undefined
-      )?.trim();
+      const contentSid = resolveWhatsappSeguimientoContentSid({
+        envSid: this.config.get<string>('TWILIO_WHATSAPP_CONTENT_SID'),
+        payloadSid: payload.templatePayload?.contentSid as string | undefined,
+      });
       const useTemplate = Boolean(contentSid);
+      const variablesJson = useTemplate
+        ? twilioSeguimientoContentVariablesJson(contentVariables)
+        : undefined;
+
+      this.logger.log(
+        `[WhatsAppService] plantilla=${TWILIO_WHATSAPP_TEMPLATE_NAME} contentSid=${contentSid || '(body libre)'} contentVariables=${variablesJson || '-'} shortLink=${TONI_WHATSAPP_SHORT_LINK}`,
+      );
 
       const message = await createTwilioMessageWithTemplateFallback(
         this.client,
@@ -106,9 +115,7 @@ export class WhatsappChannel implements NurturingChannel {
           to,
           body,
           contentSid: useTemplate ? contentSid : undefined,
-          contentVariables: useTemplate
-            ? twilioSeguimientoContentVariablesJson(contentVariables)
-            : undefined,
+          contentVariables: variablesJson,
         },
         this.logger,
         'WhatsAppService',

@@ -1,10 +1,11 @@
 /**
- * Variables del Content Template Twilio de seguimiento:
+ * Variables del Content Template Twilio de seguimiento (SMS y WhatsApp
+ * `seguimiento_fase_3_2`):
  *   {{1}} = título del inmueble (Direccion titulo anuncio / propiedad)
  *
- * El enlace de agendamiento no es variable: lo incluye la plantilla Twilio.
- * Valores dinámicos desde Lead (Sheets → Postgres) y, si faltan,
- * desde variables Retell de la llamada. Sin literales fijos de negocio.
+ * No hay {{2}}. El enlace de cita y wa.me/34644408099 van fijos en la
+ * plantilla de WhatsApp. Valores dinámicos desde Lead (Sheets → Postgres)
+ * y, si faltan, desde variables Retell de la llamada.
  */
 
 export type LeadLikeForSmsVars = {
