@@ -42,6 +42,13 @@ import {
   isWithinCallCooldown,
   latestAttemptTimestamp,
 } from './outbound-call-cooldown';
+import {
+  isProviderTokenFailure,
+  OUTBOUND_CYCLE_STALE_MS,
+  shouldSkipOutboundCycle,
+  withTimeout,
+} from './outbound-cycle-guard';
+import { PrismaService } from '../prisma/prisma.service';
 
 const SHEET_NAME = 'Localizados';
 const COL_LLAMADO = 'Llamado';
@@ -68,6 +75,8 @@ export class OutboundService {
   private readonly agentId: string;
   private readonly fromNumber: string;
   private isRunning = false;
+  private runningSince = 0;
+  private cycleGeneration = 0;
 
   /** Fuente de verdad del límite diario: intentos de esta sesión/día Madrid. */
   private readonly attemptedPhonesToday = new Set<string>();
@@ -80,6 +89,7 @@ export class OutboundService {
   constructor(
     private readonly sheetsService: SheetsService,
     private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
   ) {
     this.retell = new Retell({
       apiKey: this.configService.getOrThrow<string>('RETELL_API_KEY'),
@@ -165,18 +175,73 @@ export class OutboundService {
       );
     }
 
-    if (this.isRunning) {
+    const nowMs = Date.now();
+    if (
+      shouldSkipOutboundCycle(
+        { running: this.isRunning, runningSince: this.runningSince },
+        nowMs,
+      )
+    ) {
       this.logger.log(
         '[OutboundService] Descartado ciclo: ejecución anterior aún en curso.',
       );
       return;
     }
+    if (this.isRunning) {
+      this.logger.warn(
+        `[OutboundService] El ciclo anterior supera ${Math.round(OUTBOUND_CYCLE_STALE_MS / 1000)}s. Se libera el lock para no parar el lote.`,
+      );
+    }
 
+    const cycleId = ++this.cycleGeneration;
     this.isRunning = true;
+    this.runningSince = nowMs;
     try {
       await this.processPendingCalls(mode.maxDailyCalls);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const code = isProviderTokenFailure(message)
+        ? 'outbound_token'
+        : 'outbound_cycle';
+      await this.recordCycleFailure(code, message);
+      if (code === 'outbound_token') {
+        try {
+          await this.sheetsService.reinitialize();
+          this.logger.warn(
+            '[OutboundService] Credenciales de Sheets renovadas. El siguiente ciclo reintenta el lote.',
+          );
+        } catch (refreshErr) {
+          const refreshMessage =
+            refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
+          await this.recordCycleFailure(
+            'outbound_token',
+            `No se pudieron renovar las credenciales de Sheets: ${refreshMessage}`,
+          );
+        }
+      }
     } finally {
-      this.isRunning = false;
+      if (this.cycleGeneration === cycleId) {
+        this.isRunning = false;
+      }
+    }
+  }
+
+  /** Deja el fallo en log y en ExecutionErrorLog. Un fallo de base de datos no tumba el cron. */
+  private async recordCycleFailure(code: string, message: string): Promise<void> {
+    this.logger.error(`[OutboundService] ${code}: ${message}`);
+    try {
+      await this.prisma.executionErrorLog.create({
+        data: {
+          code,
+          message: message.slice(0, 2000),
+          payload: { job: 'outbound_fase1' },
+        },
+      });
+    } catch (err) {
+      const dbMessage = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `[OutboundService] No se pudo guardar ${code} en la base de datos: ${dbMessage}`,
+      );
     }
   }
 
@@ -214,7 +279,7 @@ export class OutboundService {
       );
     }
 
-    const { sheet, rows } = await this.sheetsService.getAllRows(SHEET_NAME);
+    const { sheet, rows } = await this.readSheetWithRetry();
 
     if (!sheet) {
       this.logger.error(
@@ -378,18 +443,22 @@ export class OutboundService {
         }
 
         this.logger.log(
-          `[OutboundService] Fila ${rowNumber} ACEPTADA (sandbox) → marcando Llamado=SI y disparando Retell (${phone}) | municipio="${dynamicVars.municipio || '(vacío)'}"`,
+          `[OutboundService] Fila ${rowNumber} ACEPTADA → disparando Retell (${phone}) | municipio="${dynamicVars.municipio || '(vacío)'}"`,
         );
 
-        const guarded = await safeCreatePhoneCall(
-          this.retell,
-          {
-            from_number: this.fromNumber,
-            to_number: phone,
-            override_agent_id: this.agentId,
-            retell_llm_dynamic_variables: dynamicVars,
-          },
-          (msg) => this.logger.warn(msg),
+        const guarded = await withTimeout(
+          safeCreatePhoneCall(
+            this.retell,
+            {
+              from_number: this.fromNumber,
+              to_number: phone,
+              override_agent_id: this.agentId,
+              retell_llm_dynamic_variables: dynamicVars,
+            },
+            (msg) => this.logger.warn(msg),
+          ),
+          30_000,
+          'Retell createPhoneCall',
         );
 
         if (guarded.skipped) {
@@ -399,42 +468,85 @@ export class OutboundService {
           continue;
         }
 
-        // Marcar ANTES de persistir call_id — solo celdas de tracking (nunca row.save() de fila completa)
-        await this.sheetsService.updateTrackingCells(sheet, row.rowNumber, {
-          [COL_LLAMADO]: 'SI',
-          [COL_FECHA_ACTUALIZACION]: nowLabel,
-        }, row);
-
+        const call = guarded.call;
         this.rememberAttempt(phoneKey);
         this.dailyAttemptCount++;
         remainingToday--;
         callsLaunchedThisRun++;
         this.scheduleNextOrganicDialSlot();
 
+        try {
+          await withTimeout(
+            this.sheetsService.updateTrackingCells(sheet, row.rowNumber, {
+              [COL_LLAMADO]: 'SI',
+              [COL_FECHA_ACTUALIZACION]: nowLabel,
+              [COL_CALL_ID]: call.call_id,
+            }, row),
+            20_000,
+            'Sheet updateTrackingCells',
+          );
+        } catch (sheetErr) {
+          const sheetMessage =
+            sheetErr instanceof Error ? sheetErr.message : String(sheetErr);
+          this.logger.error(
+            `[OutboundService] Fila ${rowNumber} llamada ya lanzada call_id=${call.call_id} pero el Sheet no se actualizó: ${sheetMessage}`,
+          );
+          if (isProviderTokenFailure(sheetMessage)) throw sheetErr;
+        }
+
         this.logger.log(
           `[OutboundService] createPhoneCall agent=${this.agentId} fila=${rowNumber} tel=${phone} retell_llm_dynamic_variables (${Object.keys(dynamicVars).length}/${RETELL_OUTBOUND_VARIABLE_KEYS.length}): ${JSON.stringify(dynamicVars)}`,
         );
-
-        const call = guarded.call;
-
-        await this.sheetsService.updateTrackingCells(sheet, row.rowNumber, {
-          [COL_CALL_ID]: call.call_id,
-        });
-
         this.logger.log(
           `[OutboundService] Fila ${rowNumber} OK — call_id=${call.call_id} | intentos hoy=${this.dailyAttemptCount}/${maxDailyCalls}`,
         );
         break;
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
         this.logger.error(
-          `[OutboundService] Fila ${rowNumber} error Retell: ${(err as Error).message}`,
+          `[OutboundService] Fila ${rowNumber} error Retell: ${message}`,
         );
+        if (
+          isProviderTokenFailure(message) ||
+          /superó \d+ ms/.test(message)
+        ) {
+          throw err;
+        }
       }
     }
 
     this.logger.log(
       `[OutboundService] Ciclo terminado. Intentos en este run: ${callsLaunchedThisRun}. Total día (memoria): ${this.dailyAttemptCount}/${maxDailyCalls}`,
     );
+  }
+
+  /**
+   * La lectura del Sheet es lo que puede dejar el cron colgado.
+   * Si el token caduca, se renueva una vez y se reintenta en el mismo ciclo.
+   */
+  private async readSheetWithRetry(): Promise<{
+    sheet: Awaited<ReturnType<SheetsService['getAllRows']>>['sheet'];
+    rows: Awaited<ReturnType<SheetsService['getAllRows']>>['rows'];
+  }> {
+    try {
+      return await withTimeout(
+        this.sheetsService.getAllRows(SHEET_NAME),
+        45_000,
+        'Lectura del Sheet',
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!isProviderTokenFailure(message)) throw err;
+      this.logger.warn(
+        `[OutboundService] Token de Sheets rechazado (${message}). Renovando credenciales y reintentando la lectura.`,
+      );
+      await this.sheetsService.reinitialize();
+      return withTimeout(
+        this.sheetsService.getAllRows(SHEET_NAME),
+        45_000,
+        'Lectura del Sheet',
+      );
+    }
   }
 
   /**

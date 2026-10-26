@@ -72,11 +72,13 @@ export class InboundSummaryLanguageService implements OnModuleInit {
       }
     }
 
+    const toPublish = await this.readAgent(apiKey, agentId);
     await retellRequest({
       fetchImpl: fetch,
       apiKey,
       method: 'POST',
-      path: `/publish-agent/${encodeURIComponent(agentId)}`,
+      path: `/publish-agent-version/${encodeURIComponent(agentId)}`,
+      jsonBody: { version: toPublish?.version },
       requireJsonBody: false,
     });
     this.logger.log(

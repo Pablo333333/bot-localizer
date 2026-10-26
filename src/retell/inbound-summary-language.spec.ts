@@ -79,7 +79,7 @@ describe('inbound summary language', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
       apiKey: 'test-key',
       method: 'POST',
-      path: '/publish-agent/agent_1',
+      path: '/publish-agent-version/agent_1',
       requireJsonBody: false,
       attempts: 3,
       sleep: async () => undefined,

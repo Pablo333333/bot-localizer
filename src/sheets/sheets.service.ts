@@ -60,7 +60,15 @@ export class SheetsService implements OnModuleInit {
   private doc: GoogleSpreadsheet;
 
   async onModuleInit(): Promise<void> {
-    let credentials: any;
+    await this.reinitialize();
+  }
+
+  /**
+   * Vuelve a firmar el JWT y recarga el documento.
+   * Un invalid_grant o un 401 a mitad del día no deja el lote mudo hasta el redeploy.
+   */
+  async reinitialize(): Promise<void> {
+    let credentials: { client_email?: string; private_key?: string } | undefined;
 
     if (process.env.GOOGLE_CREDENTIALS_JSON) {
       try {
@@ -68,7 +76,7 @@ export class SheetsService implements OnModuleInit {
         this.logger.log(
           'Sheets Service: Usando credenciales desde variable de entorno',
         );
-      } catch (err) {
+      } catch {
         this.logger.error(
           'Error al parsear GOOGLE_CREDENTIALS_JSON, usando fallback de archivo',
         );
@@ -82,6 +90,10 @@ export class SheetsService implements OnModuleInit {
       );
       credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
       this.logger.log('Sheets Service: Usando credenciales desde archivo físico');
+    }
+
+    if (!credentials?.client_email || !credentials.private_key) {
+      throw new Error('Credenciales de Google Sheets no disponibles');
     }
 
     const auth = new JWT({

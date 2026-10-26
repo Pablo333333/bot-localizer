@@ -4,21 +4,33 @@ import { calendar, calendar_v3 } from '@googleapis/calendar';
 import { JWT } from 'google-auth-library';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  formatMadridSlotLabel,
+  intervalsOverlap,
+  isWithinBookingWindow,
+  listFreeSlots,
+  madridWallToUtc,
+  MIN_LEAD_MS,
+  parseSlotInput,
+  SLOT_DURATION_MS,
+  type BusyInterval,
+  type CalendarSlot,
+} from './calendar-slots';
 
 @Injectable()
 export class CalendarService {
   private readonly logger = new Logger(CalendarService.name);
-  private calendarClient: calendar_v3.Calendar;
+  private calendarClient: calendar_v3.Calendar | null = null;
   private readonly calendarId: string;
 
   constructor(private configService: ConfigService) {
-    this.calendarId = this.configService.get<string>('GOOGLE_CALENDAR_ID')!;
+    this.calendarId = this.configService.get<string>('GOOGLE_CALENDAR_ID') || '';
     this.initCalendar();
   }
 
   private initCalendar() {
     try {
-      let credentials: any;
+      let credentials: { client_email?: string; private_key?: string } | undefined;
 
       if (process.env.GOOGLE_CREDENTIALS_JSON) {
         try {
@@ -26,7 +38,7 @@ export class CalendarService {
           this.logger.log(
             'Google Calendar: Usando credenciales desde variable de entorno',
           );
-        } catch (err) {
+        } catch {
           this.logger.error(
             'Error al parsear GOOGLE_CREDENTIALS_JSON, usando fallback de archivo',
           );
@@ -34,14 +46,13 @@ export class CalendarService {
       }
 
       if (!credentials) {
-        const credentialsPath = path.join(
-          process.cwd(),
-          'google-credentials.json',
-        );
+        const credentialsPath = path.join(process.cwd(), 'google-credentials.json');
         credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
-        this.logger.log(
-          'Google Calendar: Usando credenciales desde archivo físico',
-        );
+        this.logger.log('Google Calendar: Usando credenciales desde archivo físico');
+      }
+
+      if (!credentials?.client_email || !credentials.private_key) {
+        throw new Error('Credenciales de Google Calendar no disponibles');
       }
 
       const auth = new JWT({
@@ -53,112 +64,168 @@ export class CalendarService {
       this.calendarClient = calendar({ version: 'v3', auth });
       this.logger.log('Google Calendar Service inicializado correctamente');
     } catch (error) {
-      this.logger.error(`Error al inicializar Google Calendar: ${error.message}`);
+      this.calendarClient = null;
+      this.logger.error(
+        `Error al inicializar Google Calendar: ${(error as Error).message}`,
+      );
     }
   }
 
-  /**
-   * Consulta disponibilidad real en Google Calendar
-   * Busca huecos libres entre 9:00 y 18:00 para los próximos 3 días
-   */
-  async getAvailableSlots(): Promise<string[]> {
-    this.logger.log(`Consultando disponibilidad real para el calendario: ${this.calendarId}`);
-    
-    try {
-      const now = new Date();
-      const threeDaysLater = new Date();
-      threeDaysLater.setDate(now.getDate() + 3);
+  /** Etiquetas en español, para el flujo de WhatsApp. */
+  async getAvailableSlots(now: Date = new Date()): Promise<string[]> {
+    const slots = await this.listBookableSlots(now);
+    return slots.map((slot) => slot.etiqueta);
+  }
 
+  async listBookableSlots(now: Date = new Date()): Promise<CalendarSlot[]> {
+    if (!this.calendarClient || !this.calendarId) {
+      this.logger.error('Google Calendar no está inicializado');
+      return [];
+    }
+    const horizon = new Date(now.getTime() + 8 * 24 * 60 * 60 * 1000);
+    try {
       const response = await this.calendarClient.events.list({
         calendarId: this.calendarId,
         timeMin: now.toISOString(),
-        timeMax: threeDaysLater.toISOString(),
+        timeMax: horizon.toISOString(),
         singleEvents: true,
         orderBy: 'startTime',
       });
-
-      const events = response.data.items || [];
-      const slots: string[] = [];
-
-      // Definimos el horario comercial: 9:00 a 18:00
-      const startHour = 9;
-      const endHour = 18;
-
-      for (let i = 0; i <= 3; i++) {
-        const day = new Date();
-        day.setDate(now.getDate() + i);
-        day.setHours(0, 0, 0, 0);
-
-        // Si es hoy y ya pasaron las 18:00, saltamos
-        if (i === 0 && now.getHours() >= endHour) continue;
-
-        const dateStr = day.toLocaleDateString('es-ES');
-
-        // Generamos huecos de 1 hora entre las 9 y las 17 (para terminar a las 18)
-        for (let hour = startHour; hour < endHour; hour++) {
-          const slotStart = new Date(day);
-          slotStart.setHours(hour, 0, 0, 0);
-
-          // Si es hoy, solo mostramos huecos futuros (con 2 horas de margen)
-          if (i === 0 && slotStart.getTime() < now.getTime() + 2 * 3600000) continue;
-
-          const slotEnd = new Date(slotStart);
-          slotEnd.setHours(hour + 1);
-
-          // Verificamos si este hueco choca con algún evento
-          const isBusy = events.some(event => {
-            const eventStart = new Date(event.start?.dateTime || event.start?.date || '');
-            const eventEnd = new Date(event.end?.dateTime || event.end?.date || '');
-            return (slotStart < eventEnd && slotEnd > eventStart);
-          });
-
-          if (!isBusy) {
-            slots.push(`${dateStr} a las ${hour}:00`);
-          }
-
-          // Limitamos a 6 huecos en total para no saturar el chat
-          if (slots.length >= 6) return slots;
-        }
-      }
-
-      return slots;
+      return listFreeSlots({
+        now,
+        busy: this.busyIntervals(response.data.items || []),
+      });
     } catch (error) {
-      this.logger.error(`Error al consultar disponibilidad: ${error.message}`);
-      return ['Mañana a las 10:00', 'Mañana a las 16:00']; // Fallback
+      this.logger.error(
+        `Error al consultar disponibilidad: ${(error as Error).message}`,
+      );
+      return [];
     }
   }
 
   /**
-   * Inserta un evento en el calendario usando la API real
+   * Inserta la cita en la hora indicada. Si el texto no es un hueco válido,
+   * no crea un evento "ahora".
    */
-  async bookAppointment(userPhone: string, slot: string, details: string): Promise<boolean> {
-    this.logger.log(`Agendando cita en ${this.calendarId} para ${userPhone} en el hueco: ${slot}`);
-    
-    try {
-      // Nota: En una integración real, 'slot' debería ser un objeto Date. 
-      // Aquí simplificamos para el flujo de la Fase 2.
-      const event = {
-        summary: `Visita Localicer - ${userPhone}`,
-        description: details,
-        start: {
-          dateTime: new Date().toISOString(), // Fallback por ahora
-          timeZone: this.configService.get('TIMEZONE') || 'Europe/Madrid',
-        },
-        end: {
-          dateTime: new Date(Date.now() + 3600000).toISOString(),
-          timeZone: this.configService.get('TIMEZONE') || 'Europe/Madrid',
-        },
-      };
-
-      await this.calendarClient.events.insert({
-        calendarId: this.calendarId,
-        requestBody: event,
-      });
-
-      return true;
-    } catch (error) {
-      this.logger.error(`Error al insertar evento en Google Calendar: ${error.message}`);
+  async bookAppointment(
+    userPhone: string,
+    slot: string,
+    details: string,
+    now: Date = new Date(),
+  ): Promise<boolean> {
+    const start = parseSlotInput(slot, now);
+    if (!start) {
+      this.logger.error(`Hueco de cita no interpretable: "${slot}"`);
       return false;
     }
+    const booked = await this.bookCallSlot({
+      start,
+      phone: userPhone,
+      motivo: details,
+      now,
+    });
+    return booked.ok;
+  }
+
+  async bookCallSlot(input: {
+    start: Date;
+    phone: string;
+    nombre?: string;
+    motivo?: string;
+    now?: Date;
+  }): Promise<{ ok: boolean; etiqueta?: string; error?: string }> {
+    if (!this.calendarClient || !this.calendarId) {
+      return { ok: false, error: 'El calendario no está disponible.' };
+    }
+    const now = input.now ?? new Date();
+    const start = input.start;
+    if (
+      start.getTime() < now.getTime() + MIN_LEAD_MS ||
+      !isWithinBookingWindow(start)
+    ) {
+      return {
+        ok: false,
+        error: 'Ese hueco no se puede reservar. Consulta de nuevo y elige otro.',
+      };
+    }
+    const end = new Date(start.getTime() + SLOT_DURATION_MS);
+    const etiqueta = formatMadridSlotLabel(start);
+
+    try {
+      const existing = await this.calendarClient.events.list({
+        calendarId: this.calendarId,
+        timeMin: start.toISOString(),
+        timeMax: end.toISOString(),
+        singleEvents: true,
+      });
+      const busy = this.busyIntervals(existing.data.items || []);
+      if (intervalsOverlap(start.getTime(), end.getTime(), busy)) {
+        return {
+          ok: false,
+          error: 'Ese hueco acaba de ocuparse. Consulta la disponibilidad otra vez.',
+        };
+      }
+
+      const who = input.nombre?.trim() || input.phone || 'sin teléfono';
+      await this.calendarClient.events.insert({
+        calendarId: this.calendarId,
+        requestBody: {
+          summary: `Llamada Localicer — ${who}`,
+          description: [
+            input.phone ? `Teléfono: ${input.phone}` : '',
+            input.nombre ? `Nombre: ${input.nombre}` : '',
+            input.motivo ? `Motivo: ${input.motivo}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n'),
+          start: {
+            dateTime: start.toISOString(),
+            timeZone: 'Europe/Madrid',
+          },
+          end: {
+            dateTime: end.toISOString(),
+            timeZone: 'Europe/Madrid',
+          },
+        },
+      });
+      this.logger.log(
+        `Cita registrada en ${this.calendarId} para ${input.phone || who} a las ${etiqueta}`,
+      );
+      return { ok: true, etiqueta };
+    } catch (error) {
+      const message = (error as Error).message;
+      this.logger.error(`Error al insertar evento en Google Calendar: ${message}`);
+      return { ok: false, error: 'No se pudo escribir en el calendario.' };
+    }
+  }
+
+  private busyIntervals(events: calendar_v3.Schema$Event[]): BusyInterval[] {
+    const intervals: BusyInterval[] = [];
+    for (const event of events) {
+      if (event.transparency === 'transparent' || event.status === 'cancelled') {
+        continue;
+      }
+      if (event.start?.dateTime) {
+        const startMs = new Date(event.start.dateTime).getTime();
+        const endMs = new Date(
+          event.end?.dateTime || event.start.dateTime,
+        ).getTime();
+        if (!Number.isNaN(startMs) && !Number.isNaN(endMs)) {
+          intervals.push({ startMs, endMs });
+        }
+        continue;
+      }
+      if (event.start?.date) {
+        const [year, month, day] = event.start.date.split('-').map(Number);
+        const [endYear, endMonth, endDay] = (event.end?.date || event.start.date)
+          .split('-')
+          .map(Number);
+        intervals.push({
+          startMs: madridWallToUtc(year, month, day, 0, 0).getTime(),
+          endMs: madridWallToUtc(endYear, endMonth, endDay, 0, 0).getTime(),
+        });
+      }
+    }
+    return intervals;
   }
 }

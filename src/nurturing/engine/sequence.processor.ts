@@ -285,11 +285,18 @@ export class SequenceProcessor extends WorkerHost {
         if (err instanceof DelayedError) throw err;
         const message = err instanceof Error ? err.message : String(err);
         this.logger.warn(
-          `[FASE3][COLA] moveToDelayed falló stepRun=${stepRunId}: ${message}`,
+          `[FASE3][COLA] moveToDelayed falló stepRun=${stepRunId} (token/lock): ${message}`,
         );
       }
     }
-    await this.scheduler.requeueStepRun(stepRunId, PROVIDER_BALANCE_RETRY_MS);
+    try {
+      await this.scheduler.requeueStepRun(stepRunId, PROVIDER_BALANCE_RETRY_MS);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `[FASE3][COLA] requeue falló stepRun=${stepRunId}: ${message}. El cron de reparación volverá a encolarlo.`,
+      );
+    }
   }
 
   /**

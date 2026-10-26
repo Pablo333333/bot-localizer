@@ -17,6 +17,7 @@ import { QueueModule } from './queue/queue.module';
 import { NurturingModule } from './nurturing/nurturing.module';
 import { MetaModule } from './meta/meta.module';
 import { XModule } from './x/x.module';
+import { RetellToolsModule } from './retell/retell-tools.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { XModule } from './x/x.module';
     InboundModule,
     MetaModule,
     XModule,
+    RetellToolsModule,
   ],
   controllers: [AppController, WhatsAppWebhook],
   providers: [AppService, OutboundService],
