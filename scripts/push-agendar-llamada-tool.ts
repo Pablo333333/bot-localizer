@@ -79,22 +79,7 @@ async function main(): Promise<void> {
       max_call_duration_ms: MAX_CALL_DURATION_MS,
     });
     const updated = await client.agent.retrieve(agent.id);
-    const publish = await fetch(
-      `https://api.retellai.com/publish-agent-version/${encodeURIComponent(agent.id)}`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.RETELL_API_KEY || ''}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ version: updated.version }),
-      },
-    );
-    if (!publish.ok) {
-      throw new Error(
-        `publish ${agent.label} HTTP ${publish.status}: ${(await publish.text()).slice(0, 240)}`,
-      );
-    }
+    await client.agent.publish(agent.id, { version: updated.version });
 
     console.log(
       `${agent.label} publicado. llm=${engine.llm_id} tools=${tools.map((item) => item.name).join(',')} prompt_chars=${prompt.length} max_ms=${MAX_CALL_DURATION_MS}`,
