@@ -12,9 +12,11 @@ import {
 } from '../phase3-enabled';
 import {
   PHASE3_LEAD_NOT_ALLOWED_LOG,
-  isPhase3AllowedPhone,
-  resolvePhase3PhoneAllowlist,
   PHASE3_TONI_PHONE_E164,
+  describePhase3Allowlist,
+  isPhase3AllowedPhone,
+  isPhase3AllowlistOpen,
+  resolvePhase3PhoneAllowlist,
 } from '../phase3-allowlist';
 import {
   OUTBOUND_SANDBOX_WHITELIST_E164,
@@ -652,6 +654,8 @@ export class SequenceScheduler {
       phase3Enabled: boolean;
       phase3Raw: string | null;
       phase3PhoneAllowlist: string[];
+      phase3AllowlistOpen: boolean;
+      phase3AllowlistDescription: string;
       phase3ToniOnlyDefault: string;
       sandboxWhitelistEnabled: boolean;
       sandboxWhitelistE164: string;
@@ -908,6 +912,12 @@ export class SequenceScheduler {
             ? null
             : String(this.config.get('NURTURING_PHASE3_ENABLED')),
         phase3PhoneAllowlist: resolvePhase3PhoneAllowlist(
+          this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+        ),
+        phase3AllowlistOpen: isPhase3AllowlistOpen(
+          this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+        ),
+        phase3AllowlistDescription: describePhase3Allowlist(
           this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
         ),
         phase3ToniOnlyDefault: PHASE3_TONI_PHONE_E164,

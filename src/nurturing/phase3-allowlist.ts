@@ -36,6 +36,20 @@ export function isPhase3AllowlistOpen(envRaw?: string | null): boolean {
   return parts.some((part) => PHASE3_ALLOWLIST_OPEN_TOKENS.has(part));
 }
 
+/** Texto corto para logs / health: open | toni_default | lista CSV. */
+export function describePhase3Allowlist(envRaw?: string | null): string {
+  if (isPhase3AllowlistOpen(envRaw)) {
+    return 'open (*) — enroll T+7/T+10 para todos los anunciantes';
+  }
+  const list = resolvePhase3PhoneAllowlist(envRaw);
+  const onlyToni =
+    list.length === 1 && list[0] === PHASE3_TONI_PHONE_E164;
+  if (onlyToni) {
+    return `toni_only (${PHASE3_TONI_PHONE_E164}) — resto sin enroll T+7/T+10`;
+  }
+  return `custom (${list.join(',')})`;
+}
+
 export function resolvePhase3PhoneAllowlist(
   envRaw?: string | null,
 ): string[] {

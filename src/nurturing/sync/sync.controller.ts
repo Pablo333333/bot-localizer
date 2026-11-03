@@ -8,7 +8,9 @@ import { isNurturingPhase3Enabled } from '../phase3-enabled';
 import { isNurturingFastTest } from '../nurturing-fast-delay';
 import {
   PHASE3_TONI_PHONE_E164,
+  describePhase3Allowlist,
   isPhase3AllowedPhone,
+  isPhase3AllowlistOpen,
   resolvePhase3PhoneAllowlist,
 } from '../phase3-allowlist';
 import {
@@ -112,6 +114,12 @@ export class SyncController {
         phase3Enabled: isNurturingPhase3Enabled(phase3Raw),
         phase3Raw: phase3Raw == null ? null : String(phase3Raw),
         phase3PhoneAllowlist: resolvePhase3PhoneAllowlist(
+          this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+        ),
+        phase3AllowlistOpen: isPhase3AllowlistOpen(
+          this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+        ),
+        phase3AllowlistDescription: describePhase3Allowlist(
           this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
         ),
         phase3ToniOnlyDefault: PHASE3_TONI_PHONE_E164,

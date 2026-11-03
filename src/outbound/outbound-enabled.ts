@@ -4,8 +4,8 @@
  *
  * Producción (en paralelo):
  *   OUTBOUND_CALLS_ENABLED=true      ← lote Fase 1 (35/día) a todo el Sheet
- *   NURTURING_PHASE3_ENABLED=true    ← master; código limita a Toni (allowlist)
- *   NURTURING_PHASE3_PHONE_ALLOWLIST= ← vacío = solo +34644408099
+ *   NURTURING_PHASE3_ENABLED=true    ← master Fase 3
+ *   NURTURING_PHASE3_PHONE_ALLOWLIST=* ← todos; vacío = solo Toni
  *   OUTBOUND_TEST_PHONE_ONLY=        ← vacío
  *   OUTBOUND_SANDBOX_WHITELIST_ENABLED=false  ← env (default off; no sandbox)
  *   MAX_DAILY_CALLS=35

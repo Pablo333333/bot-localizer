@@ -1,5 +1,6 @@
 import {
   PHASE3_TONI_PHONE_E164,
+  describePhase3Allowlist,
   isPhase3AllowedPhone,
   isPhase3AllowlistOpen,
   resolvePhase3PhoneAllowlist,
@@ -36,5 +37,11 @@ describe('phase3-allowlist', () => {
     expect(isPhase3AllowedPhone('+34971122334', '*')).toBe(true);
     expect(isPhase3AllowedPhone('+34600000000', 'ALL')).toBe(true);
     expect(isPhase3AllowedPhone('', '*')).toBe(false);
+  });
+
+  it('describePhase3Allowlist distingue open / toni / custom', () => {
+    expect(describePhase3Allowlist('*')).toContain('open (*)');
+    expect(describePhase3Allowlist(undefined)).toContain('toni_only');
+    expect(describePhase3Allowlist('+34611111111')).toContain('custom');
   });
 });

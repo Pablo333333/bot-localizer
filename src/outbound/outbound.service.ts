@@ -12,6 +12,7 @@ import {
   describeOutboundMode,
   isOutboundCallsEnabled,
 } from './outbound-enabled';
+import { describePhase3Allowlist } from '../nurturing/phase3-allowlist';
 import {
   findAnuncioRevisadoHeader,
   isAnuncioRevisadoSi,
@@ -164,8 +165,11 @@ export class OutboundService {
         `[OutboundService] Fase 3 nurturing OFF — lote Solo Fase 1 (sin WA/enroll T+7/T+10). cupo=${mode.maxDailyCalls}`,
       );
     } else {
+      const allowlistDesc = describePhase3Allowlist(
+        this.configService.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+      );
       this.logger.log(
-        `[OutboundService] Fase 1 lote=${mode.maxDailyCalls}/día; Fase 3 master ON pero solo allowlist Toni (resto sin enroll T+7/T+10)`,
+        `[OutboundService] Fase 1 lote=${mode.maxDailyCalls}/día; Fase 3 master ON; allowlist=${allowlistDesc}`,
       );
     }
 
