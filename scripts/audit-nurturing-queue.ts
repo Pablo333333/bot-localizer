@@ -2,8 +2,10 @@
  * Auditoría global cola BullMQ `nurturing-steps` + SequenceStepRun (Prisma).
  * Sirve para detectar backlog / huérfanos antes de reactivar Railway.
  *
- * Uso (con acceso a Redis/Postgres de Railway):
- *   railway run npx ts-node -r tsconfig-paths/register scripts/audit-nurturing-queue.ts
+ * Uso desde el PC (túneles):
+ *   npm run audit:fase3-ready:tunnel
+ *   # o con RAILWAY_PG_TUNNEL_URL / RAILWAY_REDIS_TUNNEL_URL ya definidos:
+ *   railway run --service bot-localizer npm run audit:nurturing-queue -- --json
  *
  * Flags:
  *   --limit=100     cuántos jobs listar por estado (default 50)
@@ -12,6 +14,9 @@
 import 'dotenv/config';
 import { PrismaClient, StepRunStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
+import { preferReachableRailwayUrls, redactUrl } from './railway-local-urls';
+
+preferReachableRailwayUrls();
 
 const QUEUE = 'nurturing-steps';
 const args = process.argv.slice(2);
@@ -21,6 +26,11 @@ const limit = Math.min(
   200,
   Math.max(10, Number.parseInt(limitArg?.split('=')[1] || '50', 10) || 50),
 );
+if (!asJson) {
+  console.log(
+    `[audit] db=${redactUrl(process.env.DATABASE_URL || '')} redis=${redactUrl(process.env.REDIS_URL || '')}`,
+  );
+}
 
 type JobState =
   | 'waiting'

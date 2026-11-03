@@ -28,7 +28,9 @@
     "prisma:seed": "prisma db seed",
     "test:nurturing": "ts-node -r tsconfig-paths/register scripts/test-nurturing-flow.ts",
     "audit:nurturing-queue": "ts-node -r tsconfig-paths/register scripts/audit-nurturing-queue.ts",
-    "audit:nurturing-phone": "ts-node -r tsconfig-paths/register scripts/audit-nurturing-phone.ts"
+    "audit:nurturing-phone": "ts-node -r tsconfig-paths/register scripts/audit-nurturing-phone.ts",
+    "audit:fase3-ready": "ts-node --transpile-only -r tsconfig-paths/register scripts/audit-fase3-ready.ts",
+    "audit:fase3-ready:tunnel": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/audit-fase3-ready-tunnel.ps1"
   },
   "engines": {
     "node": ">=20"
