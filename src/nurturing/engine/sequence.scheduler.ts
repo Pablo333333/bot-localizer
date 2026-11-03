@@ -35,6 +35,10 @@ import {
   TEMPLATE_CALL_FOLLOWUP_D7,
 } from '../toni-fase3.constants';
 import {
+  OUTBOUND_HOURS_DESCRIPTION,
+  alignToOutboundBusinessHours,
+} from '../../outbound/outbound-schedule';
+import {
   AWAITING_PROVIDER_BALANCE,
   isProviderBalanceError,
   PROVIDER_BALANCE_RETRY_MS,
@@ -291,9 +295,18 @@ export class SequenceScheduler {
     delayMinutes: number;
   }> {
     const delayMinutes = this.resolveDelayMinutes(params.step);
-    const scheduledFor = new Date(
+    const rawScheduledFor = new Date(
       params.baseTime.getTime() + delayMinutes * 60_000,
     );
+    // T+7 / T+10 (y cualquier paso) solo caen en L-V 10:00-14:00 / 17:00-20:30 Madrid.
+    const scheduledFor = alignToOutboundBusinessHours(rawScheduledFor);
+    if (scheduledFor.getTime() !== rawScheduledFor.getTime()) {
+      this.logger.log(
+        `[FASE3][BULLMQ] horario alineado ${nurturingStepLabel(params.step.templateKey)} ` +
+          `raw=${formatMadridDateTime(rawScheduledFor)} → ${formatMadridDateTime(scheduledFor)} ` +
+          `(${OUTBOUND_HOURS_DESCRIPTION}) lead=${params.leadId}`,
+      );
+    }
 
     const reserved = await this.prisma.$transaction(async (tx) => {
       await lockPhase3Key(

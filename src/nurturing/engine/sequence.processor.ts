@@ -2,6 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  Channel as PrismaChannel,
   EnrollmentStatus,
   LeadStatus,
   Prisma,
@@ -31,6 +32,13 @@ import {
   sequenceHasUnfinishedStep,
 } from './sequence-step-guard';
 import { SequenceScheduler } from './sequence.scheduler';
+import {
+  OUTBOUND_HOURS_DESCRIPTION,
+  alignToOutboundBusinessHours,
+  isWithinOutboundCallHours,
+  madridOutboundParts,
+} from '../../outbound/outbound-schedule';
+import { formatMadridDateTime } from '../nurturing-fast-delay';
 import {
   AWAITING_PROVIDER_BALANCE,
   isProviderBalanceError,
@@ -92,6 +100,15 @@ export class SequenceProcessor extends WorkerHost {
       return { status: stepRun.status };
     }
 
+    // Antes del claim: no quemar intentos si caemos fuera de horario Madrid.
+    if (
+      this.channelRequiresBusinessHours(stepRun.step.channel) &&
+      !isWithinOutboundCallHours(madridOutboundParts(new Date()))
+    ) {
+      await this.deferOutsideBusinessHours(job, stepRunId);
+      return { status: 'deferred_outside_hours' };
+    }
+
     const claim = await this.claimStepRun(stepRun, job.attemptsMade);
     if (claim !== 'claimed') {
       if (claim === 'duplicate' || claim === 'skipped') {
@@ -148,15 +165,24 @@ export class SequenceProcessor extends WorkerHost {
       `[FASE3][COLA] disparando channel=${stepRun.step.channel} template=${stepRun.step.templateKey} lead=${lead.id} phone=${lead.phone} stepRun=${stepRunId}`,
     );
 
-    const result = await adapter.send({
-      leadId: lead.id,
-      phone: lead.phone,
-      email: lead.email,
-      name: lead.name,
-      templateKey: stepRun.step.templateKey,
-      templatePayload,
-      stepRunId,
-    });
+    let result;
+    try {
+      result = await adapter.send({
+        leadId: lead.id,
+        phone: lead.phone,
+        email: lead.email,
+        name: lead.name,
+        templateKey: stepRun.step.templateKey,
+        templatePayload,
+        stepRunId,
+      });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `[FASE3][COLA] channel.send excepción stepRun=${stepRunId} channel=${stepRun.step.channel} lead=${lead.id}: ${errorMessage}`,
+      );
+      result = { success: false as const, error: errorMessage };
+    }
 
     if (!result.success) {
       const errorMessage = result.error || 'Channel send failed';
@@ -469,6 +495,61 @@ export class SequenceProcessor extends WorkerHost {
 
   private isTerminal(status: LeadStatus): boolean {
     return TERMINAL_LEAD_STATUSES.has(status as AppLeadStatus);
+  }
+
+  private channelRequiresBusinessHours(channel: string): boolean {
+    return (
+      channel === PrismaChannel.llamada ||
+      channel === PrismaChannel.whatsapp ||
+      channel === 'llamada' ||
+      channel === 'whatsapp'
+    );
+  }
+
+  /**
+   * Si el job salta fuera de L-V 10–14 / 17–20:30 Madrid, lo aplaza
+   * sin fallar el paso (el lote / otras secuencias siguen).
+   */
+  private async deferOutsideBusinessHours(
+    job: Job<NurturingStepJobData>,
+    stepRunId: string,
+  ): Promise<void> {
+    const next = alignToOutboundBusinessHours(new Date());
+    const delayMs = Math.max(60_000, next.getTime() - Date.now());
+    await this.prisma.sequenceStepRun.update({
+      where: { id: stepRunId },
+      data: {
+        status: StepRunStatus.scheduled,
+        finishedAt: null,
+        scheduledFor: next,
+        lastError: `deferred_outside_hours:${OUTBOUND_HOURS_DESCRIPTION}`,
+      },
+    });
+    this.logger.warn(
+      `[FASE3][COLA] fuera de horario stepRun=${stepRunId} — aplazado a ${formatMadridDateTime(next)} (${OUTBOUND_HOURS_DESCRIPTION})`,
+    );
+
+    const token = job.token;
+    if (token) {
+      try {
+        await job.moveToDelayed(Date.now() + delayMs, token);
+        throw new DelayedError('deferred_outside_hours');
+      } catch (err) {
+        if (err instanceof DelayedError) throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `[FASE3][COLA] moveToDelayed (horario) falló stepRun=${stepRunId}: ${message}`,
+        );
+      }
+    }
+    try {
+      await this.scheduler.requeueStepRun(stepRunId, delayMs);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `[FASE3][COLA] requeue por horario falló stepRun=${stepRunId}: ${message}`,
+      );
+    }
   }
 
   private async markSkipped(stepRunId: string, reason: string): Promise<void> {

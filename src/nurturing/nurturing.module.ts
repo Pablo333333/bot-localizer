@@ -21,6 +21,7 @@ import { SequencesController } from './sequences/sequences.controller';
 import { SequencesService } from './sequences/sequences.service';
 import { SheetsLeadSyncService } from './sync/sheets-lead-sync.service';
 import { SheetsReviewedSyncService } from './sync/sheets-reviewed-sync.service';
+import { SheetsBackfillUnreachedService } from './sync/sheets-backfill-unreached.service';
 import { SyncController } from './sync/sync.controller';
 
 @Module({
@@ -41,6 +42,7 @@ import { SyncController } from './sync/sync.controller';
     SequenceProcessor,
     SheetsLeadSyncService,
     SheetsReviewedSyncService,
+    SheetsBackfillUnreachedService,
     CallOutcomeClassifier,
     NoAnswerFollowupService,
     ChannelRegistry,
@@ -54,6 +56,7 @@ import { SyncController } from './sync/sync.controller';
     SequencesService,
     EnrollmentsService,
     SheetsLeadSyncService,
+    SheetsBackfillUnreachedService,
     NoAnswerFollowupService,
     WhatsappChannel,
   ],

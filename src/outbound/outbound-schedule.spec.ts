@@ -1,8 +1,11 @@
+import { madridWallToUtc } from '../v2/calendar-slots';
 import {
   DEFAULT_MAX_DAILY_CALLS,
   DEFAULT_OUTBOUND_DELAY_MAX_MS,
   DEFAULT_OUTBOUND_DELAY_MIN_MS,
+  alignToOutboundBusinessHours,
   isWithinOutboundCallHours,
+  madridOutboundParts,
   pickOutboundInterCallDelayMs,
   resolveMaxDailyCalls,
   resolveOutboundDelayRangeMs,
@@ -97,6 +100,39 @@ describe('outbound-schedule', () => {
       expect(
         isWithinOutboundCallHours({ weekday: 6, hour: 11, minute: 0 }),
       ).toBe(false);
+    });
+  });
+
+  describe('alignToOutboundBusinessHours', () => {
+    it('antes de las 10 → mismo día 10:00', () => {
+      const raw = madridWallToUtc(2026, 11, 3, 9, 15); // martes
+      const aligned = alignToOutboundBusinessHours(raw);
+      const p = madridOutboundParts(aligned);
+      expect(p.hour).toBe(10);
+      expect(p.minute).toBe(0);
+      expect(p.day).toBe(3);
+    });
+
+    it('pausa 14–17 → 17:00', () => {
+      const raw = madridWallToUtc(2026, 11, 3, 15, 0);
+      const aligned = alignToOutboundBusinessHours(raw);
+      const p = madridOutboundParts(aligned);
+      expect(p.hour).toBe(17);
+      expect(p.minute).toBe(0);
+    });
+
+    it('sábado → lunes 10:00', () => {
+      const raw = madridWallToUtc(2026, 11, 7, 12, 0); // sábado
+      const aligned = alignToOutboundBusinessHours(raw);
+      const p = madridOutboundParts(aligned);
+      expect(p.weekday).toBe(1);
+      expect(p.hour).toBe(10);
+      expect(p.day).toBe(9);
+    });
+
+    it('dentro de ventana no mueve', () => {
+      const raw = madridWallToUtc(2026, 11, 3, 11, 30);
+      expect(alignToOutboundBusinessHours(raw).getTime()).toBe(raw.getTime());
     });
   });
 });

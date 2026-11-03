@@ -1,3 +1,9 @@
+import {
+  madridParts,
+  madridWallToUtc,
+  weekdayOfCivilDate,
+} from '../v2/calendar-slots';
+
 /** Límite diario por defecto de llamadas outbound (Localizados → Retell). */
 export const DEFAULT_MAX_DAILY_CALLS = 35;
 
@@ -96,4 +102,87 @@ export function isWithinOutboundCallHours(parts: {
     return false;
   }
   return true;
+}
+
+/** Partes Madrid + weekday (0=domingo) para gates de horario. */
+export function madridOutboundParts(date: Date): {
+  weekday: number;
+  hour: number;
+  minute: number;
+  year: number;
+  month: number;
+  day: number;
+} {
+  const p = madridParts(date);
+  return {
+    year: p.year,
+    month: p.month,
+    day: p.day,
+    hour: p.hour,
+    minute: p.minute,
+    weekday: weekdayOfCivilDate(p.year, p.month, p.day),
+  };
+}
+
+function addCivilDays(
+  year: number,
+  month: number,
+  day: number,
+  delta: number,
+): { year: number; month: number; day: number } {
+  const utc = new Date(Date.UTC(year, month - 1, day + delta));
+  return {
+    year: utc.getUTCFullYear(),
+    month: utc.getUTCMonth() + 1,
+    day: utc.getUTCDate(),
+  };
+}
+
+/**
+ * Empuja `date` al próximo instante ≥ date dentro de la ventana
+ * L-V 10:00–14:00 / 17:00–20:30 Europe/Madrid.
+ */
+export function alignToOutboundBusinessHours(date: Date): Date {
+  let cursor = new Date(date.getTime());
+  for (let i = 0; i < 16; i++) {
+    const p = madridOutboundParts(cursor);
+    const minutes = p.hour * 60 + p.minute;
+
+    if (p.weekday === 0 || p.weekday === 6) {
+      const daysUntilMon = p.weekday === 0 ? 1 : 2;
+      const next = addCivilDays(p.year, p.month, p.day, daysUntilMon);
+      cursor = madridWallToUtc(next.year, next.month, next.day, 10, 0);
+      continue;
+    }
+
+    if (minutes < BUSINESS_START_MINUTES) {
+      return madridWallToUtc(p.year, p.month, p.day, 10, 0);
+    }
+    if (
+      minutes >= LUNCH_BREAK_START_MINUTES &&
+      minutes < LUNCH_BREAK_END_MINUTES
+    ) {
+      return madridWallToUtc(p.year, p.month, p.day, 17, 0);
+    }
+    if (minutes > BUSINESS_END_MINUTES) {
+      const next = addCivilDays(p.year, p.month, p.day, 1);
+      cursor = madridWallToUtc(next.year, next.month, next.day, 10, 0);
+      continue;
+    }
+    return cursor;
+  }
+  return cursor;
+}
+
+/** Clave YYYY-MM-DD en calendario Madrid (cupos diarios). */
+export function madridDateKey(date: Date = new Date()): string {
+  const p = madridParts(date);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}`;
+}
+
+/** Inicio (00:00 Madrid) del día civil de `date`. */
+export function madridStartOfDay(date: Date = new Date()): Date {
+  const p = madridParts(date);
+  return madridWallToUtc(p.year, p.month, p.day, 0, 0);
 }

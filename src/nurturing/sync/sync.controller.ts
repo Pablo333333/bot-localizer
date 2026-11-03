@@ -17,8 +17,13 @@ import {
   OUTBOUND_SANDBOX_WHITELIST_E164,
   isOutboundSandboxWhitelistEnabled,
 } from '../../outbound/outbound-sandbox-whitelist';
+import {
+  DEFAULT_MAX_DAILY_PHASE3_LEADS,
+  resolveMaxDailyPhase3Leads,
+} from '../phase3-quota';
 import { SheetsLeadSyncService } from './sheets-lead-sync.service';
 import { SheetsReviewedSyncService } from './sheets-reviewed-sync.service';
+import { SheetsBackfillUnreachedService } from './sheets-backfill-unreached.service';
 
 @Controller('nurturing/sync')
 @UseGuards(NurturingApiKeyGuard)
@@ -26,6 +31,7 @@ export class SyncController {
   constructor(
     private readonly sheetsSync: SheetsLeadSyncService,
     private readonly sheetsReviewedSync: SheetsReviewedSyncService,
+    private readonly sheetsBackfill: SheetsBackfillUnreachedService,
     private readonly sequenceScheduler: SequenceScheduler,
     private readonly enrollments: EnrollmentsService,
     private readonly prisma: PrismaService,
@@ -123,6 +129,11 @@ export class SyncController {
           this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
         ),
         phase3ToniOnlyDefault: PHASE3_TONI_PHONE_E164,
+        phase3DailyQuota: resolveMaxDailyPhase3Leads(
+          this.config.get('MAX_DAILY_PHASE3_LEADS') ??
+            this.config.get('NURTURING_PHASE3_DAILY_QUOTA'),
+        ),
+        phase3DailyQuotaDefault: DEFAULT_MAX_DAILY_PHASE3_LEADS,
         sandboxWhitelistEnabled: isOutboundSandboxWhitelistEnabled(
           this.config.get('OUTBOUND_SANDBOX_WHITELIST_ENABLED'),
         ),
@@ -225,6 +236,29 @@ export class SyncController {
       this.enrollments.repairPendingEnrollments(),
     ]);
     return { ok: true, queue, enrollmentsRecovered: enrollments };
+  }
+
+  /**
+   * Backfill Fase 3: escanea Localizados (Llamado=SI / Call ID sin conversión),
+   * normaliza E.164, enrolla hasta MAX_DAILY_PHASE3_LEADS (30, independiente de Fase 1)
+   * y encola BullMQ en horario Madrid.
+   *
+   * POST /nurturing/sync/backfill-unreached
+   * POST /nurturing/sync/backfill-unreached?dryRun=1
+   * POST /nurturing/sync/backfill-unreached?limit=5&sendMessages=0
+   */
+  @Post('backfill-unreached')
+  backfillUnreached(
+    @Query('dryRun') dryRun?: string,
+    @Query('limit') limit?: string,
+    @Query('sendMessages') sendMessages?: string,
+  ) {
+    const parsedLimit = limit ? Number.parseInt(limit, 10) : undefined;
+    return this.sheetsBackfill.backfillUnreached({
+      dryRun: this.isForceQuery(dryRun),
+      limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+      sendMessages: sendMessages == null ? true : this.isForceQuery(sendMessages),
+    });
   }
 
   private isForceQuery(force?: string): boolean {
