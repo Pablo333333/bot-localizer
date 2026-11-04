@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Headers,
@@ -42,29 +43,73 @@ export class StripeController {
     return this.stripeService.startMembershipPayment(dto);
   }
 
+  /**
+   * Webhook Stripe.
+   * - Firma inválida / cuerpo ausente → 400
+   * - Evento válido o ya procesado → siempre 200 { received: true }
+   *   aunque falle la sync WP (idempotencia / sin reintentos fallidos)
+   */
   @Post('webhook')
   @HttpCode(HttpStatus.OK)
   async handleWebhook(
     @Req() req: RawBodyRequest<Request>,
     @Headers('stripe-signature') signature: string,
   ) {
-    if (!signature) {
-      this.logger.warn('Webhook sin cabecera stripe-signature');
-      return { received: false };
-    }
+    try {
+      if (!signature) {
+        this.logger.warn('Webhook sin cabecera stripe-signature');
+        throw new BadRequestException({
+          received: false,
+          error: 'missing_signature',
+        });
+      }
 
-    if (!req.rawBody) {
+      if (!req.rawBody) {
+        this.logger.error(
+          'rawBody no disponible. Asegura NestFactory.create(..., { rawBody: true })',
+        );
+        throw new BadRequestException({
+          received: false,
+          error: 'raw_body_unavailable',
+        });
+      }
+
+      let event;
+      try {
+        event = this.stripeService.constructEvent(req.rawBody, signature);
+      } catch (err) {
+        this.logger.warn(
+          `Firma webhook inválida: ${err instanceof Error ? err.message : err}`,
+        );
+        throw new BadRequestException({
+          received: false,
+          error: 'invalid_signature',
+        });
+      }
+
+      this.logger.log(`Webhook recibido: ${event.type} (${event.id})`);
+
+      try {
+        await this.stripeService.handleWebhookEvent(event);
+      } catch (err) {
+        this.logger.error(
+          `Error procesando ${event.type} (${event.id}): ${
+            err instanceof Error ? err.message : err
+          }`,
+          err instanceof Error ? err.stack : undefined,
+        );
+      }
+
+      return { received: true };
+    } catch (err) {
+      if (err instanceof BadRequestException) {
+        throw err;
+      }
       this.logger.error(
-        'rawBody no disponible. Asegura NestFactory.create(..., { rawBody: true })',
+        `Webhook Stripe no controlado: ${err instanceof Error ? err.message : err}`,
+        err instanceof Error ? err.stack : undefined,
       );
-      return { received: false };
+      return { received: true, error: 'internal_handled' };
     }
-
-    const event = this.stripeService.constructEvent(req.rawBody, signature);
-
-    this.logger.log(`Webhook recibido: ${event.type} (${event.id})`);
-    await this.stripeService.handleWebhookEvent(event);
-
-    return { received: true };
   }
 }

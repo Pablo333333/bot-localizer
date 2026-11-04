@@ -352,27 +352,37 @@ export class StripeService {
   }
 
   async handleWebhookEvent(event: Stripe.Event): Promise<void> {
-    switch (event.type) {
-      case 'checkout.session.completed':
-        await this.handleCheckoutSessionCompleted(
-          event.data.object as Stripe.Checkout.Session,
-        );
-        break;
+    try {
+      switch (event.type) {
+        case 'checkout.session.completed':
+          await this.handleCheckoutSessionCompleted(
+            event.data.object as Stripe.Checkout.Session,
+          );
+          break;
 
-      case 'invoice.payment_succeeded':
-        await this.handleInvoicePaymentSucceeded(
-          event.data.object as Stripe.Invoice,
-        );
-        break;
+        case 'invoice.payment_succeeded':
+          await this.handleInvoicePaymentSucceeded(
+            event.data.object as Stripe.Invoice,
+          );
+          break;
 
-      case 'customer.subscription.deleted':
-        await this.handleSubscriptionDeleted(
-          event.data.object as Stripe.Subscription,
-        );
-        break;
+        case 'customer.subscription.deleted':
+          await this.handleSubscriptionDeleted(
+            event.data.object as Stripe.Subscription,
+          );
+          break;
 
-      default:
-        this.logger.debug(`Evento Stripe ignorado: ${event.type}`);
+        default:
+          this.logger.debug(`Evento Stripe ignorado: ${event.type}`);
+      }
+    } catch (error) {
+      this.logger.error(
+        `Fallo manejando ${event.type} (${event.id}): ${
+          (error as Error).message
+        }`,
+        (error as Error).stack,
+      );
+      // No re-lanzar: el controller ACK con 200.
     }
   }
 
@@ -411,7 +421,9 @@ export class StripeService {
       return;
     }
 
-    await this.wordpressService.activateUserPlan({
+    // WP valida que el usuario exista antes de roles/créditos.
+    // Si no existe, syncUserPlan no lanza (soft-fail) → no 500 a Stripe.
+    const result = await this.wordpressService.activateUserPlan({
       userId: userId || email!,
       email,
       priceId,
@@ -425,6 +437,12 @@ export class StripeService {
         checkout_mode: mode ?? '',
       },
     });
+
+    if (result?.success === false || result?.reason === 'user_not_found') {
+      this.logger.warn(
+        `[checkout.session.completed] usuario no encontrado en WP (userId=${userId ?? 'n/a'} email=${email ?? 'n/a'}); sin cambio de rol`,
+      );
+    }
   }
 
   private async handleInvoicePaymentSucceeded(

@@ -605,8 +605,32 @@ export class WordpressService {
       const response = await lastValueFrom(
         this.httpService.post(url, body, {
           headers: this.getAuthHeaders(),
+          validateStatus: (status) => status >= 200 && status < 500,
         }),
       );
+
+      if (response.status === 404 || response.data?.reason === 'user_not_found') {
+        this.logger.warn(
+          `Usuario no encontrado en WP (userId=${payload.userId}); no se asignan roles/créditos`,
+        );
+        return {
+          success: false,
+          reason: 'user_not_found',
+          data: response.data,
+        };
+      }
+
+      if (response.status >= 400) {
+        this.logger.error(
+          `Error HTTP ${response.status} al sincronizar plan WP: ${JSON.stringify(response.data)}`,
+        );
+        return {
+          success: false,
+          reason: 'wp_error',
+          status: response.status,
+          data: response.data,
+        };
+      }
 
       this.logger.log(
         `Plan sincronizado en WP para userId=${payload.userId}: ${JSON.stringify(response.data)}`,
@@ -617,7 +641,12 @@ export class WordpressService {
         `Error al sincronizar plan en WordPress: ${error.response?.data?.message || error.message}`,
         error.stack,
       );
-      throw error;
+      // Soft-fail: no tumbar el webhook Stripe con 500 / reintentos.
+      return {
+        success: false,
+        reason: 'wp_exception',
+        message: error.response?.data?.message || error.message,
+      };
     }
   }
 
