@@ -1,4 +1,4 @@
-import { Body, Controller, Logger, Post } from '@nestjs/common';
+import { Body, Controller, Logger, Post, UseGuards } from '@nestjs/common';
 import { SheetsService } from './sheets.service';
 import { WordpressService } from '../wordpress/wordpress.service';
 import { ConfigService } from '@nestjs/config';
@@ -16,8 +16,15 @@ import {
 } from '../nurturing/phase3-allowlist';
 import { normalizeSiToken } from '../outbound/publicacion-autorizada';
 import { buildInboundSpanishSummaryOverride } from '../retell/inbound-summary-language';
+import { RetellWebhookGuard } from '../retell/retell-webhook.guard';
+import {
+  withWpCreateLock,
+  wpCreateLockKey,
+} from '../wordpress/wp-create-lock';
+import { readWpPostIdFromSheetRow } from '../wordpress/sheet-row-mapper';
 
 @Controller('webhooks')
+@UseGuards(RetellWebhookGuard)
 export class SheetsController {
   private readonly logger = new Logger(SheetsController.name);
 
@@ -272,25 +279,39 @@ export class SheetsController {
           this.logger.log(
             'Iniciando flujo WordPress (Publicación Autorizada?=SI, Sheet ya actualizado)...',
           );
-          const existingPostId = sheetWrite.wpPostId;
-
-          if (existingPostId) {
-            const brief =
-              await this.wordpressService.getEstatePropertyBrief(existingPostId);
-            const protect = !['false', '0', 'no', 'off'].includes(
-              String(
-                this.configService.get('WP_SYNC_PROTECT_PUBLISHED') ?? 'true',
-              )
-                .trim()
-                .toLowerCase(),
+          const lockKey = wpCreateLockKey({
+            callId,
+            phone: phoneCalled,
+            rowNumber: sheetWrite.row?.rowNumber,
+          });
+          const wpResult = await withWpCreateLock(lockKey, async () => {
+            // Releer ID_WP bajo lock: el cron Reviewed puede haber creado ya el post.
+            const fresh = await this.sheetsService.findLocalizadosRowByPhone(
+              phoneCalled,
             );
-            if (protect && brief?.status === 'publish') {
-              this.logger.warn(
-                `Webhook Retell: post ${existingPostId} ya publicado — no se sobrescribe WP (Sheet sí se actualizó). Usa Forzar sync WP=SI o ?force=1.`,
+            const existingPostId =
+              (fresh ? readWpPostIdFromSheetRow(fresh.row) : undefined) ??
+              sheetWrite.wpPostId ??
+              undefined;
+
+            if (existingPostId) {
+              const brief =
+                await this.wordpressService.getEstatePropertyBrief(
+                  existingPostId,
+                );
+              const protect = !['false', '0', 'no', 'off'].includes(
+                String(
+                  this.configService.get('WP_SYNC_PROTECT_PUBLISHED') ?? 'true',
+                )
+                  .trim()
+                  .toLowerCase(),
               );
-              publicadoWordpress = 'SI';
-              wpPostId = existingPostId;
-            } else {
+              if (protect && brief?.status === 'publish') {
+                this.logger.warn(
+                  `Webhook Retell: post ${existingPostId} ya publicado — no se sobrescribe WP (Sheet sí se actualizó). Usa Forzar sync WP=SI o ?force=1.`,
+                );
+                return { publicado: 'SI' as const, postId: existingPostId };
+              }
               const media =
                 await this.propertyMedia.resolveAndUploadPropertyMedia(
                   mergedCad,
@@ -307,7 +328,9 @@ export class SheetsController {
                     commercialContent,
                     preserveStatus: brief?.status === 'publish',
                     status:
-                      this.configService.get<string>('WP_REVIEWED_POST_STATUS') ||
+                      this.configService.get<string>(
+                        'WP_REVIEWED_POST_STATUS',
+                      ) ||
                       this.configService.get<string>('WP_POST_STATUS') ||
                       'pending',
                   },
@@ -316,19 +339,17 @@ export class SheetsController {
                 this.logger.warn(
                   `[Webhook] Call ${callId}: WordPress no actualizó el post ${existingPostId}. Se sigue con Sheets y el seguimiento.`,
                 );
-                publicadoWordpress = 'NO';
-              } else {
-                if (media.galleryMediaIds.length > 0) {
-                  await this.propertyMedia.attachGalleryToProperty(
-                    upserted.id,
-                    media.galleryMediaIds,
-                  );
-                }
-                publicadoWordpress = 'SI';
-                wpPostId = upserted.id;
+                return { publicado: 'NO' as const, postId: undefined };
               }
+              if (media.galleryMediaIds.length > 0) {
+                await this.propertyMedia.attachGalleryToProperty(
+                  upserted.id,
+                  media.galleryMediaIds,
+                );
+              }
+              return { publicado: 'SI' as const, postId: upserted.id };
             }
-          } else {
+
             const media =
               await this.propertyMedia.resolveAndUploadPropertyMedia(
                 mergedCad,
@@ -342,7 +363,9 @@ export class SheetsController {
                   galleryMediaIds: media.galleryMediaIds,
                   commercialContent,
                   status:
-                    this.configService.get<string>('WP_REVIEWED_POST_STATUS') ||
+                    this.configService.get<string>(
+                      'WP_REVIEWED_POST_STATUS',
+                    ) ||
                     this.configService.get<string>('WP_POST_STATUS') ||
                     'pending',
                 },
@@ -351,18 +374,35 @@ export class SheetsController {
               this.logger.warn(
                 `[Webhook] Call ${callId}: WordPress no creó la entrada. Se sigue con Sheets y el seguimiento.`,
               );
-              publicadoWordpress = 'NO';
-            } else {
-              if (media.galleryMediaIds.length > 0) {
-                await this.propertyMedia.attachGalleryToProperty(
+              return { publicado: 'NO' as const, postId: undefined };
+            }
+            if (media.galleryMediaIds.length > 0) {
+              await this.propertyMedia.attachGalleryToProperty(
+                upserted.id,
+                media.galleryMediaIds,
+              );
+            }
+            // Write-back ID_WP dentro del lock para que el cron no cree otro.
+            if (sheetWrite.sheet && sheetWrite.row?.rowNumber) {
+              try {
+                await this.sheetsService.writeWpPostIdColumnD(
+                  sheetWrite.sheet,
+                  sheetWrite.row.rowNumber,
                   upserted.id,
-                  media.galleryMediaIds,
+                );
+              } catch (err) {
+                const message =
+                  err instanceof Error ? err.message : String(err);
+                this.logger.warn(
+                  `[Webhook] Call ${callId}: no se pudo escribir ID_WP temprano: ${message}`,
                 );
               }
-              publicadoWordpress = 'SI';
-              wpPostId = upserted.id;
             }
-          }
+            return { publicado: 'SI' as const, postId: upserted.id };
+          });
+
+          publicadoWordpress = wpResult.publicado;
+          wpPostId = wpResult.postId;
 
           const propertyTitle = `Inmueble ${wpPostId}`;
           const propertyUrl = wpPostId

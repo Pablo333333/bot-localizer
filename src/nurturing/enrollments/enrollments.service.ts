@@ -22,6 +22,7 @@ import {
   PHASE3_LEAD_NOT_ALLOWED_LOG,
   isPhase3AllowedPhone,
 } from '../phase3-allowlist';
+import { isPauseAllAutomations } from '../../outbound/pause-automations';
 import { SequenceScheduler } from '../engine/sequence.scheduler';
 import { lockPhase3Key } from '../engine/pg-advisory-lock';
 
@@ -283,6 +284,9 @@ export class EnrollmentsService {
    */
   @Cron(CronExpression.EVERY_10_MINUTES)
   async repairPendingEnrollments(): Promise<number> {
+    if (isPauseAllAutomations(this.config.get('PAUSE_ALL_AUTOMATIONS'))) {
+      return 0;
+    }
     if (!isNurturingPhase3Enabled(this.config.get('NURTURING_PHASE3_ENABLED'))) {
       return 0;
     }

@@ -63,9 +63,10 @@ export class WhatsappChannel implements NurturingChannel {
   async send(payload: ChannelSendPayload): Promise<ChannelSendResult> {
     if (isPauseAllAutomations(this.config.get('PAUSE_ALL_AUTOMATIONS'))) {
       this.logger.warn(
-        `${PAUSE_ALL_AUTOMATIONS_LOG} lead=${payload.leadId} stepRun=${payload.stepRunId}`,
+        `${PAUSE_ALL_AUTOMATIONS_LOG} WhatsApp bloqueado lead=${payload.leadId} stepRun=${payload.stepRunId}`,
       );
-      return { success: true, providerRef: 'paused_no_whatsapp' };
+      // No success:true — el follow-up no debe reclamar call_id ni marcar enviado.
+      return { success: false, error: 'paused_no_whatsapp' };
     }
 
     const bypassGate = payload.templatePayload?.bypassWhatsappGate === true;

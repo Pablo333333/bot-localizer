@@ -6,6 +6,7 @@ import { WordpressModule } from '../wordpress/wordpress.module';
 import { SheetsController } from './sheets.controller';
 import { SheetsService } from './sheets.service';
 import { InboundSummaryLanguageService } from '../retell/inbound-summary-language.service';
+import { RetellWebhookGuard } from '../retell/retell-webhook.guard';
 
 @Global()
 @Module({
@@ -15,7 +16,12 @@ import { InboundSummaryLanguageService } from '../retell/inbound-summary-languag
     forwardRef(() => NurturingModule),
   ],
   controllers: [SheetsController],
-  providers: [SheetsService, PropertyPublishEmailService, InboundSummaryLanguageService],
+  providers: [
+    SheetsService,
+    PropertyPublishEmailService,
+    InboundSummaryLanguageService,
+    RetellWebhookGuard,
+  ],
   exports: [SheetsService, PropertyPublishEmailService],
 })
 export class SheetsModule {}

@@ -25,6 +25,10 @@ import {
 import { findSheetHeader } from '../../sheets/sheet-operation-headers';
 import { shouldAutoCreateWpListing } from '../../wordpress/listing-creation-guard';
 import {
+  withWpCreateLock,
+  wpCreateLockKey,
+} from '../../wordpress/wp-create-lock';
+import {
   OUTBOUND_SANDBOX_WHITELIST_E164,
   SKIPPED_SANDBOX_WHITELIST,
   isOutboundSandboxWhitelistEnabled,
@@ -348,14 +352,42 @@ export class SheetsReviewedSyncService {
   ): Promise<RowSyncResult> {
     const callData = sheetRowToCallData(row, headers);
     const cad = callData.call_analysis.custom_analysis_data;
-    const existingPostId = readWpPostIdFromSheetRow(row);
+    const callIdCell = this.readHeaderCell(row, headers, [
+      'Call ID',
+      'Call Id',
+      'call_id',
+    ]);
+    const phoneCell = this.readHeaderCell(row, headers, [
+      'Telefono1',
+      'Teléfono contacto1',
+      'Telefono',
+    ]);
+
+    const lockKey = wpCreateLockKey({
+      callId: callIdCell || callData.call_id,
+      phone: phoneCell,
+      rowNumber: row.rowNumber,
+    });
+
+    return withWpCreateLock(lockKey, async () => {
+    // Bajo lock: releer ID_WP por si el webhook Retell acabó de crear el post.
+    let workingRow = row;
+    try {
+      const located = phoneCell
+        ? await this.sheetsService.findLocalizadosRowByPhone(phoneCell)
+        : null;
+      if (located) workingRow = located.row;
+    } catch {
+      /* seguir con la fila del lote */
+    }
+    const existingPostId = readWpPostIdFromSheetRow(workingRow);
 
     if (
       !existingPostId &&
       !shouldAutoCreateWpListing({
-        callId: this.readHeaderCell(row, headers, ['Call ID', 'Call Id', 'call_id']),
+        callId: callIdCell,
         propietarioContactado: this.readHeaderCell(
-          row,
+          workingRow,
           headers,
           ['Propietario contactado?', 'Propietario contactado'],
           (normalized) =>
@@ -366,13 +398,13 @@ export class SheetsReviewedSyncService {
       })
     ) {
       this.logger.warn(
-        `Fila ${row.rowNumber}: conversación con el propietario no completada (hay Call ID y Propietario contactado? no es válido). No se crea el anuncio pending.`,
+        `Fila ${workingRow.rowNumber}: conversación con el propietario no completada (hay Call ID y Propietario contactado? no es válido). No se crea el anuncio pending.`,
       );
       return { status: 'skipped' };
     }
 
-    const forzarSync = options.force === true || readForzarSyncWp(row);
-    const bloquearSync = readBloquearSyncWp(row);
+    const forzarSync = options.force === true || readForzarSyncWp(workingRow);
+    const bloquearSync = readBloquearSyncWp(workingRow);
     const protectPublished = isWpSyncProtectPublishedEnabled(
       this.config.get('WP_SYNC_PROTECT_PUBLISHED'),
     );
@@ -391,7 +423,7 @@ export class SheetsReviewedSyncService {
       });
       if (guard.skip) {
         this.logger.warn(
-          `Fila ${row.rowNumber}: ${guard.reason} — cambios manuales en WP protegidos`,
+          `Fila ${workingRow.rowNumber}: ${guard.reason} — cambios manuales en WP protegidos`,
         );
         return { status: 'skipped' };
       }
@@ -403,11 +435,11 @@ export class SheetsReviewedSyncService {
     );
     cad.descripcion_propietario = commercialContent;
     this.logger.log(
-      `Fila ${row.rowNumber} media Sheet URL Imagen (col Q)=${String(cad.url_imagen || '').slice(0, 120) || '(vacío)'} carpeta_drive=${String(cad.carpeta_drive || '').slice(0, 120) || '(vacío)'}`,
+      `Fila ${workingRow.rowNumber} media Sheet URL Imagen (col Q)=${String(cad.url_imagen || '').slice(0, 120) || '(vacío)'} carpeta_drive=${String(cad.carpeta_drive || '').slice(0, 120) || '(vacío)'}`,
     );
     await this.sheetsService.writePropertyDescription({
       sourceSheet: sheet,
-      sourceRow: row,
+      sourceRow: workingRow,
       content: commercialContent,
       sourceRows: options.sourceRows,
       trasmutados: options.trasmutados,
@@ -425,13 +457,13 @@ export class SheetsReviewedSyncService {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(
-        `Fila ${row.rowNumber}: subida de imágenes a WordPress omitida: ${message}. Se sigue sin galería.`,
+        `Fila ${workingRow.rowNumber}: subida de imágenes a WordPress omitida: ${message}. Se sigue sin galería.`,
       );
     }
 
     if (!media.featuredMediaId && media.galleryMediaIds.length === 0) {
       this.logger.warn(
-        `Fila ${row.rowNumber}: sin imágenes en WP (Drive no descargó / no subió). Se crea el pending igual.`,
+        `Fila ${workingRow.rowNumber}: sin imágenes en WP (Drive no descargó / no subió). Se crea el pending igual.`,
       );
     }
 
@@ -455,7 +487,7 @@ export class SheetsReviewedSyncService {
 
     if (!upserted?.id) {
       this.logger.warn(
-        `Fila ${row.rowNumber}: WordPress no creó ni actualizó la entrada. Se omite el write-back; llamadas y seguimiento siguen.`,
+        `Fila ${workingRow.rowNumber}: WordPress no creó ni actualizó la entrada. Se omite el write-back; llamadas y seguimiento siguen.`,
       );
       return { status: 'skipped' };
     }
@@ -472,22 +504,23 @@ export class SheetsReviewedSyncService {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(
-        `Fila ${row.rowNumber}: galería WP omitida en post ${postId}: ${message}.`,
+        `Fila ${workingRow.rowNumber}: galería WP omitida en post ${postId}: ${message}.`,
       );
     }
 
     await this.sheetsService.writeWordPressPublishWriteback(
       sheet,
-      row.rowNumber,
+      workingRow.rowNumber,
       postId,
     );
 
     this.logger.log(
-      `Fila ${row.rowNumber} Reviewed→WP ${created ? 'CREADO' : 'ACTUALIZADO'} post_id=${postId} featured=${media.featuredMediaId || '-'} gallery=${media.galleryMediaIds.length} | Propietario contactado?=SI`,
+      `Fila ${workingRow.rowNumber} Reviewed→WP ${created ? 'CREADO' : 'ACTUALIZADO'} post_id=${postId} featured=${media.featuredMediaId || '-'} gallery=${media.galleryMediaIds.length} | Propietario contactado?=SI`,
     );
     return {
       status: created ? 'created' : 'updated',
       postId,
     };
+    });
   }
 }

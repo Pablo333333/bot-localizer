@@ -41,7 +41,12 @@ import {
 } from '../../outbound/outbound-schedule';
 import {
   AWAITING_PROVIDER_BALANCE,
+  isAwaitingProviderBalance,
   isProviderBalanceError,
+  isProviderBalanceExhausted,
+  parseBalanceHoldState,
+  shouldExhaustBalanceHold,
+  PROVIDER_BALANCE_EXHAUSTED,
   PROVIDER_BALANCE_RETRY_MS,
 } from './provider-balance';
 
@@ -543,12 +548,18 @@ export class SequenceScheduler {
     const held = await this.prisma.sequenceStepRun.findMany({
       where: {
         status: StepRunStatus.scheduled,
-        lastError: AWAITING_PROVIDER_BALANCE,
+        OR: [
+          { lastError: AWAITING_PROVIDER_BALANCE },
+          { lastError: { startsWith: `${AWAITING_PROVIDER_BALANCE}|` } },
+        ],
       },
       take: 100,
     });
     let promoted = 0;
     for (const run of held) {
+      if (await this.exhaustBalanceHoldIfNeeded(run.id, run.lastError)) {
+        continue;
+      }
       if (!run.jobId) {
         await this.requeueStepRun(run.id, 0);
         promoted += 1;
@@ -577,12 +588,18 @@ export class SequenceScheduler {
     const held = await this.prisma.sequenceStepRun.findMany({
       where: {
         status: StepRunStatus.scheduled,
-        lastError: AWAITING_PROVIDER_BALANCE,
+        OR: [
+          { lastError: AWAITING_PROVIDER_BALANCE },
+          { lastError: { startsWith: `${AWAITING_PROVIDER_BALANCE}|` } },
+        ],
       },
       take: 100,
     });
     let requeued = 0;
     for (const run of held) {
+      if (await this.exhaustBalanceHoldIfNeeded(run.id, run.lastError)) {
+        continue;
+      }
       const job = run.jobId ? await this.queue.getJob(run.jobId) : null;
       if (!job) {
         await this.requeueStepRun(run.id, PROVIDER_BALANCE_RETRY_MS);
@@ -607,15 +624,40 @@ export class SequenceScheduler {
     });
     let requeued = 0;
     for (const run of failed) {
+      if (isProviderBalanceExhausted(run.lastError)) continue;
       const balance =
-        run.lastError === AWAITING_PROVIDER_BALANCE ||
+        isAwaitingProviderBalance(run.lastError) ||
         isProviderBalanceError(run.lastError);
       if (!balance) continue;
       if (run.enrollment.status === EnrollmentStatus.cancelled) continue;
+      if (await this.exhaustBalanceHoldIfNeeded(run.id, run.lastError)) {
+        continue;
+      }
       await this.requeueStepRun(run.id, 0);
       requeued += 1;
     }
     return requeued;
+  }
+
+  /** Si el hold supera parks/edad → failed definitivo. */
+  private async exhaustBalanceHoldIfNeeded(
+    stepRunId: string,
+    lastError: string | null,
+  ): Promise<boolean> {
+    const hold = parseBalanceHoldState(lastError);
+    if (!hold || !shouldExhaustBalanceHold(hold)) return false;
+    await this.prisma.sequenceStepRun.update({
+      where: { id: stepRunId },
+      data: {
+        status: StepRunStatus.failed,
+        finishedAt: new Date(),
+        lastError: `${PROVIDER_BALANCE_EXHAUSTED}|parks=${hold.parks}|since=${hold.sinceMs}`,
+      },
+    });
+    this.logger.warn(
+      `[FASE3][BULLMQ] hold de saldo agotado stepRun=${stepRunId} parks=${hold.parks} — no se reencola`,
+    );
+    return true;
   }
 
   /** Pasos de una secuencia activa que nunca llegaron a tener job. */

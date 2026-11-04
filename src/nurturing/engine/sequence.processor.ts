@@ -41,7 +41,11 @@ import {
 import { formatMadridDateTime } from '../nurturing-fast-delay';
 import {
   AWAITING_PROVIDER_BALANCE,
+  PROVIDER_BALANCE_EXHAUSTED,
+  formatBalanceHoldState,
   isProviderBalanceError,
+  nextBalanceHoldState,
+  shouldExhaustBalanceHold,
   PROVIDER_BALANCE_RETRY_MS,
 } from './provider-balance';
 import { isPermanentMessagingError } from './permanent-messaging-error';
@@ -197,6 +201,13 @@ export class SequenceProcessor extends WorkerHost {
     if (!result.success) {
       const errorMessage = result.error || 'Channel send failed';
       if (
+        errorMessage.startsWith('paused_') ||
+        isPauseAllAutomations(this.config.get('PAUSE_ALL_AUTOMATIONS'))
+      ) {
+        await this.deferWhileAutomationsPaused(job, stepRunId);
+        return { status: 'paused' };
+      }
+      if (
         result.hold === 'provider_balance' ||
         isProviderBalanceError(errorMessage)
       ) {
@@ -298,21 +309,53 @@ export class SequenceProcessor extends WorkerHost {
   }
 
   /**
-   * Sin saldo en Retell o Twilio el paso no pasa a failed: sigue programado
-   * y el mismo job se aplaza. Cuando un envío vuelve a funcionar, el resto
-   * de secuencias en espera se promueve.
+   * Sin saldo: aplaza el paso con tope de parks/edad.
+   * Al agotar el tope → failed (sin más requeues ni repair).
    */
   private async parkUntilProviderBalance(
     stepRunId: string,
     job: Job<NurturingStepJobData>,
     errorMessage: string,
   ): Promise<void> {
+    const current = await this.prisma.sequenceStepRun.findUnique({
+      where: { id: stepRunId },
+      select: { lastError: true },
+    });
+    const next = nextBalanceHoldState(current?.lastError);
+    if (shouldExhaustBalanceHold(next)) {
+      await this.prisma.sequenceStepRun.update({
+        where: { id: stepRunId },
+        data: {
+          status: StepRunStatus.failed,
+          finishedAt: new Date(),
+          lastError: `${PROVIDER_BALANCE_EXHAUSTED}|parks=${next.parks}|since=${next.sinceMs}`,
+        },
+      });
+      await this.prisma.executionErrorLog.create({
+        data: {
+          stepRunId,
+          code: 'provider_balance_exhausted',
+          message: errorMessage,
+          payload: {
+            parks: next.parks,
+            sinceMs: next.sinceMs,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      this.logger.error(
+        `[FASE3][COLA] tope de holds de saldo agotado stepRun=${stepRunId} parks=${next.parks} — marcado failed`,
+      );
+      await this.maybeCompleteEnrollment(job.data.enrollmentId);
+      return;
+    }
+
+    const holdError = formatBalanceHoldState(next);
     await this.prisma.sequenceStepRun.update({
       where: { id: stepRunId },
       data: {
         status: StepRunStatus.scheduled,
         finishedAt: null,
-        lastError: AWAITING_PROVIDER_BALANCE,
+        lastError: holdError,
       },
     });
     await this.prisma.executionErrorLog.create({
@@ -322,12 +365,14 @@ export class SequenceProcessor extends WorkerHost {
         message: errorMessage,
         payload: {
           hold: AWAITING_PROVIDER_BALANCE,
+          parks: next.parks,
+          sinceMs: next.sinceMs,
         } as Prisma.InputJsonValue,
       },
     });
     this.logger.warn(
-      `[FASE3][COLA] sin saldo del proveedor stepRun=${stepRunId} — ` +
-        `la secuencia T+7/T+10 sigue encolada. ${errorMessage}`,
+      `[FASE3][COLA] sin saldo del proveedor stepRun=${stepRunId} park=${next.parks} — ` +
+        `aplazado. ${errorMessage}`,
     );
 
     const token = job.token;

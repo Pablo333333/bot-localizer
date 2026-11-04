@@ -16,6 +16,10 @@ import {
 } from './channel.interface';
 import { createTwilioMessageWithTemplateFallback } from './twilio-template-fallback';
 import { isProviderBalanceError } from '../engine/provider-balance';
+import {
+  PAUSE_ALL_AUTOMATIONS_LOG,
+  isPauseAllAutomations,
+} from '../../outbound/pause-automations';
 
 /**
  * SMS (Twilio). Preferencia: Content Template aprobado para SMS
@@ -69,6 +73,14 @@ export class SmsChannel implements NurturingChannel {
   }
 
   async send(payload: ChannelSendPayload): Promise<ChannelSendResult> {
+    if (isPauseAllAutomations(this.config.get('PAUSE_ALL_AUTOMATIONS'))) {
+      this.logger.warn(
+        `${PAUSE_ALL_AUTOMATIONS_LOG} SMS bloqueado lead=${payload.leadId} stepRun=${payload.stepRunId}`,
+      );
+      // No success:true — evita marcar el paso como enviado sin coste/mensaje.
+      return { success: false, error: 'paused_no_sms' };
+    }
+
     const contentSid =
       (payload.templatePayload?.contentSid as string | undefined)?.trim() ||
       this.contentSid;

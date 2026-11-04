@@ -26,6 +26,10 @@ import {
   NURTURING_PHASE3_DISABLED_LOG,
   isNurturingPhase3Enabled,
 } from '../phase3-enabled';
+import {
+  PAUSE_ALL_AUTOMATIONS_LOG,
+  isPauseAllAutomations,
+} from '../../outbound/pause-automations';
 import { isNurturingFastTest } from '../nurturing-fast-delay';
 import {
   PHASE3_LEAD_NOT_ALLOWED_LOG,
@@ -91,6 +95,20 @@ export class NoAnswerFollowupService {
       !isNurturingPhase3Enabled(this.config.get('NURTURING_PHASE3_ENABLED'))
     ) {
       this.logger.log(NURTURING_PHASE3_DISABLED_LOG);
+      return {
+        outcome: CallOutcome.UNKNOWN,
+        phase: 'unknown',
+        whatsappSent: false,
+        smsSent: false,
+        enrolled: false,
+        markedIlocalizable: false,
+      };
+    }
+
+    if (isPauseAllAutomations(this.config.get('PAUSE_ALL_AUTOMATIONS'))) {
+      this.logger.warn(
+        `${PAUSE_ALL_AUTOMATIONS_LOG} follow-up omitido call=${callData.call_id || '?'}`,
+      );
       return {
         outcome: CallOutcome.UNKNOWN,
         phase: 'unknown',

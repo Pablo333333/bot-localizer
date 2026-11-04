@@ -102,7 +102,8 @@ export class CallChannel implements NurturingChannel {
             : PAUSE_ALL_AUTOMATIONS_LOG
         } lead=${payload.leadId} template=${payload.templateKey}`,
       );
-      return { success: true, providerRef: 'paused_no_call' };
+      // No success:true — evita cerrar el stepRun como "sent" sin llamar.
+      return { success: false, error: 'paused_no_call' };
     }
 
     const forceMock =

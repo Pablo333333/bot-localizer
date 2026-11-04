@@ -4,31 +4,24 @@ import {
   Headers,
   Logger,
   Post,
-  UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { CalendarService } from '../v2/calendar.service';
 import { handleAgendarLlamada } from './agendar-llamada';
+import { RetellWebhookGuard } from './retell-webhook.guard';
 
 @Controller('webhooks/retell')
+@UseGuards(RetellWebhookGuard)
 export class AgendarLlamadaController {
   private readonly logger = new Logger(AgendarLlamadaController.name);
 
-  constructor(
-    private readonly calendar: CalendarService,
-    private readonly config: ConfigService,
-  ) {}
+  constructor(private readonly calendar: CalendarService) {}
 
   @Post('agendar-llamada')
   async agendar(
     @Body() body: Record<string, unknown>,
-    @Headers('x-localicer-tool-key') toolKey?: string,
+    @Headers('x-localicer-tool-key') _toolKey?: string,
   ): Promise<Record<string, unknown>> {
-    const secret = this.config.get<string>('RETELL_TOOL_SECRET')?.trim();
-    if (secret && toolKey !== secret) {
-      throw new UnauthorizedException('Herramienta no autorizada');
-    }
-
     const call = (body?.call || {}) as { call_id?: string };
     this.logger.log(
       `[AGENDAR_LLAMADA] call=${call.call_id || 'n/a'} accion=${
@@ -47,7 +40,8 @@ export class AgendarLlamadaController {
       return {
         ok: false,
         reservada: false,
-        error: 'No se pudo consultar el calendario. Discúlpate y no confirmes cita.',
+        error:
+          'No se pudo consultar el calendario. Discúlpate y no confirmes cita.',
       };
     }
   }
