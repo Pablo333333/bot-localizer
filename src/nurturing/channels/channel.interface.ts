@@ -16,6 +16,11 @@ export interface ChannelSendResult {
   error?: string;
   /** El proveedor no pudo cobrar (sin saldo). El paso sigue en cola. */
   hold?: 'provider_balance';
+  /**
+   * Fallo terminal (p.ej. Twilio 63007): no reintentar ni caer a SMS.
+   * El processor marca el stepRun como failed sin saturar BullMQ.
+   */
+  permanent?: boolean;
 }
 
 export interface NurturingChannel {

@@ -19,11 +19,14 @@ import {
 import { buildLeadPropertyMetadataFromSheet } from '../followup/lead-sms-content-vars';
 import { EnrollmentsService } from '../enrollments/enrollments.service';
 import { WhatsappChannel } from '../channels/whatsapp.channel';
-import { SmsChannel } from '../channels/sms.channel';
 import {
   NURTURING_PHASE3_DISABLED_LOG,
   isNurturingPhase3Enabled,
 } from '../phase3-enabled';
+import {
+  PAUSE_ALL_AUTOMATIONS_LOG,
+  isPauseAllAutomations,
+} from '../../outbound/pause-automations';
 import {
   PHASE3_LEAD_NOT_ALLOWED_LOG,
   isPhase3AllowedPhone,
@@ -35,10 +38,8 @@ import {
   resolveMaxDailyPhase3Leads,
 } from '../phase3-quota';
 import {
-  TEMPLATE_SMS_T0,
   TEMPLATE_WA_T0,
   TONI_BOOKING_LINK,
-  TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3,
   resolveWhatsappSeguimientoContentSid,
   renderToniNoAnswerFallback,
 } from '../toni-fase3.constants';
@@ -57,7 +58,7 @@ export type BackfillUnreachedOptions = {
   dryRun?: boolean;
   /** Tope adicional sobre el cupo restante (p.ej. pruebas). */
   limit?: number;
-  /** Enviar WA/SMS T+0 al enrolar (default true si hay cupo y horario). */
+  /** Enviar WA T+0 al enrolar (default true si hay cupo y horario). Sin fallback SMS. */
   sendMessages?: boolean;
 };
 
@@ -103,7 +104,6 @@ export class SheetsBackfillUnreachedService {
     private readonly prisma: PrismaService,
     private readonly enrollments: EnrollmentsService,
     private readonly whatsapp: WhatsappChannel,
-    private readonly sms: SmsChannel,
     private readonly config: ConfigService,
   ) {}
 
@@ -113,6 +113,10 @@ export class SheetsBackfillUnreachedService {
    */
   @Cron('5 10 * * 1-5', { timeZone: 'Europe/Madrid' })
   async scheduledBackfill(): Promise<void> {
+    if (isPauseAllAutomations(this.config.get('PAUSE_ALL_AUTOMATIONS'))) {
+      this.logger.warn(PAUSE_ALL_AUTOMATIONS_LOG);
+      return;
+    }
     try {
       const result = await this.backfillUnreached();
       this.logger.log(
@@ -168,6 +172,13 @@ export class SheetsBackfillUnreachedService {
       return base;
     }
 
+    if (isPauseAllAutomations(this.config.get('PAUSE_ALL_AUTOMATIONS'))) {
+      base.ok = false;
+      base.error = PAUSE_ALL_AUTOMATIONS_LOG;
+      this.logger.warn(PAUSE_ALL_AUTOMATIONS_LOG);
+      return base;
+    }
+
     if (this.running) {
       return {
         ...base,
@@ -213,7 +224,12 @@ export class SheetsBackfillUnreachedService {
       const seenPhones = new Set<string>();
 
       for (const row of candidates) {
+        // Cupo estricto: enrolled + usedToday nunca supera maxDaily (default 30).
         if (!dryRun && base.enrolled >= slots) {
+          base.skippedQuota += 1;
+          continue;
+        }
+        if (!dryRun && usedToday + base.enrolled >= maxDaily) {
           base.skippedQuota += 1;
           continue;
         }
@@ -271,7 +287,6 @@ export class SheetsBackfillUnreachedService {
           if (outcome.action === 'enrolled') {
             base.enrolled += 1;
             if (outcome.whatsappSent) base.whatsappSent += 1;
-            if (outcome.smsSent) base.smsSent += 1;
           } else if (outcome.action === 'already_active') {
             base.alreadyActive += 1;
           } else if (outcome.action === 'terminal') {
@@ -347,7 +362,6 @@ export class SheetsBackfillUnreachedService {
   }): Promise<{
     action: string;
     whatsappSent?: boolean;
-    smsSent?: boolean;
   }> {
     const { row, e164, sendMessages } = params;
     const digits = e164.replace(/\D/g, '').slice(-9);
@@ -420,22 +434,19 @@ export class SheetsBackfillUnreachedService {
     }
 
     let whatsappSent = false;
-    let smsSent = false;
     if (sendMessages) {
       try {
-        const sent = await this.sendT0Messages(lead);
-        whatsappSent = sent.whatsappSent;
-        smsSent = sent.smsSent;
+        whatsappSent = await this.sendT0Whatsapp(lead);
       } catch (err) {
         this.logger.warn(
-          `[FASE3][BACKFILL] WA/SMS falló lead=${lead.id} (se continúa con enroll): ${
+          `[FASE3][BACKFILL] WA falló lead=${lead.id} (se continúa con enroll): ${
             err instanceof Error ? err.message : err
           }`,
         );
       }
     } else if (!isWithinOutboundCallHours(madridOutboundParts(new Date()))) {
       this.logger.log(
-        `[FASE3][BACKFILL] fuera de horario — se omite WA/SMS inmediato lead=${lead.id}; pasos BullMQ alineados a ${OUTBOUND_HOURS_DESCRIPTION}`,
+        `[FASE3][BACKFILL] fuera de horario — se omite WA inmediato lead=${lead.id}; pasos BullMQ alineados a ${OUTBOUND_HOURS_DESCRIPTION}`,
       );
     }
 
@@ -450,45 +461,30 @@ export class SheetsBackfillUnreachedService {
       throw err;
     }
 
-    return { action: 'enrolled', whatsappSent, smsSent };
+    return { action: 'enrolled', whatsappSent };
   }
 
-  private async sendT0Messages(lead: {
+  /** Solo WhatsApp T+0. Sin fallback SMS ni reintento a otro canal/número. */
+  private async sendT0Whatsapp(lead: {
     id: string;
     phone: string;
     name: string | null;
     email: string | null;
     metadata?: unknown;
-  }): Promise<{ whatsappSent: boolean; smsSent: boolean }> {
+  }): Promise<boolean> {
     const bookingLink =
       this.config.get<string>('BOOKING_LINK_CALL') || TONI_BOOKING_LINK;
     const waContentSid = resolveWhatsappSeguimientoContentSid({
       envSid: this.config.get<string>('TWILIO_WHATSAPP_CONTENT_SID'),
     });
     const contentVariables = buildSeguimientoSmsContentVariables(lead);
-    const sharedPayload: Record<string, unknown> = {
+    const waPayload: Record<string, unknown> = {
       body: renderToniNoAnswerFallback(contentVariables, lead.name),
       booking_link: bookingLink,
       contentVariables,
       bypassWhatsappGate: true,
-    };
-    const explicitSmsSid =
-      this.config.get<string>('TWILIO_SMS_CONTENT_SID') ??
-      this.config.get<string>('TWILIO_CONTENT_SID_SEGUIMIENTO');
-    const smsPayload: Record<string, unknown> = { ...sharedPayload };
-    if (explicitSmsSid !== undefined && String(explicitSmsSid).trim() !== '') {
-      smsPayload.contentSid = String(explicitSmsSid).trim();
-    } else if (explicitSmsSid === undefined) {
-      smsPayload.contentSid = TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3;
-    }
-    const waPayload: Record<string, unknown> = {
-      ...sharedPayload,
       ...(waContentSid ? { contentSid: waContentSid } : {}),
     };
-
-    let whatsappSent = false;
-    let smsSent = false;
-    let whatsappFailed = false;
 
     try {
       const wa = await this.whatsapp.send({
@@ -500,48 +496,20 @@ export class SheetsBackfillUnreachedService {
         templatePayload: waPayload,
         stepRunId: `backfill:${lead.id}`,
       });
-      whatsappSent = wa.success;
-      whatsappFailed = !wa.success;
       if (!wa.success) {
         this.logger.warn(
-          `[FASE3][BACKFILL] WhatsApp falló lead=${lead.id}: ${wa.error}`,
+          `[FASE3][BACKFILL] WhatsApp falló lead=${lead.id}: ${wa.error} — se aborta mensajería (sin SMS)`,
         );
+        return false;
       }
+      return true;
     } catch (err) {
-      whatsappFailed = true;
       this.logger.warn(
         `[FASE3][BACKFILL] WhatsApp excepción lead=${lead.id}: ${
           err instanceof Error ? err.message : err
-        }`,
+        } — se aborta mensajería (sin SMS)`,
       );
+      return false;
     }
-
-    if (!whatsappSent || whatsappFailed) {
-      try {
-        const sms = await this.sms.send({
-          leadId: lead.id,
-          phone: lead.phone,
-          name: lead.name,
-          email: lead.email,
-          templateKey: TEMPLATE_SMS_T0,
-          templatePayload: smsPayload,
-          stepRunId: `backfill:${lead.id}`,
-        });
-        smsSent = sms.success;
-        if (!sms.success) {
-          this.logger.warn(
-            `[FASE3][BACKFILL] SMS falló lead=${lead.id}: ${sms.error}`,
-          );
-        }
-      } catch (err) {
-        this.logger.warn(
-          `[FASE3][BACKFILL] SMS excepción lead=${lead.id}: ${
-            err instanceof Error ? err.message : err
-          }`,
-        );
-      }
-    }
-
-    return { whatsappSent, smsSent };
   }
 }

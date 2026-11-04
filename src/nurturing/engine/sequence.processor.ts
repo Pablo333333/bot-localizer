@@ -44,6 +44,11 @@ import {
   isProviderBalanceError,
   PROVIDER_BALANCE_RETRY_MS,
 } from './provider-balance';
+import { isPermanentMessagingError } from './permanent-messaging-error';
+import {
+  PAUSE_ALL_AUTOMATIONS_LOG,
+  isPauseAllAutomations,
+} from '../../outbound/pause-automations';
 
 @Processor(NURTURING_STEPS_QUEUE, { concurrency: 1 })
 export class SequenceProcessor extends WorkerHost {
@@ -69,6 +74,11 @@ export class SequenceProcessor extends WorkerHost {
     }
 
     const { stepRunId, enrollmentId, leadId } = job.data;
+
+    if (isPauseAllAutomations(this.config.get('PAUSE_ALL_AUTOMATIONS'))) {
+      await this.deferWhileAutomationsPaused(job, stepRunId);
+      return { status: 'paused' };
+    }
     this.logger.log(
       `[FASE3][COLA] ejecutando job=${job.id} stepRun=${stepRunId} attempt=${job.attemptsMade + 1} lead=${leadId} enrollment=${enrollmentId}`,
     );
@@ -194,15 +204,27 @@ export class SequenceProcessor extends WorkerHost {
         return { status: 'awaiting_balance' };
       }
 
+      const permanent =
+        result.permanent === true ||
+        isPermanentMessagingError(errorMessage);
+
+      const errorCode =
+        permanent && stepRun.step.channel === PrismaChannel.whatsapp
+          ? 'FAILED_WHATSAPP'
+          : permanent
+            ? 'channel_send_permanent'
+            : 'channel_send_failed';
+
       await this.prisma.executionErrorLog.create({
         data: {
           stepRunId,
-          code: 'channel_send_failed',
+          code: errorCode,
           message: errorMessage,
           payload: {
             channel: stepRun.step.channel,
             attempt: job.attemptsMade + 1,
             enrollmentId,
+            permanent,
           } as Prisma.InputJsonValue,
         },
       });
@@ -213,7 +235,8 @@ export class SequenceProcessor extends WorkerHost {
       });
 
       const maxAttempts = job.opts.attempts ?? stepRun.step.maxRetries;
-      if (job.attemptsMade + 1 >= maxAttempts) {
+      // Fallos terminales (63007, canal/cuenta inactiva): no reintentar ni duplicar jobs.
+      if (permanent || job.attemptsMade + 1 >= maxAttempts) {
         await this.prisma.sequenceStepRun.update({
           where: { id: stepRunId },
           data: {
@@ -222,6 +245,11 @@ export class SequenceProcessor extends WorkerHost {
           },
         });
         await this.maybeCompleteEnrollment(enrollmentId);
+        this.logger.warn(
+          `[FASE3][COLA] stepRun=${stepRunId} FAILED` +
+            (permanent ? ' (permanente, sin reintento)' : '') +
+            `: ${errorMessage}`,
+        );
         return { status: 'failed' };
       }
 
@@ -504,6 +532,50 @@ export class SequenceProcessor extends WorkerHost {
       channel === 'llamada' ||
       channel === 'whatsapp'
     );
+  }
+
+  /**
+   * Con PAUSE_ALL_AUTOMATIONS: aplaza el job (no lo completa) para
+   * reanudarlo al quitar la flag, sin saturar failed/retries.
+   */
+  private async deferWhileAutomationsPaused(
+    job: Job<NurturingStepJobData>,
+    stepRunId: string,
+  ): Promise<void> {
+    const delayMs = 10 * 60 * 1000;
+    await this.prisma.sequenceStepRun.update({
+      where: { id: stepRunId },
+      data: {
+        status: StepRunStatus.scheduled,
+        finishedAt: null,
+        lastError: 'paused_all_automations',
+      },
+    });
+    this.logger.warn(
+      `${PAUSE_ALL_AUTOMATIONS_LOG} job=${job.id} stepRun=${stepRunId} — aplazado ${delayMs / 60_000} min`,
+    );
+
+    const token = job.token;
+    if (token) {
+      try {
+        await job.moveToDelayed(Date.now() + delayMs, token);
+        throw new DelayedError('paused_all_automations');
+      } catch (err) {
+        if (err instanceof DelayedError) throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `[FASE3][COLA] moveToDelayed (pause) falló stepRun=${stepRunId}: ${message}`,
+        );
+      }
+    }
+    try {
+      await this.scheduler.requeueStepRun(stepRunId, delayMs);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `[FASE3][COLA] requeue por pause falló stepRun=${stepRunId}: ${message}`,
+      );
+    }
   }
 
   /**

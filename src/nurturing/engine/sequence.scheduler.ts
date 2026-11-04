@@ -22,6 +22,7 @@ import {
   OUTBOUND_SANDBOX_WHITELIST_E164,
   isOutboundSandboxWhitelistEnabled,
 } from '../../outbound/outbound-sandbox-whitelist';
+import { isPauseAllAutomations } from '../../outbound/pause-automations';
 import { lockPhase3Key } from './pg-advisory-lock';
 import { NurturingStepJobData, stepRunJobId } from './nurturing-step.job';
 import {
@@ -435,6 +436,13 @@ export class SequenceScheduler {
    */
   @Cron(CronExpression.EVERY_10_MINUTES)
   async repairHeldNurturingSequences(): Promise<void> {
+    if (
+      isPauseAllAutomations(
+        this.config.get('PAUSE_ALL_AUTOMATIONS'),
+      )
+    ) {
+      return;
+    }
     if (!isNurturingPhase3Enabled(this.config.get('NURTURING_PHASE3_ENABLED'))) {
       return;
     }

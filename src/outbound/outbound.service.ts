@@ -12,6 +12,10 @@ import {
   describeOutboundMode,
   isOutboundCallsEnabled,
 } from './outbound-enabled';
+import {
+  PAUSE_ALL_AUTOMATIONS_LOG,
+  isPauseAllAutomations,
+} from './pause-automations';
 import { describePhase3Allowlist } from '../nurturing/phase3-allowlist';
 import {
   findAnuncioRevisadoHeader,
@@ -115,8 +119,8 @@ export class OutboundService {
     )) {
       this.logger.warn(OUTBOUND_SANDBOX_WHITELIST_LOG);
     }
-    if (OUTBOUND_AUTO_DIAL_PAUSED) {
-      this.logger.warn(OUTBOUND_AUTO_DIAL_PAUSED_LOG);
+    if (this.areAutomationsPaused()) {
+      this.logger.warn(this.pauseAutomationsLog());
     }
     if (mode.testFilterActive) {
       this.logger.warn(
@@ -149,8 +153,8 @@ export class OutboundService {
    */
   @Cron(CronExpression.EVERY_5_MINUTES)
   async checkPendingCalls(): Promise<void> {
-    if (OUTBOUND_AUTO_DIAL_PAUSED) {
-      this.logger.warn(OUTBOUND_AUTO_DIAL_PAUSED_LOG);
+    if (this.areAutomationsPaused()) {
+      this.logger.warn(this.pauseAutomationsLog());
       return;
     }
 
@@ -249,9 +253,22 @@ export class OutboundService {
     }
   }
 
+  private areAutomationsPaused(): boolean {
+    return (
+      OUTBOUND_AUTO_DIAL_PAUSED ||
+      isPauseAllAutomations(this.configService.get('PAUSE_ALL_AUTOMATIONS'))
+    );
+  }
+
+  private pauseAutomationsLog(): string {
+    return OUTBOUND_AUTO_DIAL_PAUSED
+      ? OUTBOUND_AUTO_DIAL_PAUSED_LOG
+      : PAUSE_ALL_AUTOMATIONS_LOG;
+  }
+
   private async processPendingCalls(maxDailyCalls: number): Promise<void> {
-    if (OUTBOUND_AUTO_DIAL_PAUSED) {
-      this.logger.warn(OUTBOUND_AUTO_DIAL_PAUSED_LOG);
+    if (this.areAutomationsPaused()) {
+      this.logger.warn(this.pauseAutomationsLog());
       return;
     }
 

@@ -6,6 +6,10 @@ import {
   OUTBOUND_AUTO_DIAL_PAUSED_LOG,
 } from '../../outbound/outbound-enabled';
 import {
+  PAUSE_ALL_AUTOMATIONS_LOG,
+  isPauseAllAutomations,
+} from '../../outbound/pause-automations';
+import {
   OUTBOUND_SANDBOX_WHITELIST_E164,
   SKIPPED_SANDBOX_WHITELIST,
   isAllowedOutboundSandboxPhone,
@@ -87,9 +91,16 @@ export class CallChannel implements NurturingChannel {
       return { success: true, providerRef: SKIPPED_SANDBOX_WHITELIST };
     }
 
-    if (OUTBOUND_AUTO_DIAL_PAUSED) {
+    if (
+      OUTBOUND_AUTO_DIAL_PAUSED ||
+      isPauseAllAutomations(this.config.get('PAUSE_ALL_AUTOMATIONS'))
+    ) {
       this.logger.warn(
-        `${OUTBOUND_AUTO_DIAL_PAUSED_LOG} lead=${payload.leadId} template=${payload.templateKey}`,
+        `${
+          OUTBOUND_AUTO_DIAL_PAUSED
+            ? OUTBOUND_AUTO_DIAL_PAUSED_LOG
+            : PAUSE_ALL_AUTOMATIONS_LOG
+        } lead=${payload.leadId} template=${payload.templateKey}`,
       );
       return { success: true, providerRef: 'paused_no_call' };
     }

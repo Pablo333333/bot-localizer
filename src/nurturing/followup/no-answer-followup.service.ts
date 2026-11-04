@@ -387,8 +387,6 @@ export class NoAnswerFollowupService {
         whatsapp: plan.sendWhatsApp,
         sms: plan.sendSms,
         rejected: this.classifier.shouldMarkClosed(outcome),
-        /** Si WA falla o está deshabilitado, no perder el hilo: enviar SMS. */
-        smsFallbackIfWhatsappFails: plan.sendWhatsApp && !plan.sendSms,
         waKey: TEMPLATE_WA_T0,
         smsKey:
           plan.sendSms && effectivePhase === 't0'
@@ -677,8 +675,6 @@ export class NoAnswerFollowupService {
     opts: {
       whatsapp: boolean;
       sms: boolean;
-      /** Si true y WA no llega, dispara SMS con Content SID (evita fallo silencioso). */
-      smsFallbackIfWhatsappFails?: boolean;
       /** Rechazo explícito: no se llama a Twilio. */
       rejected?: boolean;
       waKey?: string;
@@ -741,54 +737,44 @@ export class NoAnswerFollowupService {
     const stepRunId = `retell:${callId || 'unknown'}`;
     let whatsappSent = false;
     let smsSent = false;
-    let whatsappFailed = false;
 
     if (opts.whatsapp) {
       this.logger.log(
         `[FASE3][MENSAJE] enviando WhatsApp con enlace de cita lead=${lead.id} phone=${lead.phone} call=${callId}`,
       );
       const result = await this.whatsapp.send({
+        leadId: lead.id,
+        phone: lead.phone,
+        name: lead.name,
+        email: lead.email,
+        templateKey: opts.waKey || TEMPLATE_WA_T0,
+        templatePayload: waPayload,
+        stepRunId,
+      });
+      whatsappSent = result.success;
+      if (!result.success) {
+        this.logger.error(
+          `[Followup] WhatsApp FALLÓ lead=${lead.id} phone=${lead.phone}: ${result.error} — se aborta mensajería (sin SMS)`,
+        );
+        // FAILED_WHATSAPP ya persistido por WhatsappChannel; no SMS ni reintentos.
+        return { whatsappSent: false, smsSent: false };
+      }
+      this.logger.log(
+        `[FASE3][MENSAJE] WhatsApp enviado lead=${lead.id} phone=${lead.phone} sid=${result.providerRef || '?'} call=${callId || '?'}`,
+      );
+      await this.prisma.communicationLog.create({
+        data: {
           leadId: lead.id,
-          phone: lead.phone,
-          name: lead.name,
-          email: lead.email,
-          templateKey: opts.waKey || TEMPLATE_WA_T0,
-          templatePayload: waPayload,
-          stepRunId,
-        });
-        whatsappSent = result.success;
-        whatsappFailed = !result.success;
-        if (!result.success) {
-          this.logger.error(
-            `[Followup] WhatsApp FALLÓ lead=${lead.id} phone=${lead.phone}: ${result.error}`,
-          );
-        }
-        if (result.success) {
-          this.logger.log(
-            `[FASE3][MENSAJE] WhatsApp enviado lead=${lead.id} phone=${lead.phone} sid=${result.providerRef || '?'} call=${callId || '?'}`,
-          );
-          await this.prisma.communicationLog.create({
-            data: {
-              leadId: lead.id,
-              channel: PrismaChannel.whatsapp,
-              direction: 'outbound',
-              summary: `${opts.summaryPrefix}:whatsapp`,
-              providerRef: result.providerRef,
-            },
-          });
-        }
+          channel: PrismaChannel.whatsapp,
+          direction: 'outbound',
+          summary: `${opts.summaryPrefix}:whatsapp`,
+          providerRef: result.providerRef,
+        },
+      });
     }
 
-    const shouldSms =
-      opts.sms ||
-      (opts.smsFallbackIfWhatsappFails === true && whatsappFailed);
-
-    if (shouldSms) {
-      if (!opts.sms && whatsappFailed) {
-        this.logger.log(
-          `[Followup] Fallback SMS (Content SID) tras WA no disponible/fallido lead=${lead.id}`,
-        );
-      }
+    // Solo SMS planificado (T+7). Nunca como fallback de un WA fallido.
+    if (opts.sms) {
       const result = await this.sms.send({
         leadId: lead.id,
         phone: lead.phone,
