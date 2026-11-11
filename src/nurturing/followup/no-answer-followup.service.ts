@@ -14,7 +14,7 @@ import {
   TEMPLATE_SMS_T0,
   TEMPLATE_SMS_T7,
   TEMPLATE_WA_T0,
-  TONI_BOOKING_LINK,
+  resolveToniBookingLink,
   TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3,
   resolveWhatsappSeguimientoContentSid,
   renderToniNoAnswerFallback,
@@ -702,8 +702,11 @@ export class NoAnswerFollowupService {
       callVars?: Record<string, unknown> | null;
     },
   ): Promise<{ whatsappSent: boolean; smsSent: boolean }> {
-    const bookingLink =
-      this.config.get<string>('BOOKING_LINK_CALL') || TONI_BOOKING_LINK;
+    const bookingLink = resolveToniBookingLink(
+      this.config.get<string>('BOOKING_LINK_CALL'),
+      this.config.get<string>('BOOKING_LINK'),
+      this.config.get<string>('CALENDAR_BOOKING_URL'),
+    );
     const waContentSid = resolveWhatsappSeguimientoContentSid({
       envSid: this.config.get<string>('TWILIO_WHATSAPP_CONTENT_SID'),
     });

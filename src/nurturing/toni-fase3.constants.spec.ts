@@ -6,6 +6,7 @@ import {
   RETELL_FROM_NUMBER_DEFAULT,
   TEMPLATE_CALL_FOLLOWUP_D10,
   TEMPLATE_CALL_FOLLOWUP_D7,
+  TONI_BOOKING_LINK,
   TONI_NO_ANSWER_MESSAGE,
   TONI_WHATSAPP_SHORT_LINK,
   TWILIO_CONTENT_SID_SEGUIMIENTO_FASE3,
@@ -16,6 +17,7 @@ import {
   resolveCallPhase,
   resolveRetellFollowupAgentId,
   resolveRetellFromNumber,
+  resolveToniBookingLink,
   resolveWhatsappSeguimientoContentSid,
   twilioSeguimientoContentVariablesJson,
 } from './toni-fase3.constants';
@@ -41,13 +43,19 @@ describe('Toni Fase 3 constants', () => {
     expect(resolveRetellFromNumber('+34 871 075 112')).toBe('+34871075112');
   });
 
-  it('plantilla T+0 incluye link de agendamiento Toni', () => {
+  it('plantilla T+0 incluye link de agendamiento Toni (sin GHL)', () => {
+    expect(TONI_BOOKING_LINK).toBe('https://www.localicer.com/agendar');
+    expect(resolveToniBookingLink(undefined, '', null)).toBe(TONI_BOOKING_LINK);
+    expect(resolveToniBookingLink('https://www.localicer.com/agendar')).toBe(
+      'https://www.localicer.com/agendar',
+    );
     expect(TONI_NO_ANSWER_MESSAGE).toContain('Intentamos contactarte');
     expect(TONI_NO_ANSWER_MESSAGE).toContain('{{1}}');
     expect(TONI_NO_ANSWER_MESSAGE).toContain('{{2}}');
     expect(TONI_NO_ANSWER_MESSAGE).toContain(
-      'https://api.leadconnectorhq.com/widget/bookings/cita-para-llamada',
+      'https://www.localicer.com/agendar',
     );
+    expect(TONI_NO_ANSWER_MESSAGE).not.toContain('leadconnectorhq');
     expect(TONI_NO_ANSWER_MESSAGE).toContain(TONI_WHATSAPP_SHORT_LINK);
     expect(TONI_NO_ANSWER_MESSAGE).toContain('O responde directamente a este mensaje.');
   });
@@ -74,9 +82,8 @@ describe('Toni Fase 3 constants', () => {
     );
     expect(text).toContain('Hola Toni!');
     expect(text).toContain('inmueble comercial Local en Palma');
-    expect(text).toContain(
-      'https://api.leadconnectorhq.com/widget/bookings/cita-para-llamada',
-    );
+    expect(text).toContain('https://www.localicer.com/agendar');
+    expect(text).not.toContain('leadconnectorhq');
     expect(text).not.toContain('{{1}}');
     expect(text).not.toContain('{{2}}');
     expect(parseTwilioContentVariables({ '1': 'Local en Palma' })).toEqual({

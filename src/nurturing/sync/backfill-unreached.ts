@@ -72,3 +72,39 @@ export function extractBackfillPhoneRaw(row: SheetRowLike): string | null {
   }
   return null;
 }
+
+/** Metadata Lead: claim T+0 WA del backfill (antes de Twilio). */
+export const META_BACKFILL_T0_CLAIMED_AT = 'phase3_backfill_t0_claimed_at';
+export const META_BACKFILL_T0_SENT_AT = 'phase3_backfill_t0_sent_at';
+export const META_BACKFILL_T0_STATUS = 'phase3_backfill_t0_status';
+export const META_BACKFILL_T0_PROVIDER_REF = 'phase3_backfill_t0_provider_ref';
+
+/** Prefijo CommunicationLog — claim o envío T+0 backfill. */
+export const BACKFILL_T0_LOG_PREFIX = 'backfill_t0';
+
+export type BackfillT0Status = 'claimed' | 'sent' | 'failed';
+
+/**
+ * true si el lead ya tiene marca durable de T+0 backfill
+ * (claim previo, enviado o fallido — no reintentar Twilio).
+ */
+export function hasBackfillT0WhatsappRecord(
+  meta: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!meta || typeof meta !== 'object') return false;
+  if (String(meta[META_BACKFILL_T0_CLAIMED_AT] ?? '').trim()) return true;
+  if (String(meta[META_BACKFILL_T0_SENT_AT] ?? '').trim()) return true;
+  const status = String(meta[META_BACKFILL_T0_STATUS] ?? '')
+    .toLowerCase()
+    .trim() as BackfillT0Status | '';
+  return status === 'claimed' || status === 'sent' || status === 'failed';
+}
+
+export function isBackfillT0CommunicationSummary(
+  summary: string | null | undefined,
+): boolean {
+  const s = String(summary ?? '')
+    .trim()
+    .toLowerCase();
+  return s.startsWith(`${BACKFILL_T0_LOG_PREFIX}:`) || s === BACKFILL_T0_LOG_PREFIX;
+}

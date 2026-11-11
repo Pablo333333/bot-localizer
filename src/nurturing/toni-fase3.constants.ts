@@ -5,8 +5,23 @@ export const RETELL_FOLLOWUP_AGENT_ID_DEFAULT =
 /** Remitente Toni (+34 871 075 112). */
 export const RETELL_FROM_NUMBER_DEFAULT = '+34871075112';
 
-export const TONI_BOOKING_LINK =
-  'https://api.leadconnectorhq.com/widget/bookings/cita-para-llamada';
+/**
+ * Ruta unificada de agendamiento (Localicer / Google Calendar).
+ * No usar el widget GHL LeadConnector.
+ * Override en runtime: BOOKING_LINK_CALL | BOOKING_LINK | CALENDAR_BOOKING_URL.
+ */
+export const TONI_BOOKING_LINK = 'https://www.localicer.com/agendar';
+
+/** Resuelve el enlace de cita Fase 3 (env primero, luego default sin GHL). */
+export function resolveToniBookingLink(
+  ...candidates: Array<string | null | undefined>
+): string {
+  for (const c of candidates) {
+    const v = String(c ?? '').trim();
+    if (v) return v;
+  }
+  return TONI_BOOKING_LINK;
+}
 
 /**
  * Enlace corto de WhatsApp embebido en la plantilla aprobada

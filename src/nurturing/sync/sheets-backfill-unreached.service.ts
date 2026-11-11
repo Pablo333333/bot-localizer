@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import {
+  Channel as PrismaChannel,
   EnrollmentStatus,
   LeadStatus as PrismaLeadStatus,
   Prisma,
@@ -19,6 +20,7 @@ import {
 import { buildLeadPropertyMetadataFromSheet } from '../followup/lead-sms-content-vars';
 import { EnrollmentsService } from '../enrollments/enrollments.service';
 import { WhatsappChannel } from '../channels/whatsapp.channel';
+import { lockPhase3Key } from '../engine/pg-advisory-lock';
 import {
   NURTURING_PHASE3_DISABLED_LOG,
   isNurturingPhase3Enabled,
@@ -39,7 +41,7 @@ import {
 } from '../phase3-quota';
 import {
   TEMPLATE_WA_T0,
-  TONI_BOOKING_LINK,
+  resolveToniBookingLink,
   resolveWhatsappSeguimientoContentSid,
   renderToniNoAnswerFallback,
 } from '../toni-fase3.constants';
@@ -47,9 +49,16 @@ import { buildSeguimientoSmsContentVariables } from '../followup/lead-sms-conten
 import { formatE164Spain, phoneDedupeKey } from '../utils/phone.util';
 import {
   BACKFILL_SHEET_NAME,
+  BACKFILL_T0_LOG_PREFIX,
   COL_CALL_ID,
   COL_NOMBRE_CONTACTO1,
+  META_BACKFILL_T0_CLAIMED_AT,
+  META_BACKFILL_T0_PROVIDER_REF,
+  META_BACKFILL_T0_SENT_AT,
+  META_BACKFILL_T0_STATUS,
   extractBackfillPhoneRaw,
+  hasBackfillT0WhatsappRecord,
+  isBackfillT0CommunicationSummary,
   isBackfillUnreachedCandidate,
 } from './backfill-unreached';
 
@@ -83,6 +92,8 @@ export type BackfillUnreachedResult = {
   skippedInvalidPhone: number;
   skippedQuota: number;
   whatsappSent: number;
+  /** T+0 omitido: ya había claim/envío durable en DB. */
+  whatsappSkippedAlreadySent: number;
   smsSent: number;
   errors: number;
   sample?: Array<{
@@ -160,6 +171,7 @@ export class SheetsBackfillUnreachedService {
       skippedInvalidPhone: 0,
       skippedQuota: 0,
       whatsappSent: 0,
+      whatsappSkippedAlreadySent: 0,
       smsSent: 0,
       errors: 0,
       sample: [],
@@ -222,6 +234,9 @@ export class SheetsBackfillUnreachedService {
       }
 
       const seenPhones = new Set<string>();
+      const waThrottleMs = resolveBackfillWhatsappThrottleMs(
+        this.config.get('BACKFILL_WHATSAPP_THROTTLE_MS'),
+      );
 
       for (const row of candidates) {
         // Cupo estricto: enrolled + usedToday nunca supera maxDaily (default 30).
@@ -286,7 +301,13 @@ export class SheetsBackfillUnreachedService {
           });
           if (outcome.action === 'enrolled') {
             base.enrolled += 1;
-            if (outcome.whatsappSent) base.whatsappSent += 1;
+            if (outcome.whatsappSent) {
+              base.whatsappSent += 1;
+              // Evita ráfaga Twilio: pausa entre envíos WA dentro del cupo diario.
+              await sleepMs(waThrottleMs);
+            } else if (outcome.whatsappSkippedAlreadySent) {
+              base.whatsappSkippedAlreadySent += 1;
+            }
           } else if (outcome.action === 'already_active') {
             base.alreadyActive += 1;
           } else if (outcome.action === 'terminal') {
@@ -327,7 +348,7 @@ export class SheetsBackfillUnreachedService {
       });
 
       this.logger.log(
-        `[FASE3][BACKFILL] scanned=${base.scanned} candidates=${base.candidates} enrolled=${base.enrolled} alreadyActive=${base.alreadyActive} quota=${base.quota.usedToday}/${maxDaily} errors=${base.errors} hours=${withinHours} (${OUTBOUND_HOURS_DESCRIPTION})`,
+        `[FASE3][BACKFILL] scanned=${base.scanned} candidates=${base.candidates} enrolled=${base.enrolled} alreadyActive=${base.alreadyActive} waSent=${base.whatsappSent} waSkipDup=${base.whatsappSkippedAlreadySent} quota=${base.quota.usedToday}/${maxDaily} errors=${base.errors} hours=${withinHours} (${OUTBOUND_HOURS_DESCRIPTION})`,
       );
       return base;
     } finally {
@@ -362,6 +383,7 @@ export class SheetsBackfillUnreachedService {
   }): Promise<{
     action: string;
     whatsappSent?: boolean;
+    whatsappSkippedAlreadySent?: boolean;
   }> {
     const { row, e164, sendMessages } = params;
     const digits = e164.replace(/\D/g, '').slice(-9);
@@ -434,9 +456,12 @@ export class SheetsBackfillUnreachedService {
     }
 
     let whatsappSent = false;
+    let whatsappSkippedAlreadySent = false;
     if (sendMessages) {
       try {
-        whatsappSent = await this.sendT0Whatsapp(lead);
+        const waOutcome = await this.sendT0WhatsappOnce(lead);
+        whatsappSent = waOutcome === 'sent';
+        whatsappSkippedAlreadySent = waOutcome === 'already';
       } catch (err) {
         this.logger.warn(
           `[FASE3][BACKFILL] WA falló lead=${lead.id} (se continúa con enroll): ${
@@ -461,19 +486,34 @@ export class SheetsBackfillUnreachedService {
       throw err;
     }
 
-    return { action: 'enrolled', whatsappSent };
+    return { action: 'enrolled', whatsappSent, whatsappSkippedAlreadySent };
   }
 
-  /** Solo WhatsApp T+0. Sin fallback SMS ni reintento a otro canal/número. */
-  private async sendT0Whatsapp(lead: {
+  /**
+   * WhatsApp T+0 una sola vez por lead.
+   * Claim durable en DB (metadata + CommunicationLog) ANTES de Twilio;
+   * si el proceso corta tras el claim, el reintento no vuelve a llamar a Twilio.
+   */
+  private async sendT0WhatsappOnce(lead: {
     id: string;
     phone: string;
     name: string | null;
     email: string | null;
     metadata?: unknown;
-  }): Promise<boolean> {
-    const bookingLink =
-      this.config.get<string>('BOOKING_LINK_CALL') || TONI_BOOKING_LINK;
+  }): Promise<'sent' | 'already' | 'failed'> {
+    const claim = await this.claimBackfillT0Whatsapp(lead.id);
+    if (claim === 'already') {
+      this.logger.log(
+        `[FASE3][BACKFILL] WA T+0 ya reclamado/enviado lead=${lead.id} phone=${lead.phone} — no se repite`,
+      );
+      return 'already';
+    }
+
+    const bookingLink = resolveToniBookingLink(
+      this.config.get<string>('BOOKING_LINK_CALL'),
+      this.config.get<string>('BOOKING_LINK'),
+      this.config.get<string>('CALENDAR_BOOKING_URL'),
+    );
     const waContentSid = resolveWhatsappSeguimientoContentSid({
       envSid: this.config.get<string>('TWILIO_WHATSAPP_CONTENT_SID'),
     });
@@ -498,18 +538,149 @@ export class SheetsBackfillUnreachedService {
       });
       if (!wa.success) {
         this.logger.warn(
-          `[FASE3][BACKFILL] WhatsApp falló lead=${lead.id}: ${wa.error} — se aborta mensajería (sin SMS)`,
+          `[FASE3][BACKFILL] WhatsApp falló lead=${lead.id}: ${wa.error} — se aborta mensajería (sin SMS); claim conservado (sin reintento)`,
         );
-        return false;
+        await this.finalizeBackfillT0Whatsapp(lead.id, {
+          status: 'failed',
+          providerRef: null,
+        });
+        return 'failed';
       }
-      return true;
+      await this.finalizeBackfillT0Whatsapp(lead.id, {
+        status: 'sent',
+        providerRef: wa.providerRef ?? null,
+      });
+      return 'sent';
     } catch (err) {
       this.logger.warn(
         `[FASE3][BACKFILL] WhatsApp excepción lead=${lead.id}: ${
           err instanceof Error ? err.message : err
-        } — se aborta mensajería (sin SMS)`,
+        } — claim conservado (sin reintento)`,
       );
-      return false;
+      await this.finalizeBackfillT0Whatsapp(lead.id, {
+        status: 'failed',
+        providerRef: null,
+      });
+      return 'failed';
     }
   }
+
+  /**
+   * Reserva T+0 backfill en DB antes de Twilio.
+   * true "already" = no enviar; "claimed" = este proceso puede llamar a Twilio.
+   */
+  private async claimBackfillT0Whatsapp(
+    leadId: string,
+  ): Promise<'already' | 'claimed'> {
+    return this.prisma.$transaction(async (tx) => {
+      await lockPhase3Key(tx, `fase3-backfill-wa:${leadId}`);
+
+      const fresh = await tx.lead.findUnique({ where: { id: leadId } });
+      if (!fresh) return 'already';
+
+      const meta = (fresh.metadata as Record<string, unknown> | null) || {};
+      if (hasBackfillT0WhatsappRecord(meta)) return 'already';
+
+      const priorLog = await tx.communicationLog.findFirst({
+        where: {
+          leadId,
+          channel: PrismaChannel.whatsapp,
+          direction: 'outbound',
+          OR: [
+            { summary: { startsWith: `${BACKFILL_T0_LOG_PREFIX}:` } },
+            { summary: BACKFILL_T0_LOG_PREFIX },
+          ],
+        },
+        select: { id: true, summary: true },
+      });
+      if (
+        priorLog &&
+        isBackfillT0CommunicationSummary(priorLog.summary)
+      ) {
+        return 'already';
+      }
+
+      const claimedAt = new Date().toISOString();
+      await tx.lead.update({
+        where: { id: leadId },
+        data: {
+          metadata: {
+            ...meta,
+            phase3_backfill: true,
+            [META_BACKFILL_T0_CLAIMED_AT]: claimedAt,
+            [META_BACKFILL_T0_STATUS]: 'claimed',
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      await tx.communicationLog.create({
+        data: {
+          leadId,
+          channel: PrismaChannel.whatsapp,
+          direction: 'outbound',
+          summary: `${BACKFILL_T0_LOG_PREFIX}:claimed`,
+          providerRef: null,
+        },
+      });
+
+      return 'claimed';
+    });
+  }
+
+  private async finalizeBackfillT0Whatsapp(
+    leadId: string,
+    result: { status: 'sent' | 'failed'; providerRef: string | null },
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    await this.prisma.$transaction(async (tx) => {
+      await lockPhase3Key(tx, `fase3-backfill-wa:${leadId}`);
+      const fresh = await tx.lead.findUnique({ where: { id: leadId } });
+      if (!fresh) return;
+      const meta = (fresh.metadata as Record<string, unknown> | null) || {};
+      await tx.lead.update({
+        where: { id: leadId },
+        data: {
+          metadata: {
+            ...meta,
+            [META_BACKFILL_T0_STATUS]: result.status,
+            ...(result.status === 'sent'
+              ? {
+                  [META_BACKFILL_T0_SENT_AT]: now,
+                  ...(result.providerRef
+                    ? { [META_BACKFILL_T0_PROVIDER_REF]: result.providerRef }
+                    : {}),
+                }
+              : {}),
+          } as Prisma.InputJsonValue,
+        },
+      });
+      await tx.communicationLog.create({
+        data: {
+          leadId,
+          channel: PrismaChannel.whatsapp,
+          direction: 'outbound',
+          summary: `${BACKFILL_T0_LOG_PREFIX}:${result.status}`,
+          providerRef: result.providerRef,
+        },
+      });
+    });
+  }
+}
+
+/** Default 2s entre WA del backfill; override BACKFILL_WHATSAPP_THROTTLE_MS (mín. 1000). */
+const BACKFILL_WHATSAPP_THROTTLE_MS_DEFAULT = 2000;
+
+export function resolveBackfillWhatsappThrottleMs(
+  raw?: string | number | null,
+): number {
+  const n =
+    typeof raw === 'number' ? raw : Number(String(raw ?? '').trim());
+  if (!Number.isFinite(n) || n < 1000) {
+    return BACKFILL_WHATSAPP_THROTTLE_MS_DEFAULT;
+  }
+  return Math.floor(n);
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
