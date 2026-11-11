@@ -20,7 +20,10 @@ import {
 import { buildLeadPropertyMetadataFromSheet } from '../followup/lead-sms-content-vars';
 import { EnrollmentsService } from '../enrollments/enrollments.service';
 import { WhatsappChannel } from '../channels/whatsapp.channel';
-import { lockPhase3Key } from '../engine/pg-advisory-lock';
+import {
+  lockPhase3Key,
+  withPhase3SessionLock,
+} from '../engine/pg-advisory-lock';
 import {
   NURTURING_PHASE3_DISABLED_LOG,
   isNurturingPhase3Enabled,
@@ -86,6 +89,10 @@ export type BackfillUnreachedResult = {
   scanned: number;
   candidates: number;
   enrolled: number;
+  /** dryRun: candidatos que pasarían allowlist + teléfono válido (sin tocar DB). */
+  wouldEnroll: number;
+  /** dryRun: cupo del primer lote (= min(wouldEnroll, remaining)). */
+  firstBatchSize: number;
   alreadyActive: number;
   skippedTerminal: number;
   skippedAllowlist: number;
@@ -165,6 +172,8 @@ export class SheetsBackfillUnreachedService {
       scanned: 0,
       candidates: 0,
       enrolled: 0,
+      wouldEnroll: 0,
+      firstBatchSize: 0,
       alreadyActive: 0,
       skippedTerminal: 0,
       skippedAllowlist: 0,
@@ -184,7 +193,12 @@ export class SheetsBackfillUnreachedService {
       return base;
     }
 
-    if (isPauseAllAutomations(this.config.get('PAUSE_ALL_AUTOMATIONS'))) {
+    // dryRun es solo lectura (Sheet + conteos): permitido con pausa global
+    // para auditar candidatos sin enrollar ni enviar.
+    if (
+      !dryRun &&
+      isPauseAllAutomations(this.config.get('PAUSE_ALL_AUTOMATIONS'))
+    ) {
       base.ok = false;
       base.error = PAUSE_ALL_AUTOMATIONS_LOG;
       this.logger.warn(PAUSE_ALL_AUTOMATIONS_LOG);
@@ -201,161 +215,198 @@ export class SheetsBackfillUnreachedService {
 
     this.running = true;
     try {
-      const usedToday = await this.countBackfillEnrollmentsToday();
-      const remaining = remainingPhase3DailyQuota({ usedToday, maxDaily });
-      base.quota = { maxDaily, usedToday, remaining };
+      const runBody = async (): Promise<BackfillUnreachedResult> => {
+        // Conteo vivo desde SequenceEnrollment (día civil Madrid). No hay
+        // contador mutable aparte: el cupo = filas con enrolledAt >= hoy.
+        let usedToday = await this.countBackfillEnrollmentsToday();
+        const remaining = remainingPhase3DailyQuota({ usedToday, maxDaily });
+        base.quota = { maxDaily, usedToday, remaining };
 
-      const { sheet, rows } = await this.sheets.getAllRows(BACKFILL_SHEET_NAME);
-      const headers = sheet.headerValues || [];
-      base.scanned = rows.length;
+        const { sheet, rows } = await this.sheets.getAllRows(BACKFILL_SHEET_NAME);
+        const headers = sheet.headerValues || [];
+        base.scanned = rows.length;
 
-      const candidates: IsolatedSheetRow[] = [];
-      for (const row of rows) {
-        if (isBackfillUnreachedCandidate(row, headers)) {
-          candidates.push(row);
+        const candidates: IsolatedSheetRow[] = [];
+        for (const row of rows) {
+          if (isBackfillUnreachedCandidate(row, headers)) {
+            candidates.push(row);
+          }
         }
-      }
-      base.candidates = candidates.length;
+        base.candidates = candidates.length;
 
-      let slots = remaining;
-      if (
-        options.limit != null &&
-        Number.isFinite(options.limit) &&
-        options.limit >= 0
-      ) {
-        slots = Math.min(slots, Math.floor(options.limit));
-      }
-
-      if (slots <= 0 && !dryRun) {
-        this.logger.log(
-          `[FASE3][BACKFILL] cupo diario agotado ${usedToday}/${maxDaily} — no se enrollan más hoy`,
-        );
-        return base;
-      }
-
-      const seenPhones = new Set<string>();
-      const waThrottleMs = resolveBackfillWhatsappThrottleMs(
-        this.config.get('BACKFILL_WHATSAPP_THROTTLE_MS'),
-      );
-
-      for (const row of candidates) {
-        // Cupo estricto: enrolled + usedToday nunca supera maxDaily (default 30).
-        if (!dryRun && base.enrolled >= slots) {
-          base.skippedQuota += 1;
-          continue;
-        }
-        if (!dryRun && usedToday + base.enrolled >= maxDaily) {
-          base.skippedQuota += 1;
-          continue;
-        }
-
-        const phoneRaw = extractBackfillPhoneRaw(row);
-        if (!phoneRaw) {
-          base.skippedInvalidPhone += 1;
-          continue;
-        }
-
-        let e164: string;
-        let dedupe: string;
-        try {
-          e164 = formatE164Spain(phoneRaw);
-          dedupe = phoneDedupeKey(e164);
-        } catch {
-          base.skippedInvalidPhone += 1;
-          continue;
-        }
-
-        if (seenPhones.has(dedupe)) {
-          base.skippedInvalidPhone += 1;
-          continue;
-        }
-        seenPhones.add(dedupe);
-
+        let slots = remaining;
         if (
-          !isPhase3AllowedPhone(
-            e164,
-            this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
-          )
+          options.limit != null &&
+          Number.isFinite(options.limit) &&
+          options.limit >= 0
         ) {
-          base.skippedAllowlist += 1;
-          continue;
+          slots = Math.min(slots, Math.floor(options.limit));
         }
 
-        if (dryRun) {
-          if ((base.sample?.length ?? 0) < 25) {
+        if (slots <= 0 && !dryRun) {
+          this.logger.log(
+            `[FASE3][BACKFILL] cupo diario agotado ${usedToday}/${maxDaily} — no se enrollan más hoy`,
+          );
+          return base;
+        }
+
+        const seenPhones = new Set<string>();
+        const waThrottleMs = resolveBackfillWhatsappThrottleMs(
+          this.config.get('BACKFILL_WHATSAPP_THROTTLE_MS'),
+        );
+
+        for (const row of candidates) {
+          if (!dryRun) {
+            // Re-conteo atómico bajo lock de sesión: para en cuanto DB diga 30.
+            usedToday = await this.countBackfillEnrollmentsToday();
+            base.quota.usedToday = usedToday;
+            base.quota.remaining = remainingPhase3DailyQuota({
+              usedToday,
+              maxDaily,
+            });
+            if (usedToday >= maxDaily || base.enrolled >= slots) {
+              base.skippedQuota += 1;
+              this.logger.log(
+                `[FASE3][BACKFILL] tope diario alcanzado usedToday=${usedToday}/${maxDaily} enrolledRun=${base.enrolled} — se detiene el ciclo`,
+              );
+              break;
+            }
+          }
+
+          const phoneRaw = extractBackfillPhoneRaw(row);
+          if (!phoneRaw) {
+            base.skippedInvalidPhone += 1;
+            continue;
+          }
+
+          let e164: string;
+          let dedupe: string;
+          try {
+            e164 = formatE164Spain(phoneRaw);
+            dedupe = phoneDedupeKey(e164);
+          } catch {
+            base.skippedInvalidPhone += 1;
+            continue;
+          }
+
+          if (seenPhones.has(dedupe)) {
+            base.skippedInvalidPhone += 1;
+            continue;
+          }
+          seenPhones.add(dedupe);
+
+          if (
+            !isPhase3AllowedPhone(
+              e164,
+              this.config.get('NURTURING_PHASE3_PHONE_ALLOWLIST'),
+            )
+          ) {
+            base.skippedAllowlist += 1;
+            continue;
+          }
+
+          if (dryRun) {
+            base.wouldEnroll += 1;
+            if ((base.sample?.length ?? 0) < 25) {
+              base.sample?.push({
+                rowNumber: row.rowNumber,
+                phone: e164,
+                callId: String(row.get(COL_CALL_ID) ?? '').trim() || undefined,
+                action: 'would_enroll',
+              });
+            }
+            continue;
+          }
+
+          try {
+            const outcome = await this.processCandidateRow({
+              row,
+              e164,
+              sendMessages: sendMessages && withinHours,
+            });
+            if (outcome.action === 'enrolled') {
+              base.enrolled += 1;
+              // El enroll ya está en DB → el próximo countBackfillEnrollmentsToday lo ve.
+              usedToday = await this.countBackfillEnrollmentsToday();
+              base.quota.usedToday = usedToday;
+              base.quota.remaining = remainingPhase3DailyQuota({
+                usedToday,
+                maxDaily,
+              });
+              if (outcome.whatsappSent) {
+                base.whatsappSent += 1;
+                await sleepMs(waThrottleMs);
+              } else if (outcome.whatsappSkippedAlreadySent) {
+                base.whatsappSkippedAlreadySent += 1;
+              }
+            } else if (outcome.action === 'already_active') {
+              base.alreadyActive += 1;
+            } else if (outcome.action === 'terminal') {
+              base.skippedTerminal += 1;
+            }
             base.sample?.push({
               rowNumber: row.rowNumber,
               phone: e164,
               callId: String(row.get(COL_CALL_ID) ?? '').trim() || undefined,
-              action: 'would_enroll',
+              action: outcome.action,
+            });
+          } catch (err) {
+            base.errors += 1;
+            const message = err instanceof Error ? err.message : String(err);
+            this.logger.warn(
+              `[FASE3][BACKFILL] fila ${row.rowNumber} phone=${e164} error (lote continúa): ${message}`,
+            );
+            base.sample?.push({
+              rowNumber: row.rowNumber,
+              phone: e164,
+              action: `error:${message.slice(0, 120)}`,
             });
           }
-          continue;
-        }
 
-        try {
-          const outcome = await this.processCandidateRow({
-            row,
-            e164,
-            sendMessages: sendMessages && withinHours,
-          });
-          if (outcome.action === 'enrolled') {
-            base.enrolled += 1;
-            if (outcome.whatsappSent) {
-              base.whatsappSent += 1;
-              // Evita ráfaga Twilio: pausa entre envíos WA dentro del cupo diario.
-              await sleepMs(waThrottleMs);
-            } else if (outcome.whatsappSkippedAlreadySent) {
-              base.whatsappSkippedAlreadySent += 1;
-            }
-          } else if (outcome.action === 'already_active') {
-            base.alreadyActive += 1;
-          } else if (outcome.action === 'terminal') {
-            base.skippedTerminal += 1;
+          if (base.sample && base.sample.length > 40) {
+            base.sample = base.sample.slice(0, 40);
           }
-          base.sample?.push({
-            rowNumber: row.rowNumber,
-            phone: e164,
-            callId: String(row.get(COL_CALL_ID) ?? '').trim() || undefined,
-            action: outcome.action,
-          });
-        } catch (err) {
-          base.errors += 1;
-          const message = err instanceof Error ? err.message : String(err);
-          this.logger.warn(
-            `[FASE3][BACKFILL] fila ${row.rowNumber} phone=${e164} error (lote continúa): ${message}`,
-          );
-          base.sample?.push({
-            rowNumber: row.rowNumber,
-            phone: e164,
-            action: `error:${message.slice(0, 120)}`,
+        }
+
+        if (dryRun) {
+          base.sample = (base.sample || []).slice(0, 25);
+          base.firstBatchSize = Math.min(base.wouldEnroll, remaining);
+        } else {
+          usedToday = await this.countBackfillEnrollmentsToday();
+          base.quota.usedToday = usedToday;
+          base.quota.remaining = remainingPhase3DailyQuota({
+            usedToday,
+            maxDaily,
           });
         }
 
-        if (base.sample && base.sample.length > 40) {
-          base.sample = base.sample.slice(0, 40);
-        }
-      }
+        this.logger.log(
+          `[FASE3][BACKFILL] scanned=${base.scanned} candidates=${base.candidates} enrolled=${base.enrolled} wouldEnroll=${base.wouldEnroll} firstBatch=${base.firstBatchSize} alreadyActive=${base.alreadyActive} waSent=${base.whatsappSent} waSkipDup=${base.whatsappSkippedAlreadySent} quota=${base.quota.usedToday}/${maxDaily} errors=${base.errors} hours=${withinHours} (${OUTBOUND_HOURS_DESCRIPTION})`,
+        );
+        return base;
+      };
 
+      // dryRun: sin lock (solo lectura). Escritura: lock por día Madrid
+      // serializa cron + API y evita superar maxDaily entre réplicas.
       if (dryRun) {
-        base.sample = (base.sample || []).slice(0, 25);
+        return await runBody();
       }
-
-      base.quota.usedToday = usedToday + base.enrolled;
-      base.quota.remaining = remainingPhase3DailyQuota({
-        usedToday: base.quota.usedToday,
-        maxDaily,
-      });
-
-      this.logger.log(
-        `[FASE3][BACKFILL] scanned=${base.scanned} candidates=${base.candidates} enrolled=${base.enrolled} alreadyActive=${base.alreadyActive} waSent=${base.whatsappSent} waSkipDup=${base.whatsappSkippedAlreadySent} quota=${base.quota.usedToday}/${maxDaily} errors=${base.errors} hours=${withinHours} (${OUTBOUND_HOURS_DESCRIPTION})`,
+      const dayKey = madridDateKey();
+      return await withPhase3SessionLock(
+        this.prisma,
+        `fase3-backfill-quota:${dayKey}`,
+        runBody,
       );
-      return base;
     } finally {
       this.running = false;
     }
   }
 
+  /**
+   * Cupo del día = nº de SequenceEnrollment creados desde 00:00 Europe/Madrid
+   * en leads de backfill. El viernes a las 00:00 Madrid el umbral avanza y
+   * los enrolls del jueves dejan de contar → lote nuevo de hasta maxDaily.
+   */
   private async countBackfillEnrollmentsToday(): Promise<number> {
     const start = madridStartOfDay();
     return this.prisma.sequenceEnrollment.count({
