@@ -36,7 +36,10 @@
     "retry:backfill-t0": "ts-node --transpile-only -r tsconfig-paths/register scripts/retry-backfill-t0-failed.ts",
     "retry:backfill-t0:pilot": "ts-node --transpile-only -r tsconfig-paths/register scripts/retry-backfill-t0-failed.ts pilot",
     "retry:backfill-t0:rest": "ts-node --transpile-only -r tsconfig-paths/register scripts/retry-backfill-t0-failed.ts rest",
-    "retry:backfill-t0:all": "ts-node --transpile-only -r tsconfig-paths/register scripts/retry-backfill-t0-failed.ts all-after-pilot"
+    "retry:backfill-t0:all": "ts-node --transpile-only -r tsconfig-paths/register scripts/retry-backfill-t0-failed.ts all-after-pilot",
+    "dryrun:fase1-recover": "ts-node --transpile-only -r tsconfig-paths/register scripts/dryrun-fase1-recover-141-230.ts",
+    "test:owner-reply-scenarios": "ts-node --transpile-only -r tsconfig-paths/register scripts/test-owner-reply-scenarios.ts",
+    "dryrun:owner-reply": "ts-node --transpile-only -r tsconfig-paths/register scripts/dryrun-owner-reply-webhook.ts"
   },
   "engines": {
     "node": ">=20"

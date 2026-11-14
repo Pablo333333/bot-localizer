@@ -54,6 +54,15 @@ import {
   withTimeout,
 } from './outbound-cycle-guard';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  FASE1_ENROLLMENT_BLOCK_STATUSES,
+  FASE1_MARKED_LLAMADO,
+  fase1LeadHardBlockReason,
+  fase1SheetHardBlockReason,
+  isLlamadoClearedForRetry,
+  shouldBlockOnExistingCallId,
+} from './outbound-fase1-guard';
+import { formatE164Spain } from '../nurturing/utils/phone.util';
 
 const SHEET_NAME = 'Localizados';
 const COL_LLAMADO = 'Llamado';
@@ -61,7 +70,7 @@ const COL_CALL_ID = 'Call ID';
 const COL_MARCA_TEMPORAL = 'Marca temporal';
 const COL_FECHA_ACTUALIZACION = 'Fecha actualizacion';
 
-const MARKED_STATUSES = new Set(['SI', 'SÍ', 'INTENTADO', 'YES', 'TRUE']);
+const MARKED_STATUSES = FASE1_MARKED_LLAMADO;
 
 // Teléfonos y roles exactos de la pestaña Localizados
 const COL_C1_ROL = 'Contacto1 por';
@@ -360,7 +369,7 @@ export class OutboundService {
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const rowNumber = row.rowNumber; // 1-based real del Sheet (headers = 1)
-      const reason = this.getDiscardReason(row, rowNumber, headers);
+      const reason = await this.getDiscardReason(row, rowNumber, headers);
 
       if (reason) {
         discardedCount++;
@@ -572,16 +581,20 @@ export class OutboundService {
 
   /**
    * Devuelve el motivo de descarte, o null si la fila es candidata.
+   * Orden: conversión / disponibilidad / BD → Llamado → Call ID condicional → cooldown → teléfono.
    */
-  private getDiscardReason(
+  private async getDiscardReason(
     row: any,
     rowNumber: number,
     headerValues?: string[],
-  ): string | null {
+  ): Promise<string | null> {
     if (!isAnuncioRevisadoSi(row, headerValues)) {
       const raw = readAnuncioRevisadoRaw(row, headerValues);
       return `Anuncio Revisado? no es SI ("${String(raw).trim() || 'vacío'}") — no se llama ni se procesa`;
     }
+
+    const sheetHard = fase1SheetHardBlockReason(row, headerValues);
+    if (sheetHard) return sheetHard;
 
     const llamadoRaw = row.get(COL_LLAMADO)?.toString().trim() || '';
     const llamado = llamadoRaw.toUpperCase();
@@ -589,14 +602,24 @@ export class OutboundService {
       return `Llamado ya marcado ("${llamadoRaw}")`;
     }
 
-    const callId = row.get(COL_CALL_ID)?.toString().trim();
-    if (callId) {
+    const callId = row.get(COL_CALL_ID)?.toString().trim() || '';
+    // Recuperación Toni: Llamado vacío + Call ID antiguo → no bloquear solo por Call ID.
+    if (shouldBlockOnExistingCallId({ llamadoRaw, callId })) {
       return `Call ID ya presente ("${callId}")`;
     }
 
     const attemptTs = this.latestRowAttemptTimestamp(row);
     if (attemptTs !== null && isWithinCallCooldown(attemptTs)) {
-      return `Cooldown 48h desde el último intento o llamada (fila ${rowNumber}, ${new Date(attemptTs).toISOString()})`;
+      // Recuperación Toni: Llamado vacío + Call ID histórico → no bloquear por fecha Sheet
+      // (la conversión / BD ya filtraron éxitos). Cooldown en memoria del día se mantiene.
+      const recoveryRetry =
+        isLlamadoClearedForRetry(llamadoRaw) && Boolean(callId);
+      if (!recoveryRetry) {
+        return `Cooldown 48h desde el último intento o llamada (fila ${rowNumber}, ${new Date(attemptTs).toISOString()})`;
+      }
+      this.logger.log(
+        `[OutboundService] Fila ${rowNumber}: Llamado vacío + Call ID histórico — se omite cooldown Sheet (recuperación controlada)`,
+      );
     }
 
     const phoneResult = this.getBestPhoneWithReason(row);
@@ -604,8 +627,16 @@ export class OutboundService {
       return phoneResult.reason || 'Sin teléfono válido';
     }
 
-    const phone = this.formatE164Spain(phoneResult.phone);
+    let phone: string;
+    try {
+      phone = formatE164Spain(phoneResult.phone);
+    } catch {
+      phone = this.formatE164Spain(phoneResult.phone);
+    }
     const phoneKey = this.normalizePhoneKey(phone);
+
+    const leadBlock = await this.getLeadHardBlockForPhone(phone);
+    if (leadBlock) return leadBlock;
 
     if (this.attemptedPhonesToday.has(phoneKey)) {
       return `Teléfono repetido hoy (memoria) → ${phone}`;
@@ -617,6 +648,33 @@ export class OutboundService {
     }
 
     return null;
+  }
+
+  private async getLeadHardBlockForPhone(phone: string): Promise<string | null> {
+    const digits = phone.replace(/\D/g, '').slice(-9);
+    const lead =
+      (await this.prisma.lead.findUnique({ where: { phone } })) ||
+      (digits
+        ? await this.prisma.lead.findFirst({
+            where: { phone: { contains: digits } },
+            orderBy: { updatedAt: 'desc' },
+          })
+        : null);
+    if (!lead) return null;
+
+    const enrollment = await this.prisma.sequenceEnrollment.findFirst({
+      where: {
+        leadId: lead.id,
+        status: { in: FASE1_ENROLLMENT_BLOCK_STATUSES },
+      },
+      select: { id: true, status: true },
+    });
+
+    return fase1LeadHardBlockReason({
+      status: lead.status,
+      metadata: (lead.metadata as Record<string, unknown> | null) || {},
+      hasActiveOrCompletedEnrollment: !!enrollment,
+    });
   }
 
   private getBestPhoneWithReason(row: any): {

@@ -15,6 +15,7 @@ import { InboundModule } from './v2/inbound.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { QueueModule } from './queue/queue.module';
 import { NurturingModule } from './nurturing/nurturing.module';
+import { OwnerReplyModule } from './nurturing/inbound-owner/owner-reply.module';
 import { MetaModule } from './meta/meta.module';
 import { XModule } from './x/x.module';
 import { RetellToolsModule } from './retell/retell-tools.module';
@@ -34,6 +35,7 @@ import { RetellToolsModule } from './retell/retell-tools.module';
     GoogleModule,
     StripeModule,
     NurturingModule,
+    OwnerReplyModule,
     InboundModule,
     MetaModule,
     XModule,
