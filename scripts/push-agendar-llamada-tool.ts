@@ -42,7 +42,10 @@ function toolUrl(): string {
 async function main(): Promise<void> {
   const client = new Retell({ apiKey: process.env.RETELL_API_KEY || '' });
   const url = toolUrl();
-  const secret = process.env.RETELL_TOOL_SECRET?.trim() || '';
+  const secret =
+    process.env.RETELL_WEBHOOK_SECRET?.trim() ||
+    process.env.RETELL_TOOL_SECRET?.trim() ||
+    '';
   const tool = buildAgendarLlamadaTool({ url, secret: secret || undefined });
 
   for (const agent of AGENTS) {

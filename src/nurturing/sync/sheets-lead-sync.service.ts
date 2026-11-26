@@ -252,6 +252,9 @@ export class SheetsLeadSyncService {
           : headers.has('Estado nurturing')
             ? { 'Estado nurturing': status }
             : {}),
+        ...(headers.has('Proximo seguimiento') && status === 'ilocalizable'
+          ? { 'Proximo seguimiento': 'Finalizado (ilocalizable)' }
+          : {}),
       },
       row,
     );

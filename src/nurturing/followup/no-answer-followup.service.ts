@@ -1,8 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { Channel as PrismaChannel } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SheetsService } from '../../sheets/sheets.service';
 import { SmsChannel } from '../channels/sms.channel';
 import { WhatsappChannel } from '../channels/whatsapp.channel';
 import { EnrollmentsService } from '../enrollments/enrollments.service';
@@ -77,6 +78,7 @@ export class NoAnswerFollowupService {
     private readonly enrollments: EnrollmentsService,
     private readonly leads: LeadsService,
     private readonly config: ConfigService,
+    @Optional() private readonly sheets?: SheetsService,
   ) {}
 
   async handleOutboundCallAnalyzed(
@@ -231,6 +233,19 @@ export class NoAnswerFollowupService {
       this.logger.log(
         `[FASE3][NO DISPONIBLE] lead=${lead.id} columna H=NO — secuencias paradas=${stopped}. Sin WhatsApp, sin SMS y sin T+7/T+10. call=${callData.call_id || '?'}`,
       );
+      if (this.sheets && lead.phone) {
+        void this.sheets
+          .updateTraceabilityByPhone(
+            lead.phone,
+            {
+              estadoLead: 'No disponible',
+              proximoSeguimiento: 'Finalizado (no disponible)',
+              motivoDisponibilidad: 'Confirmado no disponible en llamada',
+            },
+            lead.sheetsRowNumber,
+          )
+          .catch(() => undefined);
+      }
       return {
         outcome,
         phase: 'unknown',
@@ -357,6 +372,18 @@ export class NoAnswerFollowupService {
         `[FASE3][RESULTADO] call=${callData.call_id || '?'} phase=${effectivePhase} outcome=answered_success — secuencia detenida, sin SMS ni siguiente reintento`,
       );
       await this.enrollments.stopActiveForLead(lead.id, 'answered_success');
+      if (this.sheets && lead.phone) {
+        void this.sheets
+          .updateTraceabilityByPhone(
+            lead.phone,
+            {
+              estadoLead: 'Contactado',
+              proximoSeguimiento: 'Finalizado (contactado)',
+            },
+            lead.sheetsRowNumber,
+          )
+          .catch(() => undefined);
+      }
       await this.prisma.lead.update({
         where: { id: lead.id },
         data: {
@@ -492,6 +519,19 @@ export class NoAnswerFollowupService {
         reason: 't10_no_contact',
       });
       markedIlocalizable = true;
+      if (this.sheets && lead.phone) {
+        void this.sheets
+          .updateTraceabilityByPhone(
+            lead.phone,
+            {
+              estadoLead: 'Ilocalizable',
+              proximoSeguimiento: 'Finalizado (ilocalizable)',
+              ilocalizable: 'SI',
+            },
+            lead.sheetsRowNumber,
+          )
+          .catch(() => undefined);
+      }
       this.logger.log(
         `[FASE3][ESTADO] lead=${lead.id} → ILOCALIZABLE (llamada 3 sin contacto, outcome=${outcome}). Secuencia terminada, enrollments detenidos=${statusResult.sequencesStopped}.`,
       );

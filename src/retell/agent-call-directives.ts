@@ -22,8 +22,8 @@ Si reservada no es true, no confirmes la cita. Ofrece otro hueco de la lista o c
 export const END_CALL_TOOL_DESCRIPTION =
   'Cuelga cuando se despiden, hay contestador, piden no seguir, o tras dos aclaraciones la persona sigue desorientada o no entiende. Despídete en una frase y llama a esta herramienta en ese turno. No la uses para hacer otra pregunta.';
 
-/** Tope de seguridad. El prompt debe colgar antes; esto evita otra llamada de un cuarto de hora. */
-export const MAX_CALL_DURATION_MS = 12 * 60 * 1000;
+/** Tope de seguridad (8 min). El prompt debe colgar antes; evita llamadas mudas largas. */
+export const MAX_CALL_DURATION_MS = 8 * 60 * 1000;
 
 export const AGENDAR_LLAMADA_TOOL_NAME = 'AGENDAR_LLAMADA';
 

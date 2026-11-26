@@ -290,6 +290,15 @@ export class OwnerReplyService {
         break;
       }
     }
+
+    if (resolved.e164) {
+      await this.writeTraceability(
+        resolved.e164,
+        intent,
+        motive,
+        row?.rowNumber,
+      );
+    }
   }
 
   private async writeDisponibilidad(
@@ -311,6 +320,44 @@ export class OwnerReplyService {
       updates[motiveHeader] = motive.slice(0, 200);
     }
     await this.sheets.updateSpecificCells(sheet, rowNumber, updates);
+  }
+
+  private async writeTraceability(
+    phone: string,
+    intent: OwnerReplyIntent,
+    motive: string,
+    rowNumber?: number,
+  ): Promise<void> {
+    const estadoByIntent: Record<OwnerReplyIntent, string> = {
+      NO_DISPONIBLE: 'No disponible',
+      DISPONIBLE: 'Disponible (WA)',
+      NO_INTERESADO: 'No interesado',
+      NO_CONTACTAR: 'No contactar',
+      AMBIGUO: 'Pendiente revisión WA',
+    };
+    const nextByIntent: Record<OwnerReplyIntent, string | undefined> = {
+      NO_DISPONIBLE: 'Cancelado (WA)',
+      NO_INTERESADO: 'Cancelado (WA)',
+      NO_CONTACTAR: 'Cancelado (No contactar)',
+      DISPONIBLE: undefined,
+      AMBIGUO: undefined,
+    };
+    try {
+      await this.sheets.updateTraceabilityByPhone(
+        phone,
+        {
+          estadoLead: estadoByIntent[intent],
+          clasificacionWa: intent,
+          proximoSeguimiento: nextByIntent[intent],
+          motivoDisponibilidad: motive,
+        },
+        rowNumber,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `[OwnerReply] No se pudo escribir trazabilidad Sheets phone=${phone}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 
   private async patchLeadMeta(

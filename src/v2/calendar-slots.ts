@@ -3,10 +3,12 @@
 export const MADRID_TZ = 'Europe/Madrid';
 export const SLOT_DURATION_MS = 30 * 60 * 1000;
 export const DAY_START_MINUTES = 9 * 60;
-export const DAY_END_MINUTES = 18 * 60;
+export const DAY_END_MINUTES = 20 * 60;
+export const AFTERNOON_SPLIT_MINUTES = 14 * 60;
 export const MIN_LEAD_MS = 2 * 60 * 60 * 1000;
-export const LOOKAHEAD_DAYS = 7;
-export const MAX_SLOTS = 6;
+export const LOOKAHEAD_DAYS = 10;
+export const MAX_SLOTS = 12;
+export const MAX_SLOTS_PER_HALF_DAY = 2;
 
 export type BusyInterval = { startMs: number; endMs: number };
 
@@ -166,13 +168,17 @@ export function listFreeSlots(options: {
   const limit = options.limit ?? MAX_SLOTS;
   const leadMs = options.leadMs ?? MIN_LEAD_MS;
   const today = madridParts(now);
-  const slots: CalendarSlot[] = [];
+  const picked: CalendarSlot[] = [];
+  const overflow: CalendarSlot[] = [];
 
   for (let offset = 0; offset <= LOOKAHEAD_DAYS; offset++) {
     const civil = addCivilDays(today.year, today.month, today.day, offset);
     if (weekdayOfCivilDate(civil.year, civil.month, civil.day) % 6 === 0) {
       continue;
     }
+    let morningCount = 0;
+    let afternoonCount = 0;
+
     for (
       let minutes = DAY_START_MINUTES;
       minutes + SLOT_DURATION_MS / 60000 <= DAY_END_MINUTES;
@@ -188,19 +194,35 @@ export function listFreeSlots(options: {
       if (start.getTime() < now.getTime() + leadMs) continue;
       const endMs = start.getTime() + SLOT_DURATION_MS;
       if (intervalsOverlap(start.getTime(), endMs, busy)) continue;
-      slots.push({
+      const slot: CalendarSlot = {
         inicioIso: formatMadridOffsetIso(start),
         etiqueta: formatMadridSlotLabel(start),
         startMs: start.getTime(),
-      });
-      if (slots.length >= limit) return slots;
+      };
+      const isMorning = minutes < AFTERNOON_SPLIT_MINUTES;
+      if (isMorning && morningCount < MAX_SLOTS_PER_HALF_DAY) {
+        morningCount++;
+        picked.push(slot);
+      } else if (!isMorning && afternoonCount < MAX_SLOTS_PER_HALF_DAY) {
+        afternoonCount++;
+        picked.push(slot);
+      } else {
+        overflow.push(slot);
+      }
+      if (picked.length >= limit) return picked;
     }
   }
-  return slots;
+
+  for (const extra of overflow) {
+    if (picked.length >= limit) break;
+    picked.push(extra);
+  }
+  return picked.sort((a, b) => a.startMs - b.startMs);
 }
 
 /**
- * Acepta el inicio_iso que devolvió consultar, o una frase
+ * Acepta el inicio_iso que devolvió consultar (con o sin offset explícito;
+ * si no trae offset se interpreta en Europe/Madrid), o una frase
  * "27/10/2026 a las 10:00", "mañana a las 10:00" u "hoy a las 16:30".
  */
 export function parseSlotInput(
@@ -210,9 +232,35 @@ export function parseSlotInput(
   const text = String(raw ?? '').trim();
   if (!text) return null;
 
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text)) {
-    const parsed = new Date(text);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  const isoMatch = text.match(
+    /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/i,
+  );
+  if (isoMatch) {
+    if (isoMatch[7]) {
+      const parsed = new Date(text);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+    const year = Number(isoMatch[1]);
+    const month = Number(isoMatch[2]);
+    const day = Number(isoMatch[3]);
+    const hour = Number(isoMatch[4]);
+    const minute = Number(isoMatch[5]);
+    if (
+      month < 1 ||
+      month > 12 ||
+      day < 1 ||
+      day > 31 ||
+      hour > 23 ||
+      minute > 59
+    ) {
+      return null;
+    }
+    const resolved = madridWallToUtc(year, month, day, hour, minute);
+    const check = madridParts(resolved);
+    if (check.year !== year || check.month !== month || check.day !== day) {
+      return null;
+    }
+    return resolved;
   }
 
   const clock = text.match(/(\d{1,2})[:.](\d{2})/);

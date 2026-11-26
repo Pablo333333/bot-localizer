@@ -15,7 +15,7 @@ describe('calendar-slots', () => {
     );
   });
 
-  it('ofrece huecos de 30 minutos entre semana, con dos horas de margen', () => {
+  it('ofrece huecos de 30 minutos entre semana (mañana, tarde y varios días), con dos horas de margen', () => {
     const now = new Date('2026-10-21T06:00:00.000Z');
     const slots = listFreeSlots({
       now,
@@ -26,19 +26,33 @@ describe('calendar-slots', () => {
         },
       ],
     });
-    expect(slots).toHaveLength(6);
+    expect(slots).toHaveLength(12);
     expect(slots[0].etiqueta).toContain('10:30');
     expect(slots[0].inicioIso).toBe(
       formatMadridOffsetIso(madridWallToUtc(2026, 10, 21, 10, 30)),
     );
+    expect(slots.some((slot) => slot.etiqueta.includes('14:00'))).toBe(true);
+    expect(slots.some((slot) => slot.etiqueta.includes('22 de octubre'))).toBe(
+      true,
+    );
     expect(slots.some((slot) => slot.etiqueta.includes('sábado'))).toBe(false);
   });
 
-  it('interpreta el iso devuelto y frases en español', () => {
+  it('interpreta el iso devuelto, ISO sin offset en Europe/Madrid y frases en español', () => {
     const now = new Date('2026-10-21T06:00:00.000Z');
     const iso = formatMadridOffsetIso(madridWallToUtc(2026, 10, 22, 11, 0));
     expect(parseSlotInput(iso, now)?.toISOString()).toBe(
       '2026-10-22T09:00:00.000Z',
+    );
+    // ISO sin offset en horario de verano (+02:00) y de invierno (+01:00)
+    expect(parseSlotInput('2026-10-22T11:00:00', now)?.toISOString()).toBe(
+      '2026-10-22T09:00:00.000Z',
+    );
+    expect(parseSlotInput('2026-11-20T11:00:00', now)?.toISOString()).toBe(
+      '2026-11-20T10:00:00.000Z',
+    );
+    expect(parseSlotInput('2026-11-20 18:30', now)?.toISOString()).toBe(
+      '2026-11-20T17:30:00.000Z',
     );
     expect(parseSlotInput('22/10/2026 a las 11:00', now)?.toISOString()).toBe(
       '2026-10-22T09:00:00.000Z',
@@ -46,6 +60,7 @@ describe('calendar-slots', () => {
     expect(parseSlotInput('mañana a las 11:00', now)?.toISOString()).toBe(
       '2026-10-22T09:00:00.000Z',
     );
+    expect(parseSlotInput('2026-02-31T10:00:00', now)).toBeNull();
     expect(parseSlotInput('cuando pueda', now)).toBeNull();
   });
 });

@@ -1,10 +1,11 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { EnrollmentStatus, SequenceStep, StepRunStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SheetsService } from '../../sheets/sheets.service';
 import { NURTURING_STEP_JOB, NURTURING_STEPS_QUEUE } from '../../queue/queue.constants';
 import {
   NURTURING_PHASE3_DISABLED_LOG,
@@ -80,6 +81,7 @@ export class SequenceScheduler {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     @InjectQueue(NURTURING_STEPS_QUEUE) private readonly queue: Queue<NurturingStepJobData>,
+    @Optional() private readonly sheets?: SheetsService,
   ) {}
 
   /**
@@ -276,6 +278,57 @@ export class SequenceScheduler {
     });
   }
 
+  private async syncScheduledStepToSheets(
+    leadId: string,
+    templateKey: string,
+    scheduledFor: Date,
+  ): Promise<void> {
+    if (!this.sheets) return;
+    try {
+      const lead = await this.prisma.lead.findUnique({
+        where: { id: leadId },
+        select: { phone: true, sheetsRowNumber: true },
+      });
+      if (!lead?.phone) return;
+      const tag =
+        templateKey === TEMPLATE_CALL_FOLLOWUP_D10
+          ? 'T+10'
+          : templateKey === TEMPLATE_CALL_FOLLOWUP_D7
+            ? 'T+7'
+            : templateKey;
+      await this.sheets.updateTraceabilityByPhone(
+        lead.phone,
+        {
+          estadoLead: `En seguimiento ${tag}`,
+          proximoSeguimiento: `${tag} · ${formatMadridDateTime(scheduledFor)}`,
+        },
+        lead.sheetsRowNumber,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `[FASE3][SHEETS] no se pudo actualizar trazabilidad de paso encolado lead=${leadId}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+
+  private computeCallStaggerMinutes(
+    leadId: string,
+    templateKey: string,
+  ): number {
+    // No añadir stagger en modo fast-test (minutos)
+    const fast = String(this.config.get('NURTURING_FAST_TEST') ?? '').trim().toLowerCase();
+    if (fast === '1' || fast === 'true' || fast === 'si' || fast === 'yes') {
+      return 0;
+    }
+    const seed = `${leadId}:${templateKey}`;
+    let hash = 0;
+    for (let i = 0; i < seed.length; i++) {
+      hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+    }
+    // 30 franjas de 3 minutos → reparte 30-60 llamadas a lo largo de 90 minutos
+    return (hash % 30) * 3;
+  }
+
   private resolveDelayMinutes(step: {
     templateKey: string;
     delayMinutes: number;
@@ -305,12 +358,24 @@ export class SequenceScheduler {
       params.baseTime.getTime() + delayMinutes * 60_000,
     );
     // T+7 / T+10 (y cualquier paso) solo caen en L-V 10:00-14:00 / 17:00-20:30 Madrid.
-    const scheduledFor = alignToOutboundBusinessHours(rawScheduledFor);
+    // Además aplicamos un escalonado determinista por lead (0-90 min en tramos de 3 min)
+    // para evitar ráfagas simultáneas a las 10:00 / 10:05 que saturen Sheets (429).
+    const alignedBase = alignToOutboundBusinessHours(rawScheduledFor);
+    const staggerMinutes =
+      params.step.channel === 'llamada'
+        ? this.computeCallStaggerMinutes(params.leadId, params.step.templateKey)
+        : 0;
+    const scheduledFor =
+      staggerMinutes > 0
+        ? alignToOutboundBusinessHours(
+            new Date(alignedBase.getTime() + staggerMinutes * 60_000),
+          )
+        : alignedBase;
     if (scheduledFor.getTime() !== rawScheduledFor.getTime()) {
       this.logger.log(
         `[FASE3][BULLMQ] horario alineado ${nurturingStepLabel(params.step.templateKey)} ` +
           `raw=${formatMadridDateTime(rawScheduledFor)} → ${formatMadridDateTime(scheduledFor)} ` +
-          `(${OUTBOUND_HOURS_DESCRIPTION}) lead=${params.leadId}`,
+          `(+${staggerMinutes}m stagger, ${OUTBOUND_HOURS_DESCRIPTION}) lead=${params.leadId}`,
       );
     }
 
@@ -379,6 +444,14 @@ export class SequenceScheduler {
       where: { id: stepRun.id },
       data: { jobId: job.id ?? jobId },
     });
+
+    if (this.sheets && params.step.channel === 'llamada') {
+      void this.syncScheduledStepToSheets(
+        params.leadId,
+        params.step.templateKey,
+        scheduledFor,
+      );
+    }
 
     this.logger.log(
       `[FASE3][BULLMQ] encolado ${nurturingStepLabel(params.step.templateKey)} ` +

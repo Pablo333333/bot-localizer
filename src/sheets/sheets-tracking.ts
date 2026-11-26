@@ -18,6 +18,9 @@ export const BOT_TRACKING_HEADERS = [
   'Notas de Error',
   'Estado lead',
   'Estado nurturing',
+  'Clasificacion WA',
+  'Proximo seguimiento',
+  'Motivo disponibilidad',
   'Ilocalizable',
 ] as const;
 

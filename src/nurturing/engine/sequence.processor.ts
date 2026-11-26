@@ -54,7 +54,10 @@ import {
   isPauseAllAutomations,
 } from '../../outbound/pause-automations';
 
-@Processor(NURTURING_STEPS_QUEUE, { concurrency: 1 })
+@Processor(NURTURING_STEPS_QUEUE, {
+  concurrency: 1,
+  limiter: { max: 1, duration: 15_000 },
+})
 export class SequenceProcessor extends WorkerHost {
   private readonly logger = new Logger(SequenceProcessor.name);
 
@@ -158,7 +161,20 @@ export class SequenceProcessor extends WorkerHost {
       return { status: 'skipped' };
     }
 
-    const handled = await this.stopIfAdAlreadyHandled(lead);
+    let handled: string | null = null;
+    try {
+      handled = await this.stopIfAdAlreadyHandled(lead);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      await this.prisma.sequenceStepRun.update({
+        where: { id: stepRunId },
+        data: {
+          status: StepRunStatus.scheduled,
+          lastError: `sheets_check_retry:${errorMessage.slice(0, 200)}`,
+        },
+      });
+      throw err;
+    }
     if (handled) {
       return { status: 'skipped' };
     }
@@ -560,9 +576,9 @@ export class SequenceProcessor extends WorkerHost {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(
-        `[FASE3][COLA] no se pudo comprobar si el anuncio ya está gestionado lead=${lead.id}: ${message}`,
+        `[FASE3][COLA] no se pudo comprobar si el anuncio ya está gestionado lead=${lead.id} (se reintenta con backoff): ${message}`,
       );
-      return null;
+      throw err;
     }
   }
 

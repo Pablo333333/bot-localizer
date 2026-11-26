@@ -230,9 +230,9 @@ export class CallChannel implements NurturingChannel {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(
-        `[FASE3][LLAMADA] no se pudo leer la ficha de ${phoneE164}: ${message}`,
+        `[FASE3][LLAMADA] error leyendo ficha de ${phoneE164} (no se llama a ciegas, BullMQ reintentará): ${message}`,
       );
-      return {};
+      throw err;
     }
   }
 }

@@ -9,6 +9,7 @@ import {
   intervalsOverlap,
   isWithinBookingWindow,
   listFreeSlots,
+  LOOKAHEAD_DAYS,
   madridWallToUtc,
   MIN_LEAD_MS,
   parseSlotInput,
@@ -82,7 +83,9 @@ export class CalendarService {
       this.logger.error('Google Calendar no está inicializado');
       return [];
     }
-    const horizon = new Date(now.getTime() + 8 * 24 * 60 * 60 * 1000);
+    const horizon = new Date(
+      now.getTime() + (LOOKAHEAD_DAYS + 1) * 24 * 60 * 60 * 1000,
+    );
     try {
       const response = await this.calendarClient.events.list({
         calendarId: this.calendarId,

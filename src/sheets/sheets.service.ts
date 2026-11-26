@@ -58,6 +58,37 @@ import { isOwnerConversationComplete } from '../nurturing/followup/call-outcome.
 export class SheetsService implements OnModuleInit {
   private readonly logger = new Logger(SheetsService.name);
   private doc: GoogleSpreadsheet;
+  private readonly readCache = new Map<
+    string,
+    {
+      expiresAt: number;
+      value: {
+        sheet: GoogleSpreadsheetWorksheet;
+        rows: IsolatedSheetRow[];
+      };
+    }
+  >();
+  private readonly readInFlight = new Map<
+    string,
+    Promise<{
+      sheet: GoogleSpreadsheetWorksheet;
+      rows: IsolatedSheetRow[];
+    }>
+  >();
+
+  private resolveReadCacheTtlMs(): number {
+    const raw = Number(process.env.SHEETS_READ_CACHE_TTL_MS ?? 45_000);
+    if (!Number.isFinite(raw) || raw < 0) return 45_000;
+    return Math.min(raw, 300_000);
+  }
+
+  invalidateReadCache(sheetName?: string): void {
+    if (!sheetName) {
+      this.readCache.clear();
+      return;
+    }
+    this.readCache.delete(sheetName);
+  }
 
   async onModuleInit(): Promise<void> {
     await this.reinitialize();
@@ -129,6 +160,50 @@ export class SheetsService implements OnModuleInit {
    * la descripción de la fila 488 puede acabar escrita en la 452.
    */
   async getAllRows(
+    sheetNameOrSheet: string | GoogleSpreadsheetWorksheet,
+    options?: { pageSize?: number; forceRefresh?: boolean },
+  ): Promise<{
+    sheet: GoogleSpreadsheetWorksheet;
+    rows: IsolatedSheetRow[];
+  }> {
+    const cacheKey =
+      typeof sheetNameOrSheet === 'string'
+        ? sheetNameOrSheet
+        : sheetNameOrSheet.title;
+    const ttlMs = this.resolveReadCacheTtlMs();
+
+    if (!options?.forceRefresh && ttlMs > 0 && cacheKey) {
+      const cached = this.readCache.get(cacheKey);
+      if (cached && Date.now() < cached.expiresAt) {
+        return cached.value;
+      }
+      const pending = this.readInFlight.get(cacheKey);
+      if (pending) {
+        return pending;
+      }
+    }
+
+    const loader = this.fetchAllRowsUncached(sheetNameOrSheet, options);
+    if (!options?.forceRefresh && ttlMs > 0 && cacheKey) {
+      this.readInFlight.set(cacheKey, loader);
+    }
+    try {
+      const value = await loader;
+      if (ttlMs > 0 && cacheKey) {
+        this.readCache.set(cacheKey, {
+          expiresAt: Date.now() + ttlMs,
+          value,
+        });
+      }
+      return value;
+    } finally {
+      if (cacheKey) {
+        this.readInFlight.delete(cacheKey);
+      }
+    }
+  }
+
+  private async fetchAllRowsUncached(
     sheetNameOrSheet: string | GoogleSpreadsheetWorksheet,
     options?: { pageSize?: number },
   ): Promise<{
@@ -555,6 +630,7 @@ export class SheetsService implements OnModuleInit {
     // Solo estas celdas. saveUpdatedCells() volcaría otras celdas sucias de la caché
     // y puede escribir la descripción de una fila encima de otra.
     await sheet.saveCells(dirty);
+    this.invalidateReadCache(sheet.title);
 
     this.logger.log(
       `[updateSpecificCells] Fila ${rowNumber} → ${written.map((c) => `${c.header}(${c.a1})="${c.value}"`).join(', ')}`,
@@ -714,6 +790,7 @@ export class SheetsService implements OnModuleInit {
     if (!shouldWriteCell(cell.value, value)) return;
     cell.value = value;
     await sheet.saveCells([cell]);
+    this.invalidateReadCache(sheet.title);
     this.logger.log(
       `[updateSpecificCells] Fila ${rowNumber} → ${letter}(${a1}) escrita`,
     );
@@ -729,6 +806,56 @@ export class SheetsService implements OnModuleInit {
     await sheet.loadHeaderRow();
     const allowed = filterTrackingFields(fields, sheet.headerValues || []);
     await this.updateSpecificCells(sheet, rowNumber, allowed, existingRow);
+  }
+
+  /**
+   * Actualiza columnas de trazabilidad (FN: Estado lead, FO: Clasificacion WA,
+   * FP: Proximo seguimiento, FS: Motivo disponibilidad, O: Ilocalizable)
+   * localizando la fila por teléfono (con hint opcional de fila).
+   */
+  async updateTraceabilityByPhone(
+    phone: string,
+    fields: {
+      estadoLead?: string;
+      clasificacionWa?: string;
+      proximoSeguimiento?: string;
+      motivoDisponibilidad?: string;
+      ilocalizable?: 'SI' | 'NO';
+    },
+    hintRowNumber?: number | null,
+  ): Promise<boolean> {
+    const target = this.normalizePhoneDigits(phone);
+    if (!target) return false;
+    const { sheet, rows } = await this.getAllRows('Localizados');
+    const phoneMatches = (r: IsolatedSheetRow): boolean => {
+      const tels = [
+        r.get('Telefono1'),
+        r.get('Telefono2'),
+        r.get('Telefono3'),
+        r.get('Teléfono contacto 1'),
+      ].map((v) => this.normalizePhoneDigits(v));
+      return tels.includes(target);
+    };
+
+    let row: IsolatedSheetRow | undefined;
+    if (hintRowNumber != null) {
+      const hinted = rows.find((r) => r.rowNumber === hintRowNumber);
+      if (hinted && phoneMatches(hinted)) row = hinted;
+    }
+    if (!row) {
+      row = rows.find(phoneMatches);
+    }
+    if (!row) return false;
+
+    const tracking: Record<string, string | undefined> = {
+      'Estado lead': fields.estadoLead,
+      'Clasificacion WA': fields.clasificacionWa,
+      'Proximo seguimiento': fields.proximoSeguimiento,
+      'Motivo disponibilidad': fields.motivoDisponibilidad?.slice(0, 200),
+      Ilocalizable: fields.ilocalizable,
+    };
+    await this.updateTrackingCells(sheet, row.rowNumber, tracking, row);
+    return true;
   }
 
   /**
@@ -913,6 +1040,7 @@ export class SheetsService implements OnModuleInit {
     }
     cell.value = next;
     await sheet.saveUpdatedCells();
+    this.invalidateReadCache(sheet.title);
     this.logger.log(`[Propietario contactado?] header="${header}" ${a1} ← ${next}`);
   }
 
